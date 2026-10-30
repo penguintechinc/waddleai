@@ -65,9 +65,51 @@ pub struct RawModelConfig {
     pub enabled: bool,
 }
 
+/// Python 3.12+ `sum()` of floats: Neumaier-compensated, not a naive left-to-right sum.
+fn py_float_sum(values: &[f64]) -> f64 {
+    let (mut total, mut comp) = (0.0_f64, 0.0_f64);
+    for &x in values {
+        let t = total + x;
+        if x.is_finite() && t.is_finite() {
+            if total.abs() >= x.abs() {
+                comp += (total - t) + x;
+            } else {
+                comp += (x - t) + total;
+            }
+        }
+        total = t;
+    }
+    if comp != 0.0 && comp.is_finite() {
+        total += comp;
+    }
+    total
+}
+
+/// Mean of a cost map, summed like Python (compensated) in Postgres `jsonb` key order (length,
+/// then bytes) so float ties match production. A non-numeric cost fails loudly (Python raises).
+fn mean_cost(model: &str, map: &Value) -> Result<f64, RoutingError> {
+    let Some(obj) = map.as_object() else {
+        return Ok(0.0);
+    };
+    let mut entries: Vec<(&String, &Value)> = obj.iter().collect();
+    entries.sort_by(|a, b| a.0.len().cmp(&b.0.len()).then_with(|| a.0.cmp(b.0)));
+    let mut values = Vec::with_capacity(entries.len());
+    for (_, v) in &entries {
+        values.push(
+            v.as_f64()
+                .ok_or_else(|| RoutingError::BadCost(model.to_owned()))?,
+        );
+    }
+    Ok(if values.is_empty() {
+        0.0
+    } else {
+        py_float_sum(&values) / values.len() as f64
+    })
+}
+
 /// Derives the offer universe from `model_configs` rows exactly as `RoutingStage._load_offers`:
 /// location from `preferred_providers`, cost = mean of the cost map, vision from `capabilities`.
-pub fn build_offers(rows: &[RawModelConfig]) -> Vec<ModelOffer> {
+pub fn build_offers(rows: &[RawModelConfig]) -> Result<Vec<ModelOffer>, RoutingError> {
     rows.iter()
         .filter(|r| r.enabled)
         .map(|r| {
@@ -75,21 +117,12 @@ pub fn build_offers(rows: &[RawModelConfig]) -> Vec<ModelOffer> {
                 a.iter()
                     .any(|p| matches!(p.as_str(), Some("ollama" | "llamacpp")))
             });
-            let costs: Vec<f64> = r
-                .cost_per_token
-                .as_object()
-                .map(|m| m.values().filter_map(Value::as_f64).collect())
-                .unwrap_or_default();
-            let avg_cost = if costs.is_empty() {
-                0.0
-            } else {
-                costs.iter().sum::<f64>() / costs.len() as f64
-            };
+            let avg_cost = mean_cost(&r.model_name, &r.cost_per_token)?;
             let vision = r
                 .capabilities
                 .as_array()
                 .is_some_and(|a| a.iter().any(|c| c.as_str() == Some("vision")));
-            ModelOffer {
+            Ok(ModelOffer {
                 model_name: r.model_name.clone(),
                 capability_score: 3.0,
                 supports_tools: true,
@@ -106,7 +139,7 @@ pub fn build_offers(rows: &[RawModelConfig]) -> Vec<ModelOffer> {
                     Location::Commercial
                 },
                 available: true,
-            }
+            })
         })
         .collect()
 }
@@ -159,23 +192,22 @@ fn message_text(content: &Value) -> String {
     }
 }
 
-/// tiktoken `cl100k_base` count of one text; a special-token literal is an error exactly as
-/// Python's default `disallowed_special="all"` (the engine then leaves the model unchanged).
-fn count_tokens(text: &str) -> Result<i64, RoutingError> {
-    let enc = tiktoken_rs::cl100k_base_singleton();
-    if enc.special_tokens().iter().any(|s| text.contains(s)) {
-        return Err(RoutingError::Tokenize);
-    }
-    Ok(enc.encode_ordinary(text).len() as i64)
+/// tiktoken `cl100k_base` count of one text. Special-token literals are counted as plain text:
+/// Python raises there and fails open, which a client could trigger; here it cannot error.
+fn count_tokens(text: &str) -> i64 {
+    tiktoken_rs::cl100k_base_singleton()
+        .encode_ordinary(text)
+        .len() as i64
 }
 
-/// `int(body.get("max_tokens") or 0)`.
-fn max_tokens(body: &Value) -> Result<i64, RoutingError> {
+/// `int(body.get("max_tokens") or 0)`, except that a value Python cannot coerce counts as 0
+/// instead of raising (a client-triggerable fail-open in Python).
+fn max_tokens(body: &Value) -> i64 {
     let Some(v) = body.get("max_tokens").filter(|v| py_truthy(v)) else {
-        return Ok(0);
+        return 0;
     };
     match v {
-        Value::Bool(_) => Ok(1),
+        Value::Bool(_) => 1,
         Value::Number(n) => n
             .as_i64()
             .or_else(|| {
@@ -183,17 +215,14 @@ fn max_tokens(body: &Value) -> Result<i64, RoutingError> {
                     .filter(|f| f.is_finite())
                     .map(|f| f.trunc() as i64)
             })
-            .ok_or(RoutingError::BadMaxTokens),
-        Value::String(s) => s
-            .trim()
-            .parse::<i64>()
-            .map_err(|_| RoutingError::BadMaxTokens),
-        _ => Err(RoutingError::BadMaxTokens),
+            .unwrap_or(0),
+        Value::String(s) => s.trim().parse::<i64>().unwrap_or(0),
+        _ => 0,
     }
 }
 
 /// Derives the requirements vector from a chat-completion-style body.
-pub fn derive_requirements(body: &Value) -> Result<Requirements, RoutingError> {
+pub fn derive_requirements(body: &Value) -> Requirements {
     let empty = Vec::new();
     let messages = body
         .get("messages")
@@ -202,7 +231,7 @@ pub fn derive_requirements(body: &Value) -> Result<Requirements, RoutingError> {
     let mut tokens = 0;
     for m in messages.iter().filter(|m| m.is_object()) {
         let text = m.get("content").map_or_else(String::new, message_text);
-        tokens += count_tokens(&text)?;
+        tokens += count_tokens(&text);
     }
     let needs_vision = messages.iter().any(|m| {
         m.get("content")
@@ -219,11 +248,11 @@ pub fn derive_requirements(body: &Value) -> Result<Requirements, RoutingError> {
     let needs_tools = body.get("tools").is_some_and(py_truthy)
         || !matches!(body.get("tool_choice"), None | Some(Value::Null))
             && body.get("tool_choice").and_then(Value::as_str) != Some("none");
-    Ok(Requirements {
-        min_context: tokens + max_tokens(body)?,
+    Requirements {
+        min_context: tokens + max_tokens(body),
         needs_tools,
         needs_vision,
-    })
+    }
 }
 
 /// True when `offer` satisfies every hard requirement.
@@ -250,26 +279,26 @@ fn veto_reason(offer: &ModelOffer, reqs: &Requirements) -> &'static str {
 }
 
 /// Highest-capability qualified offer; ties keep the first (Python `max`).
-fn best_candidate<'a>(offers: &'a [ModelOffer], reqs: &Requirements) -> Option<&'a ModelOffer> {
+fn best_candidate(offers: &[ModelOffer], reqs: &Requirements) -> Option<ModelOffer> {
     let mut best: Option<&ModelOffer> = None;
     for o in offers.iter().filter(|o| qualifies(o, reqs)) {
         if best.is_none_or(|b| o.capability_score > b.capability_score) {
             best = Some(o);
         }
     }
-    best
+    best.cloned()
 }
 
-/// Keeps the assigned offer if it qualifies, else re-routes; returns the chosen offer and the
-/// veto reason (`None` = assignment kept).
-pub fn veto_and_reroute<'a>(
-    assigned: Option<&'a ModelOffer>,
-    offers: &'a [ModelOffer],
+/// Keeps the assigned offer if it qualifies, else re-routes within `candidates`; returns the
+/// chosen offer and the veto reason (`None` = assignment kept).
+pub fn veto_and_reroute(
+    assigned: Option<&ModelOffer>,
+    candidates: &[ModelOffer],
     reqs: &Requirements,
-) -> (Option<&'a ModelOffer>, Option<&'static str>) {
+) -> (Option<ModelOffer>, Option<&'static str>) {
     if let Some(a) = assigned.filter(|a| qualifies(a, reqs)) {
-        return (Some(a), None);
+        return (Some(a.clone()), None);
     }
     let reason = assigned.map_or("no_assignment", |a| veto_reason(a, reqs));
-    (best_candidate(offers, reqs), Some(reason))
+    (best_candidate(candidates, reqs), Some(reason))
 }

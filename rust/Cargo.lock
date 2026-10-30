@@ -2550,6 +2550,7 @@ dependencies = [
  "async-trait",
  "cache",
  "db",
+ "opentelemetry",
  "pipeline",
  "rstest",
  "sea-orm",

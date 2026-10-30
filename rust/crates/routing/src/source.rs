@@ -131,12 +131,6 @@ impl RegistrySource for DbRegistrySource {
                 escalation_model: row.try_get("", "escalation_model").map_err(src)?,
             });
         }
-        Ok(OrgRouting::from_parts(
-            &models,
-            aliases,
-            assignments,
-            policy,
-            rules,
-        ))
+        OrgRouting::from_parts(&models, aliases, assignments, policy, rules).map_err(src)
     }
 }

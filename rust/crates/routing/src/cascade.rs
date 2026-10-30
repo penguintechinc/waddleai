@@ -1,6 +1,8 @@
 //! Tool-type cascade: stage 0 explicit, stage 1 heuristic rules (port of
-//! `shared/routing/{heuristics,tool_type}.py`). Stage 2 (classifier) is not part of P2: a punt
-//! returns the safe default `general`, exactly Python's behaviour with no classifier client.
+//! `shared/routing/{heuristics,tool_type}.py`). Parity is with the classifier UNAVAILABLE case:
+//! production Python also runs an LLM stage-2 classifier for hint-less requests, which is not
+//! part of P2. A punt returns the safe default `general` and is flagged
+//! [`ToolTypeSource::DefaultNoClassifier`] so the degraded mode is visible, never silent.
 
 use serde_json::Value;
 
@@ -43,14 +45,37 @@ fn rule_matches(m: &Value, s: &RequestSignals) -> bool {
     })
 }
 
+/// Which cascade stage produced the tool type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolTypeSource {
+    /// Stage 0: header / `waddleai/<tool-type>` model.
+    Explicit,
+    /// Stage 1: a heuristic rule fired.
+    Heuristic,
+    /// No classifier available: the unclassified default was used.
+    DefaultNoClassifier,
+}
+
+/// A resolved tool type plus its provenance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolTypeDecision {
+    /// Kebab-case tool type.
+    pub tool_type: String,
+    /// Producing stage.
+    pub source: ToolTypeSource,
+}
+
 /// Resolves the tool type: explicit, else the first matching rule's action, else the default.
 pub fn determine_tool_type(
     explicit: Option<&str>,
     signals: &RequestSignals,
     rules: &[HeuristicRule],
-) -> String {
+) -> ToolTypeDecision {
     if let Some(e) = explicit.filter(|e| !e.is_empty()) {
-        return e.to_owned();
+        return ToolTypeDecision {
+            tool_type: e.to_owned(),
+            source: ToolTypeSource::Explicit,
+        };
     }
     let mut sorted: Vec<&HeuristicRule> = rules.iter().collect();
     sorted.sort_by_key(|r| r.priority);
@@ -60,9 +85,15 @@ pub fn determine_tool_type(
     {
         if let Some(tt) = rule.action.get("tool_type").filter(|v| py_truthy(v)) {
             if let Some(s) = tt.as_str() {
-                return s.to_owned();
+                return ToolTypeDecision {
+                    tool_type: s.to_owned(),
+                    source: ToolTypeSource::Heuristic,
+                };
             }
         }
     }
-    DEFAULT_TOOL_TYPE.to_owned()
+    ToolTypeDecision {
+        tool_type: DEFAULT_TOOL_TYPE.to_owned(),
+        source: ToolTypeSource::DefaultNoClassifier,
+    }
 }

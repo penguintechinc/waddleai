@@ -98,6 +98,7 @@ fn world() -> OrgRouting {
         RoutingPolicy::default(),
         vec![],
     )
+    .unwrap()
 }
 
 fn plain() -> Value {
@@ -324,10 +325,12 @@ async fn explicit_provider_prefix_ollama_llama2_routes() {
     let stage = RoutingStage::new(Arc::new(RegistryCache::new(src)));
     let mut c = ctx(Some("ollama:llama2"));
     stage.call(&mut c).await.unwrap();
-    // Python ignores the unaliased bare model and routes via the tool-type assignment; the
-    // provider pin is surfaced as a hint.
+    // Python ignores the unaliased bare model and routes via the tool-type assignment. The pin
+    // is advisory (RoutingMeta); ctx.provider is a post-dispatch result and stays untouched.
     assert_eq!(c.model.as_deref(), Some("llama3"));
-    assert_eq!(c.provider.as_deref(), Some("ollama"));
+    assert_eq!(c.provider, None);
+    let meta = c.extensions.get::<RoutingMeta>().unwrap();
+    assert_eq!(meta.provider_hint.as_deref(), Some("ollama"));
     assert_eq!(c.requested_model.as_deref(), Some("ollama:llama2"));
 }
 
@@ -383,6 +386,7 @@ fn world_from_json(w: &Value) -> OrgRouting {
         .as_array()
         .unwrap()
         .iter()
+        .filter(|a| a.get("enabled").and_then(Value::as_bool).unwrap_or(true))
         .map(|a| AssignmentRow {
             org: if a["scope"] == "org" {
                 a["ref"].as_i64()
@@ -416,7 +420,7 @@ fn world_from_json(w: &Value) -> OrgRouting {
             action: r["action"].clone(),
         })
         .collect();
-    OrgRouting::from_parts(&raw, aliases, assignments, policy, rules)
+    OrgRouting::from_parts(&raw, aliases, assignments, policy, rules).unwrap()
 }
 
 #[test]
@@ -432,6 +436,7 @@ fn golden_decisions_equal_python() {
     let rows = golden["rows"].as_array().unwrap();
     let mut examined = 0usize;
     let mut mismatches = Vec::new();
+    let (mut divergent_errored, mut divergent_violation) = (0usize, 0usize);
     for row in rows {
         let r = &row["request"];
         let model = r["model"].as_str();
@@ -445,9 +450,52 @@ fn golden_decisions_equal_python() {
             pii_detected: r["pii"].as_bool().unwrap(),
             use_heuristics: true,
         };
-        let got = match decide(&request, &snapshots[row["world"].as_str().unwrap()]) {
+        let world = &worlds[row["world"].as_str().unwrap()];
+        let result = decide(&request, &snapshots[row["world"].as_str().unwrap()]);
+        // Data-residency invariant (R20), checked on EVERY row, whatever Python did: a request
+        // that must stay local never lands on a non-local final model.
+        let policy = world["policy"].as_object();
+        let sens = policy
+            .and_then(|p| p.get("sensitivity_routing"))
+            .and_then(Value::as_str)
+            .unwrap_or("local_only");
+        let must_local = (request.pii_detected && !matches!(sens, "ignore" | "redact_then_any"))
+            || policy.and_then(|p| p.get("mode")).and_then(Value::as_str) == Some("local_only");
+        if let Ok(d) = &result {
+            let local = world["models"].as_array().unwrap().iter().any(|m| {
+                m["model_name"] == d.model.as_str()
+                    && m["enabled"] == true
+                    && m["preferred_providers"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|p| p == "ollama" || p == "llamacpp")
+            });
+            assert!(
+                !must_local || local,
+                "residency escape: {} {r} -> {}",
+                row["world"],
+                d.model
+            );
+        }
+        examined += 1;
+        if row.get("python_errored").is_some() {
+            // Python fails open on these client inputs; Rust must route normally instead.
+            assert!(result.is_ok(), "client input must not error: {r}");
+            divergent_errored += 1;
+            continue;
+        }
+        if row.get("python_violation").is_some() {
+            // Python lets escalation/veto escape the clamp; Rust stays local or fails closed.
+            divergent_violation += 1;
+            continue;
+        }
+        let got = match result {
             Ok(d) => (Some(d.model), d.fallback_chain, d.routed_from),
-            Err(_) => (model.map(Into::into), vec![], None),
+            Err(e) => {
+                mismatches.push(format!("{} {r}: unexpected {e}", row["world"]));
+                continue;
+            }
         };
         let e = &row["expected"];
         let want = (
@@ -464,12 +512,14 @@ fn golden_decisions_equal_python() {
                 Some(e["routed_from"].clone())
             },
         );
-        examined += 1;
         if got != want {
             mismatches.push(format!("{} {r}: got {got:?} want {want:?}", row["world"]));
         }
     }
-    println!("golden rows examined: {examined}");
+    println!(
+        "golden rows examined: {examined} (equal to Python: {}, intentional divergences: {divergent_violation} residency, {divergent_errored} client-input)",
+        examined - divergent_violation - divergent_errored
+    );
     assert!(examined > 0, "0 golden rows examined = FAIL");
     assert!(
         mismatches.is_empty(),
@@ -481,7 +531,7 @@ fn golden_decisions_equal_python() {
 
 #[test]
 fn offers_derivation_matches_load_offers() {
-    let offers = build_offers(&models());
+    let offers = build_offers(&models()).unwrap();
     assert_eq!(offers.len(), 5);
     assert!(offers[2].supports_vision && !offers[0].supports_vision);
     assert!((offers[4].cost_per_token - 0.0000035).abs() < 1e-12);
@@ -507,15 +557,11 @@ async fn db_source_loads_registry() {
 #[case(json!({"messages": [], "max_tokens": 9000.9}), Some(9000))]
 #[case(json!({"messages": [], "max_tokens": true}), Some(1))]
 #[case(json!({"messages": [], "max_tokens": null}), Some(0))]
-#[case(json!({"messages": [], "max_tokens": "abc"}), None)]
-#[case(json!({"messages": [], "max_tokens": [1]}), None)]
+#[case(json!({"messages": [], "max_tokens": "abc"}), Some(0))]
+#[case(json!({"messages": [], "max_tokens": [1]}), Some(0))]
 fn max_tokens_coercion_matches_python_int(#[case] body: Value, #[case] want: Option<i64>) {
-    assert_eq!(
-        routing::derive_requirements(&body)
-            .ok()
-            .map(|r| r.min_context),
-        want
-    );
+    // Python raises on the last two (fail-open); Rust counts them as 0 so no client input errors.
+    assert_eq!(Some(routing::derive_requirements(&body).min_context), want);
 }
 
 #[rstest]
@@ -526,16 +572,13 @@ fn max_tokens_coercion_matches_python_int(#[case] body: Value, #[case] want: Opt
 #[case(json!({"tool_choice": ""}), true)]
 #[case(json!({}), false)]
 fn needs_tools_matches_python(#[case] body: Value, #[case] want: bool) {
-    assert_eq!(
-        routing::derive_requirements(&body).unwrap().needs_tools,
-        want
-    );
+    assert_eq!(routing::derive_requirements(&body).needs_tools, want);
 }
 
 #[test]
-fn special_token_leaves_model_unchanged() {
+fn special_token_counts_as_plain_text() {
     let body = json!({"messages": [{"role": "user", "content": "a <|endoftext|> b"}]});
-    assert!(routing::derive_requirements(&body).is_err());
+    assert!(routing::derive_requirements(&body).min_context > 0);
 }
 
 #[test]
@@ -565,15 +608,19 @@ fn heuristic_rules_fire_in_priority_order_and_unknown_keys_are_ignored() {
     let sig = routing::RequestSignals {
         model: "gpt-9".into(),
     };
-    assert_eq!(routing::determine_tool_type(None, &sig, &rules), "code-gen");
+    let d = routing::determine_tool_type(None, &sig, &rules);
     assert_eq!(
-        routing::determine_tool_type(Some("vision-task"), &sig, &rules),
-        "vision-task"
+        (d.tool_type.as_str(), d.source),
+        ("code-gen", routing::ToolTypeSource::Heuristic)
     );
+    let d = routing::determine_tool_type(Some("vision-task"), &sig, &rules);
     assert_eq!(
-        routing::determine_tool_type(Some(""), &sig, &[]),
-        routing::DEFAULT_TOOL_TYPE
+        (d.tool_type.as_str(), d.source),
+        ("vision-task", routing::ToolTypeSource::Explicit)
     );
+    let d = routing::determine_tool_type(Some(""), &sig, &[]);
+    assert_eq!(d.tool_type, routing::DEFAULT_TOOL_TYPE);
+    assert_eq!(d.source, routing::ToolTypeSource::DefaultNoClassifier);
 }
 
 #[test]
@@ -643,7 +690,7 @@ fn policy_modes_filter_and_sort(#[case] mode: &str, #[case] want: &[&str]) {
         mode: mode.into(),
         ..RoutingPolicy::default()
     };
-    let got: Vec<String> = routing::filter_and_sort(&build_offers(&models()), &policy)
+    let got: Vec<String> = routing::filter_and_sort(&build_offers(&models()).unwrap(), &policy)
         .into_iter()
         .map(|o| o.model_name)
         .collect();
@@ -656,7 +703,7 @@ fn policy_modes_filter_and_sort(#[case] mode: &str, #[case] want: &[&str]) {
 #[case("ignore", 5)]
 #[case("weird", 3)]
 fn sensitivity_modes(#[case] mode: &str, #[case] kept: usize) {
-    let chain = build_offers(&models());
+    let chain = build_offers(&models()).unwrap();
     assert_eq!(routing::apply_sensitivity(chain, true, mode).len(), kept);
 }
 
@@ -686,15 +733,187 @@ async fn global_assignment_invalidation_refreshes_every_cached_scope() {
 }
 
 #[tokio::test]
-async fn stage_identity_and_flag_and_decide_failure_leaves_model_unchanged() {
+async fn stage_identity_flag_and_client_input_never_errors() {
     let src = MockSource::new(world());
     let stage = RoutingStage::new(Arc::new(RegistryCache::new(src)));
     assert_eq!(stage.name(), "routing");
     assert_eq!(stage.flag(), Some("waddleai.smart_routing"));
-    let mut c =
-        PipelineContext::new(json!({"messages": [{"role": "user", "content": "<|endoftext|>"}]}));
+    let mut c = PipelineContext::new(json!({
+        "messages": [{"role": "user", "content": "<|endoftext|>"}], "max_tokens": "abc"}));
+    c.model = Some("gpt-3.5-turbo".into());
+    stage.call(&mut c).await.unwrap();
+    assert!(!c.blocked);
+    assert_eq!(c.model.as_deref(), Some("llama3"));
+}
+
+fn is_external(m: &str) -> bool {
+    ["gpt-4", "claude-sonnet"].contains(&m)
+}
+
+#[rstest]
+#[case("true", "general")]
+#[case("auto:high", "code-gen")]
+fn pii_with_escalate_hint_stays_local(#[case] hint: &str, #[case] tool: &str) {
+    // Both assignments escalate to a commercial model; PII must keep the request local.
+    let body = plain();
+    let mut r = req(&body, None);
+    r.pii_detected = true;
+    r.escalate_hint = Some(hint);
+    r.tool_type_hint = Some(tool);
+    let d = decide(&r, &world()).unwrap();
+    assert!(!is_external(&d.model), "escaped to {}", d.model);
+    assert!(d.executable);
+    assert!(d.fallback_chain.iter().all(|m| !is_external(m)));
+}
+
+#[test]
+fn pii_with_capability_veto_stays_local() {
+    // The assigned local model lacks vision; an external vision model comes first in the
+    // registry, so an unclamped veto would pick it.
+    let mut m = models();
+    m.insert(
+        0,
+        model(
+            "cloud-vision",
+            json!(["openai"]),
+            json!({"openai": 0.00001}),
+            128_000,
+            json!(["vision"]),
+        ),
+    );
+    let w = OrgRouting::from_parts(
+        &m,
+        vec![],
+        vec![assign("vision-task", "llama3", None)],
+        RoutingPolicy::default(),
+        vec![],
+    )
+    .unwrap();
+    let body = json!({"messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "x"}}]}]});
+    let mut r = req(&body, None);
+    r.tool_type_hint = Some("vision-task");
+    assert_eq!(decide(&r, &w).unwrap().model, "cloud-vision");
+    r.pii_detected = true;
+    assert_eq!(decide(&r, &w).unwrap().model, "llava");
+}
+
+#[test]
+fn local_only_policy_blocks_escalation_to_external() {
+    let mut w = world();
+    w.policy.mode = "local_only".into();
+    let body = plain();
+    let mut r = req(&body, None);
+    r.escalate_hint = Some("true");
+    let d = decide(&r, &w).unwrap();
+    assert_eq!(d.model, "llama3");
+    assert!(d.executable);
+}
+
+#[tokio::test]
+async fn clamp_with_no_local_model_fails_closed_and_blocks() {
+    let ext: Vec<_> = models()
+        .into_iter()
+        .filter(|m| is_external(&m.model_name))
+        .collect();
+    let w = OrgRouting::from_parts(
+        &ext,
+        vec![],
+        vec![assign("general", "gpt-4", Some("claude-sonnet"))],
+        RoutingPolicy::default(),
+        vec![],
+    )
+    .unwrap();
+    let body = plain();
+    let mut r = req(&body, None);
+    r.pii_detected = true;
+    assert_eq!(
+        decide(&r, &w).unwrap_err(),
+        routing::RoutingError::NoLocalCandidate
+    );
+    let stage = RoutingStage::new(Arc::new(RegistryCache::new(MockSource::new(w))));
+    let mut c = PipelineContext::new(plain());
+    c.pii_detected = true;
     c.model = Some("gpt-4".into());
     stage.call(&mut c).await.unwrap();
-    assert_eq!(c.model.as_deref(), Some("gpt-4"));
-    assert!(c.routed_from.is_none() && c.extensions.get::<RoutingMeta>().is_none());
+    assert!(c.blocked && c.status_code == 503);
+    assert_eq!(
+        c.model.as_deref(),
+        Some("gpt-4"),
+        "model not rewritten to an external pick"
+    );
+}
+
+#[tokio::test]
+async fn registry_down_with_pii_blocks_without_pii_passes_through() {
+    let dead = MockSource::new(world());
+    *dead.fail.lock().unwrap() = true;
+    let stage = RoutingStage::new(Arc::new(RegistryCache::new(dead)));
+    let mut c = ctx(Some("gpt-4"));
+    c.pii_detected = true;
+    stage.call(&mut c).await.unwrap();
+    assert!(c.blocked && c.status_code == 503);
+    let mut c = ctx(Some("gpt-4"));
+    stage.call(&mut c).await.unwrap();
+    assert!(!c.blocked);
+}
+
+#[test]
+fn unknown_escalation_target_is_non_executable() {
+    let mut w = world();
+    w.assignments = vec![assign("general", "llama3", Some("not-in-registry"))];
+    let body = plain();
+    let mut r = req(&body, None);
+    r.escalate_hint = Some("true");
+    let d = decide(&r, &w).unwrap();
+    assert_eq!(d.model, "not-in-registry");
+    assert!(!d.executable);
+    assert!(d.commercial_models.contains(&"not-in-registry".to_string()));
+}
+
+#[tokio::test]
+async fn unclassified_default_is_flagged_visibly() {
+    let stage = RoutingStage::new(Arc::new(RegistryCache::new(MockSource::new(world()))));
+    let mut c = ctx(None);
+    stage.call(&mut c).await.unwrap();
+    assert!(
+        c.extensions
+            .get::<RoutingMeta>()
+            .unwrap()
+            .unclassified_default
+    );
+    let mut c = ctx(None);
+    c.explicit_tool_type_hint = Some("general".into());
+    stage.call(&mut c).await.unwrap();
+    assert!(
+        !c.extensions
+            .get::<RoutingMeta>()
+            .unwrap()
+            .unclassified_default
+    );
+}
+
+#[test]
+fn non_numeric_cost_fails_loudly() {
+    let mut m = models();
+    m[0].cost_per_token = json!({"ollama": "free"});
+    assert_eq!(
+        build_offers(&m),
+        Err(routing::RoutingError::BadCost("llama3".into()))
+    );
+}
+
+#[test]
+fn cost_mean_uses_python_compensated_sum() {
+    // Naive 0.1 + 0.2 + 0.3 = 0.6000000000000001; Python's sum() gives exactly 0.6.
+    let m = vec![model(
+        "tri",
+        json!(["ollama"]),
+        json!({"ccc": 0.3, "a": 0.1, "bb": 0.2}),
+        8192,
+        json!([]),
+    )];
+    let offers = build_offers(&m).unwrap();
+    assert_eq!(offers[0].cost_per_token, 0.6_f64 / 3.0);
+    assert_ne!(offers[0].cost_per_token, (0.1_f64 + 0.2 + 0.3) / 3.0);
 }

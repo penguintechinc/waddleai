@@ -15,7 +15,10 @@ pub use alias::{
     explicit_tool_type, resolve_alias, split_provider_prefix, AliasResolution, AliasRow,
     KNOWN_PROVIDERS,
 };
-pub use cascade::{determine_tool_type, HeuristicRule, RequestSignals, DEFAULT_TOOL_TYPE};
+pub use cascade::{
+    determine_tool_type, HeuristicRule, RequestSignals, ToolTypeDecision, ToolTypeSource,
+    DEFAULT_TOOL_TYPE,
+};
 pub use decide::{decide, Decision, RoutingRequest};
 pub use escalate::{escalation_target, should_escalate, EscalationDecision};
 pub use offers::{
@@ -30,13 +33,14 @@ pub use registry::{
 pub use source::DbRegistrySource;
 pub use stage::{RoutingMeta, RoutingStage, SMART_ROUTING_FLAG};
 
-/// A routing-decision fault; the stage logs it and leaves `ctx.model` unchanged.
+/// A routing fault: the residency clamp found no local model (the stage blocks), or a model
+/// row is malformed (the registry load fails loudly).
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RoutingError {
-    /// A message contains a tokenizer special-token literal (Python raises the same).
-    #[error("message text contains a tokenizer special token")]
-    Tokenize,
-    /// `max_tokens` is not coercible to an integer.
-    #[error("max_tokens is not an integer")]
-    BadMaxTokens,
+    /// The data-residency clamp (PII or `local_only`) left no local model to route to.
+    #[error("no local model satisfies the data-residency policy")]
+    NoLocalCandidate,
+    /// A `cost_per_token` map holds a non-numeric value (Python raises while loading offers).
+    #[error("model {0}: cost_per_token has a non-numeric value")]
+    BadCost(String),
 }

@@ -80,14 +80,14 @@ impl OrgRouting {
         assignments: Vec<AssignmentRow>,
         policy: RoutingPolicy,
         rules: Vec<HeuristicRule>,
-    ) -> Self {
-        Self {
-            offers: build_offers(models),
+    ) -> Result<Self, crate::RoutingError> {
+        Ok(Self {
+            offers: build_offers(models)?,
             aliases,
             assignments,
             policy,
             rules,
-        }
+        })
     }
 }
 

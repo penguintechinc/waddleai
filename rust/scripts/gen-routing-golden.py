@@ -10,6 +10,8 @@ penguin-dal row fetches replaced by in-memory lookups, and records the decision
 (model, fallback_chain, routed_from). The Rust ``routing`` crate asserts it
 reproduces every row. Never hand-edit the output; re-run this script.
 
+Drift check: ``... gen-routing-golden.py --check <fixture>`` (``make routing-golden-check``).
+
 Usage (repo root, venv with tiktoken + the proxy deps):
     PYTHONPATH=. python rust/scripts/gen-routing-golden.py \
         > rust/crates/routing/tests/fixtures/python_golden.json
@@ -43,6 +45,9 @@ _POLICY_FIELDS = (
 
 def _model(name, providers, cost, ctx, caps, enabled=True):
     """One model_configs row."""
+    # Postgres jsonb stores object keys ordered by (length, bytes), which is the order the
+    # production Python sums the cost map in; reproduce it so float-tie sums match.
+    cost = dict(sorted(cost.items(), key=lambda kv: (len(kv[0]), kv[0])))
     return {
         "model_name": name,
         "preferred_providers": providers,
@@ -75,6 +80,7 @@ MODELS = [
 ]
 
 ALIASES = [
+    {"org": 9, "source": "llama3", "target": "mistral-large", "provider": None, "enabled": True},
     {"org": None, "source": "gpt-3.5-turbo", "target": "llama3", "provider": None, "enabled": True},
     {"org": None, "source": "gpt-4", "target": "gpt-4o", "provider": None, "enabled": True},
     {"org": 7, "source": "gpt-4", "target": "mistral-large", "provider": "ollama", "enabled": True},
@@ -90,6 +96,14 @@ ALIASES = [
 ]
 
 ASSIGNMENTS = [
+    {
+        "scope": "global",
+        "ref": None,
+        "tool_type": "disabled-tool",
+        "model": "gpt-4",
+        "esc": None,
+        "enabled": False,
+    },
     {
         "scope": "global",
         "ref": None,
@@ -134,6 +148,14 @@ def _world(name, policy, assignments=True, rules=False, aliases=True):
     }
 
 
+TIE_MODELS = [
+    # Float-tie path: mean(0.1, 0.2, 0.3) depends on summation order vs a flat 0.2 cost.
+    _model("tri", ["ollama"], {"a": 0.1, "bb": 0.2, "ccc": 0.3}, 8192, ["chat"]),
+    _model("flat", ["ollama"], {"x": 0.2}, 8192, ["chat"]),
+    _model("tri-cloud", ["openai"], {"a": 0.1, "bb": 0.2, "ccc": 0.3}, 8192, ["chat"]),
+    _model("flat-cloud", ["openai"], {"x": 0.2}, 8192, ["chat"]),
+]
+
 WORLDS = [
     _world("default_policy", None),
     _world("local_only", {"mode": "local_only"}),
@@ -151,6 +173,7 @@ WORLDS = [
     _world("no_assignments", None, assignments=False),
     _world("heuristic_rules", None, rules=True),
     _world("no_aliases", {"mode": "cost"}, aliases=False),
+    {**_world("cost_ties", {"mode": "cost"}), "models": MODELS + TIE_MODELS},
 ]
 
 MODEL_INPUTS = [
@@ -170,7 +193,7 @@ MODEL_INPUTS = [
     "off-alias",
     "llama2",
 ]
-HINTS = [None, None, "vision-task", "code-gen", "general", "ghost"]
+HINTS = [None, None, "vision-task", "code-gen", "general", "ghost", "disabled-tool"]
 ESCALATES = [None, None, None, "true", "auto:high", "auto:low", "bogus"]
 LONG = "word " * 3000
 BODIES = {
@@ -194,13 +217,19 @@ BODIES = {
     "max_tokens_float": {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 9000.9},
     "special_token": {"messages": [{"role": "user", "content": "x <|endoftext|> y"}]},
     "empty": {},
+    "bad_max_tokens": {"messages": [{"role": "user", "content": "hi"}], "max_tokens": "abc"},
+    "special_and_bad": {
+        "messages": [{"role": "user", "content": "x <|endoftext|> y"}],
+        "max_tokens": "abc",
+        "tools": [{"type": "function"}],
+    },
 }
 
 
 class _Query:
     """Records the single predicate ``db(<expr>)`` the stage builds."""
 
-    def __eq__(self, other):
+    def __eq__(self, other):  # type: ignore[override]  # query-builder stub, not value equality
         return self
 
 
@@ -228,7 +257,7 @@ class _FakeDb:
         self.model_configs = _Table()
         self._rows = [SimpleNamespace(**m) for m in models]
 
-    def __call__(self, _expr):
+    def __call__(self, *_query):
         return _Select(self._rows)
 
 
@@ -251,7 +280,11 @@ def _install(engine, world):
         return SimpleNamespace(target_model=pick["target"], target_provider=pick["provider"])
 
     def assign_fetch(tool_type, org_id):
-        rows = [a for a in world["assignments"] if a["tool_type"] == tool_type]
+        rows = [
+            a
+            for a in world["assignments"]
+            if a["tool_type"] == tool_type and a.get("enabled", True)
+        ]
         pick = None
         if org_id is not None:
             pick = next((a for a in rows if a["scope"] == "org" and a["ref"] == org_id), None)
@@ -301,6 +334,34 @@ async def run_row(world, req):
         "routed_from": ctx.routed_from,
         "unchanged": ctx.model == before and ctx.routed_from is None and not ctx.fallback_chain,
     }
+
+
+def _is_local(world, name):
+    """True when ``name`` is an enabled model served by a local provider."""
+    for m in world["models"]:
+        if m["model_name"] == name and m["enabled"]:
+            return any(p in ("ollama", "llamacpp") for p in m["preferred_providers"])
+    return False
+
+
+def _violation(world, req, decision):
+    """Data-residency predicate (R20): a final model that must be local but is not."""
+    policy = world["policy"] or {}
+    sens = policy.get("sensitivity_routing", "local_only")
+    pii_clamp = req["pii"] and sens not in ("ignore", "redact_then_any")
+    must_local = pii_clamp or policy.get("mode") == "local_only"
+    return must_local and not _is_local(world, decision["model"])
+
+
+def _python_errors(req):
+    """True when Python's requirements derivation raises (it then leaves the model unchanged)."""
+    from shared.routing.requirements import derive_requirements
+
+    try:
+        derive_requirements(BODIES[req["body"]])
+    except Exception:
+        return True
+    return False
 
 
 def main():
@@ -354,6 +415,30 @@ def main():
                     "org_id": 7,
                 }
             )
+        for model in MODEL_INPUTS:
+            for esc in ("true", "auto:high"):
+                for body in ("plain", "vision", "tools", "huge"):
+                    reqs.append(
+                        {
+                            "model": model,
+                            "hint": "code-gen",
+                            "escalate": esc,
+                            "pii": True,
+                            "body": body,
+                            "org_id": 9,
+                        }
+                    )
+        for body in BODIES:
+            reqs.append(
+                {
+                    "model": "llama3",
+                    "hint": "disabled-tool",
+                    "escalate": None,
+                    "pii": True,
+                    "body": body,
+                    "org_id": 9,
+                }
+            )
         while len(reqs) < 90:
             reqs.append(
                 {
@@ -362,7 +447,7 @@ def main():
                     "escalate": rng.choice(ESCALATES),
                     "pii": rng.random() < 0.4,
                     "body": rng.choice(list(BODIES)),
-                    "org_id": rng.choice([0, 7]),
+                    "org_id": rng.choice([0, 7, 9]),
                 }
             )
         for req in reqs:
@@ -370,19 +455,29 @@ def main():
             if key in seen:
                 continue
             seen.add(key)
-            rows.append(
-                {
-                    "world": world["name"],
-                    "request": req,
-                    "expected": asyncio.run(run_row(world, req)),
-                }
-            )
+            decision = asyncio.run(run_row(world, req))
+            row = {"world": world["name"], "request": req, "expected": decision}
+            # Intentional divergences (R20): Python fails open on client-triggerable errors and
+            # lets escalation/veto bypass the PII / local_only clamp; Rust fails closed. The
+            # Rust test asserts equality on every other row and the safe invariant on these.
+            if _python_errors(req):
+                row["python_errored"] = True
+            elif _violation(world, req, decision):
+                row["python_violation"] = True
+            rows.append(row)
     out = {
         "bodies": BODIES,
         "worlds": {w["name"]: w for w in WORLDS},
         "rows": rows,
     }
-    json.dump(out, sys.stdout, indent=1, sort_keys=True)
+    text = json.dumps(out, indent=1, sort_keys=True) + "\n"
+    if len(sys.argv) == 3 and sys.argv[1] == "--check":
+        with open(sys.argv[2]) as f:
+            if f.read() != text:
+                sys.exit("routing golden drifted from the Python oracle: regenerate it")
+        print(f"routing golden up to date ({len(rows)} rows)", file=sys.stderr)
+        return
+    sys.stdout.write(text)
     print(f"rows={len(rows)}", file=sys.stderr)
 
 
