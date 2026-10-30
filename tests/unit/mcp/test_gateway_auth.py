@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 
 import httpx
+import httpx2
 import pytest
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 
@@ -71,7 +72,7 @@ def _oauth2_factory(app):
 
     def factory(**kwargs):
         return AsyncOAuth2Client(
-            transport=httpx.ASGITransport(app=app), base_url="http://oauth.test", **kwargs
+            transport=httpx2.ASGITransport(app=app), base_url="http://oauth.test", **kwargs
         )
 
     return factory
