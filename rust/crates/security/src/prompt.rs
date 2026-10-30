@@ -34,6 +34,8 @@ pub enum ThreatType {
     SystemPromptLeak,
     /// Secrets and credential patterns.
     CredentialHarvesting,
+    /// Message content in a shape the scanner cannot inspect (fail-closed).
+    UnsupportedContent,
 }
 
 impl ThreatType {
@@ -45,6 +47,7 @@ impl ThreatType {
             Self::DataExtraction => "data_extraction",
             Self::SystemPromptLeak => "system_prompt_leak",
             Self::CredentialHarvesting => "credential_harvesting",
+            Self::UnsupportedContent => "unsupported_content_shape",
         }
     }
 
@@ -56,6 +59,7 @@ impl ThreatType {
             "data_extraction" => Self::DataExtraction,
             "system_prompt_leak" => Self::SystemPromptLeak,
             "credential_harvesting" => Self::CredentialHarvesting,
+            "unsupported_content_shape" => Self::UnsupportedContent,
             _ => return None,
         })
     }
@@ -64,7 +68,9 @@ impl ThreatType {
         match self {
             Self::PromptInjection | Self::DataExtraction => Severity::High,
             Self::Jailbreak => Severity::Medium,
-            Self::SystemPromptLeak | Self::CredentialHarvesting => Severity::Critical,
+            Self::SystemPromptLeak | Self::CredentialHarvesting | Self::UnsupportedContent => {
+                Severity::Critical
+            }
         }
     }
 }
@@ -168,6 +174,9 @@ impl Policy {
 
     /// Action configured for a threat type.
     pub fn action_for(&self, t: ThreatType) -> Action {
+        if t == ThreatType::UnsupportedContent {
+            return Action::Block;
+        }
         self.actions[idx(t)]
     }
 }
@@ -179,6 +188,8 @@ fn idx(t: ThreatType) -> usize {
         ThreatType::DataExtraction => 2,
         ThreatType::SystemPromptLeak => 3,
         ThreatType::CredentialHarvesting => 4,
+        // Never indexed: `action_for` short-circuits and no pattern carries this type.
+        ThreatType::UnsupportedContent => 0,
     }
 }
 
@@ -231,6 +242,14 @@ pub fn compile_all() -> Result<Vec<Regex>, SecurityError> {
         .collect()
 }
 
+/// Whether pattern `index` (table order) matches `text`, with Python-case folding applied.
+pub fn pattern_matches(index: usize, text: &str) -> bool {
+    let folded = fold_python_case(text);
+    compiled()
+        .get(index)
+        .is_some_and(|r| r.is_match(folded.as_deref().unwrap_or(text)))
+}
+
 fn compiled() -> &'static [Regex] {
     static CELL: OnceLock<Vec<Regex>> = OnceLock::new();
     CELL.get_or_init(|| match compile_all() {
@@ -262,12 +281,36 @@ impl PromptScanner {
         Ok(Self { policy })
     }
 
-    /// Scan each message's `content` string; returns all threats in message order.
+    /// Scan every text-bearing field of each message; returns all threats in order.
+    ///
+    /// Strings are scanned directly; content-part arrays are scanned part by part
+    /// (`text`, nested `content`, tool `input`/`arguments`); tool-call arguments on
+    /// the message are scanned too. Missing/null/unknown content shapes fail closed
+    /// with a Block threat, mirroring Python (which raises on non-string content).
     pub fn scan_messages(&self, messages: &[Value]) -> Vec<Threat> {
-        messages
-            .iter()
-            .flat_map(|m| self.scan_prompt(m.get("content").and_then(Value::as_str).unwrap_or("")))
-            .collect()
+        let mut out = Vec::new();
+        for m in messages {
+            let mut texts: Vec<&str> = Vec::new();
+            let mut ok = collect_content(m.get("content"), &mut texts);
+            ok &= collect_tool_calls(m, &mut texts);
+            if !ok {
+                out.push(self.unsupported());
+            }
+            for t in texts {
+                out.extend(self.scan_prompt(t));
+            }
+        }
+        out
+    }
+
+    fn unsupported(&self) -> Threat {
+        Threat {
+            threat_type: ThreatType::UnsupportedContent,
+            severity: Severity::Critical,
+            confidence: 1.0,
+            matched_patterns: vec!["unsupported_content_shape".to_string()],
+            suggested_action: Action::Block,
+        }
     }
 
     /// True if any threat's action is `Block` (Python `should_block`).
@@ -298,12 +341,14 @@ impl PromptScanner {
         }
         let mut per: [Vec<String>; 5] = Default::default();
         let mut counts = [0usize; 5];
+        let folded = fold_python_case(prompt);
+        let hay = folded.as_deref().unwrap_or(prompt);
         for ((t, _), re) in THREAT_PATTERNS.iter().zip(regexes) {
-            for m in re.find_iter(prompt) {
+            for m in re.find_iter(hay) {
                 let i = idx(*t);
                 counts[i] += 1;
                 if per[i].len() < 5 {
-                    per[i].push(m.as_str().to_string());
+                    per[i].push(original_slice(prompt, hay, m.start(), m.end()));
                 }
             }
         }
@@ -329,6 +374,117 @@ impl PromptScanner {
         }
         out
     }
+}
+
+/// Map the code points Python's IGNORECASE equates with ASCII `i` but the regex
+/// crate's simple case folding does not (U+0130, U+0131) onto `i`, 1:1 by char.
+///
+/// Python also equates U+212A with `k` and U+017F with `s`; the regex crate already
+/// folds those, so they need no mapping. Returns `None` when nothing changes.
+fn fold_python_case(s: &str) -> Option<String> {
+    if !s.contains(['\u{130}', '\u{131}']) {
+        return None;
+    }
+    Some(
+        s.chars()
+            .map(|c| {
+                if c == '\u{130}' || c == '\u{131}' {
+                    'i'
+                } else {
+                    c
+                }
+            })
+            .collect(),
+    )
+}
+
+/// Recover the original text for a match found in the folded haystack (1:1 chars).
+fn original_slice(orig: &str, hay: &str, start: usize, end: usize) -> String {
+    if std::ptr::eq(orig, hay) || orig == hay {
+        return hay[start..end].to_string();
+    }
+    let cs = hay[..start].chars().count();
+    let n = hay[start..end].chars().count();
+    orig.chars().skip(cs).take(n).collect()
+}
+
+/// Content-part types that legitimately carry no scannable text.
+const NON_TEXT_PART_TYPES: &[&str] = &["image_url", "image", "input_image", "input_audio", "file"];
+
+/// Keys whose string/array/object values can carry text reaching the model.
+const TEXT_KEYS: &[&str] = &["text", "content", "input", "arguments", "partial_json"];
+
+/// Collect scannable strings from a `content` value; false means unsupported shape.
+fn collect_content<'a>(v: Option<&'a Value>, out: &mut Vec<&'a str>) -> bool {
+    match v {
+        Some(Value::String(s)) => {
+            out.push(s);
+            true
+        }
+        Some(Value::Array(parts)) => parts.iter().fold(true, |ok, p| collect_part(p, out) & ok),
+        // Null/missing content is judged by `collect_tool_calls` (legal only with a call).
+        None | Some(Value::Null) => true,
+        _ => false,
+    }
+}
+
+/// Collect text from one content part (string or typed object).
+fn collect_part<'a>(p: &'a Value, out: &mut Vec<&'a str>) -> bool {
+    match p {
+        Value::String(s) => {
+            out.push(s);
+            true
+        }
+        Value::Object(o) => {
+            if let Some(Value::String(t)) = o.get("type") {
+                if NON_TEXT_PART_TYPES.contains(&t.as_str()) {
+                    return true;
+                }
+            }
+            let mut found = false;
+            let mut ok = true;
+            for k in TEXT_KEYS {
+                if let Some(v) = o.get(*k) {
+                    found = true;
+                    ok &= collect_value(v, out);
+                }
+            }
+            found && ok
+        }
+        _ => false,
+    }
+}
+
+/// Collect every string reachable inside a text-bearing value (objects/arrays recursed).
+fn collect_value<'a>(v: &'a Value, out: &mut Vec<&'a str>) -> bool {
+    match v {
+        Value::String(s) => {
+            out.push(s);
+            true
+        }
+        Value::Array(a) => a.iter().fold(true, |ok, x| collect_value(x, out) & ok),
+        Value::Object(o) => o.values().fold(true, |ok, x| collect_value(x, out) & ok),
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+    }
+}
+
+/// Collect tool/function-call arguments; false if content was absent and no call carries it.
+fn collect_tool_calls<'a>(m: &'a Value, out: &mut Vec<&'a str>) -> bool {
+    let mut has_call = false;
+    if let Some(Value::Array(calls)) = m.get("tool_calls") {
+        for c in calls {
+            has_call = true;
+            if let Some(f) = c.get("function") {
+                collect_value(f, out);
+            }
+        }
+    }
+    if let Some(f) = m.get("function_call") {
+        has_call = true;
+        collect_value(f, out);
+    }
+    let content_absent = matches!(m.get("content"), None | Some(Value::Null));
+    !content_absent || has_call
 }
 
 fn severity_for(t: ThreatType, n: usize) -> Severity {
