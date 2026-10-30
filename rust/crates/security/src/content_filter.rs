@@ -37,6 +37,7 @@ impl Phase {
 }
 
 /// What to do when a tier could not run (rules unreachable, NER unavailable, scan error).
+/// `Closed` is the safe production mode; `Open` is the Python-parity default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FailMode {
     /// Keep the decision the remaining tiers produced.
@@ -181,16 +182,86 @@ pub struct FilterResult {
     pub degraded: bool,
 }
 
-/// A violation plus the raw matched text needed for redaction (never exposed).
+/// A violation plus the byte span recorded at match time (the text itself is never kept).
 struct Hit {
     violation: FilterViolation,
-    full: String,
+    span: (usize, usize),
+    /// Further spans covered by the same violation (a substring rule's later occurrences).
+    extra: Vec<(usize, usize)>,
+}
+
+/// A compiled case-insensitive, dot-all pattern. Patterns the linear-time `regex` engine can
+/// express (no lookaround/backreference) never backtrack; only the rest use fancy-regex, with an
+/// explicit backtrack limit.
+pub(crate) enum Pattern {
+    /// Linear-time engine.
+    Linear(regex::Regex),
+    /// Backtracking engine (lookaround/backreference patterns).
+    Fancy(Regex),
+}
+
+impl Pattern {
+    /// Compiles `pattern`, preferring the linear engine; `limit` bounds the fancy fallback.
+    pub(crate) fn build(pattern: &str, limit: usize) -> Result<Self, fancy_regex::Error> {
+        let full = format!("(?is){pattern}");
+        if let Ok(re) = regex::Regex::new(&full) {
+            return Ok(Self::Linear(re));
+        }
+        fancy_regex::RegexBuilder::new(&full)
+            .backtrack_limit(limit)
+            .build()
+            .map(Self::Fancy)
+    }
+
+    /// Non-empty match spans; the flag is true when the scan aborted (matches found before the
+    /// abort are still returned).
+    pub(crate) fn spans(&self, text: &str) -> (Vec<(usize, usize)>, bool) {
+        match self {
+            Self::Linear(re) => (
+                re.find_iter(text)
+                    .filter(|m| !m.as_str().is_empty())
+                    .map(|m| (m.start(), m.end()))
+                    .collect(),
+                false,
+            ),
+            Self::Fancy(re) => {
+                let mut out = Vec::new();
+                for m in re.find_iter(text) {
+                    match m {
+                        Ok(m) if !m.as_str().is_empty() => out.push((m.start(), m.end())),
+                        Ok(_) => {}
+                        Err(_) => return (out, true),
+                    }
+                }
+                (out, false)
+            }
+        }
+    }
+}
+
+/// Backtrack ceiling for org-supplied (untrusted) fancy regexes; exceeding it aborts that rule.
+pub(crate) const CUSTOM_BACKTRACK_LIMIT: usize = 1_000_000;
+/// Backtrack ceiling for the two vetted lookahead builtins (the only fancy ones).
+const BUILTIN_BACKTRACK_LIMIT: usize = 100_000_000;
+
+/// Builds an org custom rule pattern (tight backtrack limit).
+pub(crate) fn build_regex(pattern: &str) -> Result<Pattern, fancy_regex::Error> {
+    Pattern::build(pattern, CUSTOM_BACKTRACK_LIMIT)
+}
+
+/// Outcome of the tier-2 scan beyond its hits.
+#[derive(Default)]
+struct CustomScan {
+    /// Some rule aborted (regex limit / broken literal): its verdict is unknown.
+    errored: bool,
+    /// An aborted rule was a BLOCK rule: must fail closed whatever the org fail mode.
+    blocked_abort: bool,
 }
 
 /// A compiled builtin pattern.
 struct Builtin {
     name: &'static str,
-    regex: Regex,
+    regex: Pattern,
     confidence: f64,
 }
 
@@ -217,7 +288,8 @@ impl ContentFilter {
     ) -> Result<Self, BuildError> {
         let mut builtins = Vec::with_capacity(BUILTIN_PATTERNS.len());
         for (name, pattern, confidence) in BUILTIN_PATTERNS {
-            let regex = Regex::new(&format!("(?is){pattern}")).map_err(|_| BuildError(name))?;
+            let regex =
+                Pattern::build(pattern, BUILTIN_BACKTRACK_LIMIT).map_err(|_| BuildError(name))?;
             builtins.push(Builtin {
                 name,
                 regex,
@@ -278,7 +350,8 @@ impl ContentFilter {
         };
 
         degraded |= self.run_builtins(text, &cfg, &mut hits);
-        run_custom(text, phase, &cfg, &mut hits);
+        let scan = run_custom(text, phase, &cfg, &mut hits);
+        degraded |= scan.errored;
 
         if let Some(ner) = &self.ner {
             if ner.enabled(org).await {
@@ -294,18 +367,28 @@ impl ContentFilter {
                             },
                             confidence: h.confidence,
                         },
-                        full: h.full,
+                        span: h.span,
+                        extra: Vec::new(),
                     })),
                     Err(_) => degraded = true,
                 }
             }
         }
 
-        let (mut action, mut filtered) = decide(text, &hits);
+        let (mut action, mut filtered) = match decide(text, &hits) {
+            Some(d) => d,
+            None => {
+                // A span could not be applied: never emit unredacted PII.
+                degraded = true;
+                (FilterAction::Redact, String::new())
+            }
+        };
+        let redaction_failed =
+            action == FilterAction::Redact && filtered.is_empty() && !text.is_empty();
         if degraded {
             let mode = self.fail_modes.for_org(org);
             self.warn_degraded(org, phase, mode);
-            if mode == FailMode::Closed {
+            if mode == FailMode::Closed || scan.blocked_abort || redaction_failed {
                 action = FilterAction::Block;
                 filtered = text.to_owned();
             }
@@ -333,24 +416,22 @@ impl ContentFilter {
             if cfg.disabled_builtins.contains(b.name) {
                 continue;
             }
-            for m in b.regex.find_iter(text) {
-                match m {
-                    Ok(m) if !m.as_str().is_empty() => hits.push(Hit {
-                        violation: FilterViolation {
-                            rule_name: b.name.to_owned(),
-                            kind: RuleKind::BuiltinPii,
-                            action: RuleAction::Redact,
-                            confidence: b.confidence,
-                        },
-                        full: m.as_str().to_owned(),
-                    }),
-                    Ok(_) => {}
-                    Err(_) => {
-                        tracing::error!(pattern = b.name, "builtin scan aborted (regex limit)");
-                        errored = true;
-                        break;
-                    }
-                }
+            let (spans, aborted) = b.regex.spans(text);
+            for span in spans {
+                hits.push(Hit {
+                    violation: FilterViolation {
+                        rule_name: b.name.to_owned(),
+                        kind: RuleKind::BuiltinPii,
+                        action: RuleAction::Redact,
+                        confidence: b.confidence,
+                    },
+                    span,
+                    extra: Vec::new(),
+                });
+            }
+            if aborted {
+                tracing::error!(pattern = b.name, "builtin scan aborted (regex limit)");
+                errored = true;
             }
         }
         errored
@@ -374,93 +455,156 @@ impl ContentFilter {
     }
 }
 
-/// Tier 2: applies the org's compiled rules for this phase.
-fn run_custom(text: &str, phase: Phase, cfg: &OrgConfig, hits: &mut Vec<Hit>) {
+/// Tier 2: applies the org's compiled rules for this phase, recording match-time byte spans.
+fn run_custom(text: &str, phase: Phase, cfg: &OrgConfig, hits: &mut Vec<Hit>) -> CustomScan {
+    let mut scan = CustomScan::default();
     for c in &cfg.rules {
         let r = &c.rule;
         if r.target != phase.target() && r.target != "both" {
             continue;
         }
         let action = RuleAction::parse(&r.action);
+        let abort = |scan: &mut CustomScan| {
+            scan.errored = true;
+            scan.blocked_abort |= action == RuleAction::Block;
+        };
+        let (kind, confidence) = match &c.matcher {
+            Matcher::Substring(_) => (RuleKind::CustomString, 0.95),
+            _ => (RuleKind::CustomRegex, 0.90),
+        };
+        let mut push = |s: usize, e: usize, extra: Vec<(usize, usize)>| {
+            hits.push(Hit {
+                violation: FilterViolation {
+                    rule_name: r.name.clone(),
+                    kind,
+                    action,
+                    confidence,
+                },
+                span: (s, e),
+                extra,
+            });
+        };
         match &c.matcher {
-            Matcher::Substring(needle) => {
-                let lowered = text.to_lowercase();
-                let Some(byte_idx) = lowered.find(needle.as_str()) else {
-                    continue;
-                };
-                // Python slices the original by indices found in the lowercased text.
-                let start = lowered[..byte_idx].chars().count();
-                let len = r.pattern.chars().count();
-                let full: String = text.chars().skip(start).take(len).collect();
-                if full.is_empty() {
-                    continue;
+            Matcher::Broken => abort(&mut scan),
+            Matcher::Substring(re) => {
+                // Python records only the first occurrence; redaction still covers all of them.
+                let mut it = re.find_iter(text);
+                if let Some(first) = it.next() {
+                    push(
+                        first.start(),
+                        first.end(),
+                        it.map(|m| (m.start(), m.end())).collect(),
+                    );
                 }
-                hits.push(Hit {
-                    violation: FilterViolation {
-                        rule_name: r.name.clone(),
-                        kind: RuleKind::CustomString,
-                        action,
-                        confidence: 0.95,
-                    },
-                    full,
-                });
             }
             Matcher::Pattern(re) => {
-                for m in re.find_iter(text) {
-                    match m {
-                        Ok(m) if !m.as_str().is_empty() => hits.push(Hit {
-                            violation: FilterViolation {
-                                rule_name: r.name.clone(),
-                                kind: RuleKind::CustomRegex,
-                                action,
-                                confidence: 0.90,
-                            },
-                            full: m.as_str().to_owned(),
-                        }),
-                        Ok(_) => {}
-                        Err(_) => {
-                            tracing::warn!(rule_id = r.id, "custom regex aborted (regex limit)");
-                            break;
-                        }
-                    }
+                let (spans, aborted) = re.spans(text);
+                for (s, e) in spans {
+                    push(s, e, Vec::new());
+                }
+                if aborted {
+                    tracing::warn!(rule_id = r.id, "custom regex aborted (regex limit)");
+                    abort(&mut scan);
                 }
             }
         }
     }
+    scan
 }
 
-/// `_determine_action`: block beats redact beats log; redaction applies to redact hits only.
-fn decide(text: &str, hits: &[Hit]) -> (FilterAction, String) {
+/// `_determine_action`: block beats redact beats log. `None` = a redaction span was unusable.
+fn decide(text: &str, hits: &[Hit]) -> Option<(FilterAction, String)> {
     if hits.is_empty() {
-        return (FilterAction::Allow, text.to_owned());
+        return Some((FilterAction::Allow, text.to_owned()));
     }
     if hits.iter().any(|h| h.violation.action == RuleAction::Block) {
-        return (FilterAction::Block, text.to_owned());
+        return Some((FilterAction::Block, text.to_owned()));
     }
     let redacts: Vec<&Hit> = hits
         .iter()
         .filter(|h| h.violation.action == RuleAction::Redact)
         .collect();
     if !redacts.is_empty() {
-        return (FilterAction::Redact, apply_redactions(text, &redacts));
+        return apply_redactions(text, &redacts).map(|t| (FilterAction::Redact, t));
     }
-    (FilterAction::Log, text.to_owned())
+    Some((FilterAction::Log, text.to_owned()))
 }
 
-/// `_apply_redactions`: sequentially replaces every case-insensitive occurrence of each
-/// matched text with `[REDACTED:<RULE_NAME>]`, in violation order.
-fn apply_redactions(text: &str, redacts: &[&Hit]) -> String {
-    let mut out = text.to_owned();
-    for h in redacts {
-        let placeholder = format!("[REDACTED:{}]", h.violation.rule_name.to_uppercase());
-        match regex::Regex::new(&format!("(?i){}", regex::escape(&h.full))) {
-            Ok(re) => {
-                out = re
-                    .replace_all(&out, regex::NoExpand(&placeholder))
-                    .into_owned()
+/// Case-insensitive (per-char simple fold) non-overlapping occurrences of `needle` in `text`,
+/// as byte spans of `text`. No regex, no offset math on a re-cased copy, cannot fail.
+fn occurrences(text: &str, needle: &str) -> Vec<(usize, usize)> {
+    let n: Vec<char> = needle.chars().collect();
+    let mut out = Vec::new();
+    if n.is_empty() {
+        return out;
+    }
+    let fold_eq = |a: char, b: char| a == b || a.to_lowercase().eq(b.to_lowercase());
+    let mut skip_to = 0usize;
+    for (i, _) in text.char_indices() {
+        if i < skip_to {
+            continue;
+        }
+        let mut it = text[i..].char_indices();
+        let mut end = i;
+        let mut ok = true;
+        for &nc in &n {
+            match it.next() {
+                Some((o, tc)) if fold_eq(tc, nc) => end = i + o + tc.len_utf8(),
+                _ => {
+                    ok = false;
+                    break;
+                }
             }
-            Err(_) => tracing::error!("redaction pattern failed to compile; match left in place"),
+        }
+        if ok {
+            out.push((i, end));
+            skip_to = end;
         }
     }
     out
+}
+
+/// Distinct matched texts for which other occurrences are searched (parity extra; bounded so
+/// a flood of matches cannot go quadratic -- every match's own span is always redacted).
+const PROPAGATE_CAP: usize = 64;
+
+/// `_apply_redactions` by span: every redact hit's recorded spans (plus, for a bounded number of
+/// distinct texts, other case-insensitive occurrences as Python's re-sub does) are claimed in hit
+/// order; a span overlapping an earlier claim is dropped (Python's sequential substitution
+/// likewise no longer finds a broken match). Claims are replaced right-to-left on the original
+/// text. `None` if a span is unusable.
+fn apply_redactions(text: &str, redacts: &[&Hit]) -> Option<String> {
+    use std::collections::{BTreeMap, HashSet};
+    let mut claimed: BTreeMap<usize, (usize, usize)> = BTreeMap::new(); // start -> (end, label idx)
+    let mut propagated: HashSet<String> = HashSet::new();
+    for (idx, h) in redacts.iter().enumerate() {
+        let (s, e) = h.span;
+        let own = text.get(s..e).filter(|t| !t.is_empty())?;
+        let mut spans = vec![(s, e)];
+        spans.extend(h.extra.iter().copied());
+        if propagated.len() < PROPAGATE_CAP && propagated.insert(own.to_lowercase()) {
+            spans.extend(occurrences(text, own));
+        }
+        for (s, e) in spans {
+            // Claims are disjoint, so only the nearest claim starting before `e` can overlap.
+            let overlaps = claimed.range(..e).next_back().is_some_and(|(_, c)| c.0 > s);
+            if !overlaps {
+                claimed.insert(s, (e, idx));
+            }
+        }
+    }
+    let merged: Vec<(usize, usize, usize)> =
+        claimed.into_iter().map(|(s, (e, i))| (s, e, i)).collect();
+    let mut out = text.to_owned();
+    for (s, e, idx) in merged.into_iter().rev() {
+        if !text.is_char_boundary(s) || !text.is_char_boundary(e) {
+            return None;
+        }
+        let label = format!(
+            "[REDACTED:{}]",
+            redacts[idx].violation.rule_name.to_uppercase()
+        );
+        out.replace_range(s..e, &label);
+    }
+    Some(out)
 }

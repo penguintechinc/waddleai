@@ -75,7 +75,7 @@ pub(crate) struct NerHit {
     pub(crate) rule_name: String,
     pub(crate) redact: bool,
     pub(crate) confidence: f64,
-    pub(crate) full: String,
+    pub(crate) span: (usize, usize),
 }
 
 /// Maps an entity kind to `(python entity type, redact?, weight)` per `ENTITY_CONFIG`.
@@ -137,10 +137,10 @@ impl NerTier {
         let spans: Vec<EntitySpan> = self.client.analyze(&req).await?;
         let mut hits = Vec::new();
         for span in spans {
-            let Some(full) = text.get(span.start..span.end).filter(|s| !s.is_empty()) else {
+            if text.get(span.start..span.end).is_none_or(str::is_empty) {
                 tracing::warn!("ner span outside text or off a char boundary; dropped");
                 continue;
-            };
+            }
             let (name, redact, weight) = config(span.kind);
             let confidence = (f64::from(span.score) * weight).min(1.0);
             if confidence < MIN_NER_CONFIDENCE {
@@ -150,7 +150,7 @@ impl NerTier {
                 rule_name: format!("ner:{name}"),
                 redact,
                 confidence,
-                full: full.to_owned(),
+                span: (span.start, span.end),
             });
         }
         Ok(hits)

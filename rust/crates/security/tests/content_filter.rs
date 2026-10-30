@@ -118,6 +118,7 @@ impl RulesSource for FakeSource {
 struct MemKv {
     map: Mutex<HashMap<String, Vec<u8>>>,
     keys_seen: Mutex<Vec<String>>,
+    dels: AtomicUsize,
 }
 #[async_trait]
 impl KvCache for MemKv {
@@ -130,6 +131,7 @@ impl KvCache for MemKv {
         self.map.lock().unwrap().insert(key.into(), value.to_vec());
     }
     async fn del(&self, key: &str) {
+        self.dels.fetch_add(1, Ordering::SeqCst);
         self.keys_seen.lock().unwrap().push(key.into());
         self.map.lock().unwrap().remove(key);
     }
@@ -490,13 +492,23 @@ async fn invalidation_signal_refreshes_rules_via_live_valkey() {
     c.del(&cache::keys::content_filter_rules(Some(org)))
         .await
         .expect("del");
+    let before = src.loads();
+    let mut refreshed = false;
     for _ in 0..50 {
         if store.get(Some(org)).await.unwrap().rule_count() == 0 {
-            return;
+            refreshed = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    panic!("invalidation never refreshed the rules");
+    assert!(refreshed, "invalidation never refreshed the rules");
+    // No DEL-storm: after settling, exactly one source reload for the single DEL.
+    tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    assert_eq!(
+        src.loads(),
+        before + 1,
+        "refresh must not re-trigger itself"
+    );
 }
 
 // ---------- tier 3 ----------
@@ -689,17 +701,13 @@ async fn tier3_never_called_with_raw_pii_cache_key() {
         "keys: {seen:?}"
     );
 
-    // Results and Debug output never carry the raw matched text.
+    // The hash hex and the whole result (incl. Debug) never contain the raw PII.
+    let hex: String = hash.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(!hex.contains(secret));
     let r = f.filter_input(&text, None, Some(1), None).await;
-    assert!(
-        !format!("{r:?}").contains(secret.split('@').next().unwrap_or(""))
-            || r.filtered_text.contains("[REDACTED")
-    );
     assert!(!r.filtered_text.contains(secret));
-    assert!(r
-        .violations
-        .iter()
-        .all(|v| !format!("{v:?}").contains(secret)));
+    assert!(!format!("{r:?}").contains(secret), "Debug leaked raw PII");
+    assert!(!format!("{r:?}").contains("john.smith"));
 }
 
 #[tokio::test]
@@ -776,4 +784,154 @@ async fn rules_l2_roundtrip_via_live_valkey() {
     assert_eq!(two.get(Some(org)).await.unwrap().rule_count(), 1);
     assert_eq!(src.loads(), loads, "served from Valkey, not the source");
     c.del(&key).await.expect("cleanup");
+}
+
+#[tokio::test]
+async fn refresh_reads_source_not_l2_and_never_dels() {
+    let old = RawOrgConfig {
+        rules: vec![rule(1, "old", "custom_string", "both", "oldword", "block")],
+        disabled_builtins: vec![],
+    };
+    let src = FakeSource::with(Some(3), old);
+    let kv = Arc::new(MemKv::default());
+    let store = RulesStore::new(Arc::clone(&src) as Arc<dyn RulesSource>, Some(kv.clone()));
+    store.get(Some(3)).await.unwrap();
+    let base = src.loads();
+    src.set(
+        Some(3),
+        RawOrgConfig {
+            rules: vec![rule(2, "new", "custom_string", "both", "newword", "block")],
+            disabled_builtins: vec![],
+        },
+    );
+    // One invalidation: exactly one authoritative source read, zero DELs (no self-trigger).
+    store
+        .on_invalidation(&cache::keys::content_filter_rules(Some(3)))
+        .await;
+    assert_eq!(src.loads(), base + 1);
+    assert_eq!(
+        kv.dels.load(Ordering::SeqCst),
+        0,
+        "refresh must not DEL (re-triggers itself)"
+    );
+    // L2 was overwritten with the fresh payload: a second replica sees the NEW rules.
+    let two = RulesStore::new(Arc::clone(&src) as Arc<dyn RulesSource>, Some(kv));
+    let cfg = two.get(Some(3)).await.unwrap();
+    assert_eq!(cfg.rule_count(), 1);
+    let f = ContentFilter::new(Arc::new(two), None, FailModes::default()).unwrap();
+    assert!(!f.filter_input("newword", None, Some(3), None).await.allowed);
+    assert!(f.filter_input("oldword", None, Some(3), None).await.allowed);
+}
+
+/// Catastrophic backreference pattern: exceeds the backtrack limit on a short input.
+const CATASTROPHIC: &str = r"^(a*)*\1b";
+
+#[tokio::test]
+async fn aborted_custom_block_rule_fails_closed_even_when_fail_open() {
+    let evil = format!("{}!", "a".repeat(40));
+    // BLOCK rule aborts -> blocked regardless of the (open) fail mode.
+    let cfg = RawOrgConfig {
+        rules: vec![rule(
+            1,
+            "evil",
+            "custom_regex",
+            "both",
+            CATASTROPHIC,
+            "block",
+        )],
+        disabled_builtins: vec![],
+    };
+    let f = plain(FakeSource::with(Some(1), cfg));
+    let start = std::time::Instant::now();
+    let r = f.filter_input(&evil, None, Some(1), None).await;
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(2),
+        "scan must be bounded"
+    );
+    assert!(
+        r.degraded && !r.allowed,
+        "aborted block rule must not pass silently"
+    );
+    assert_eq!(r.action, FilterAction::Block);
+
+    // Non-block rule aborts -> degraded; Open keeps the decision, Closed blocks.
+    let cfg = RawOrgConfig {
+        rules: vec![rule(
+            1,
+            "evil",
+            "custom_regex",
+            "both",
+            CATASTROPHIC,
+            "redact",
+        )],
+        disabled_builtins: vec![],
+    };
+    let modes = FailModes::new(FailMode::Open).with_org(2, FailMode::Closed);
+    let src = FakeSource::with(Some(1), cfg.clone());
+    src.set(Some(2), cfg);
+    let f = filter_with(src, None, modes);
+    let open = f.filter_input(&evil, None, Some(1), None).await;
+    assert!(open.degraded && open.allowed);
+    let closed = f.filter_input(&evil, None, Some(2), None).await;
+    assert!(closed.degraded && !closed.allowed);
+}
+
+#[tokio::test]
+async fn pathological_inputs_stay_bounded_for_builtins_and_custom() {
+    let f = plain(FakeSource::with(Some(1), RawOrgConfig::default()));
+    let inputs = [
+        "1".repeat(200_000),
+        "1.".repeat(100_000),
+        format!("{}x", "255.".repeat(50_000)),
+        "9".repeat(50_000) + &"-".repeat(50_000),
+    ];
+    let start = std::time::Instant::now();
+    for t in &inputs {
+        let r = f.filter_input(t, None, Some(1), None).await;
+        assert!(
+            !r.degraded,
+            "builtins must finish within the backtrack limit"
+        );
+    }
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "elapsed {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn over_long_match_is_still_redacted() {
+    let secret = "S".repeat(200_000);
+    let text = format!("password: {secret} tail");
+    let f = plain(FakeSource::with(Some(1), RawOrgConfig::default()));
+    let r = f.filter_input(&text, None, Some(1), None).await;
+    assert!(!r.degraded);
+    assert!(
+        !r.filtered_text.contains("SSSSSS"),
+        "PII must never go out unredacted"
+    );
+    assert!(r.filtered_text.contains("[REDACTED:PASSWORD_IN_TEXT]"));
+    assert!(r.filtered_text.ends_with(" tail"));
+}
+
+#[tokio::test]
+async fn unicode_case_needle_redacts_the_correct_span() {
+    // to_lowercase() grows 'İ' to two chars; offset math on a lowered copy picked the wrong span.
+    let cfg = RawOrgConfig {
+        rules: vec![
+            rule(1, "s", "custom_string", "both", "secret", "redact"),
+            rule(2, "st", "custom_string", "both", "Straße", "redact"),
+        ],
+        disabled_builtins: vec![],
+    };
+    let f = plain(FakeSource::with(Some(1), cfg));
+    let r = f
+        .filter_input("İİİ secret and SECRET", None, Some(1), None)
+        .await;
+    assert_eq!(r.filtered_text, "İİİ [REDACTED:S] and [REDACTED:S]");
+    let r = f
+        .filter_input("ßß Straße STRASSE", None, Some(1), None)
+        .await;
+    assert_eq!(r.filtered_text, "ßß [REDACTED:ST] STRASSE");
 }

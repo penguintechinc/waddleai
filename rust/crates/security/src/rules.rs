@@ -8,7 +8,6 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 
 /// Entries older than this are re-read from the source (invalidation is the fast path).
@@ -52,10 +51,12 @@ pub struct RawOrgConfig {
 
 /// How a compiled rule matches.
 pub(crate) enum Matcher {
-    /// Case-insensitive substring (stored lowercased).
-    Substring(String),
+    /// Case-insensitive literal, matched by byte span on the original text.
+    Substring(regex::Regex),
+    /// A literal that failed to compile: every scan counts as an aborted rule (fail loud).
+    Broken,
     /// Case-insensitive, dot-matches-newline regex.
-    Pattern(Regex),
+    Pattern(crate::content_filter::Pattern),
 }
 
 /// A rule with its matcher compiled once at load time.
@@ -77,10 +78,16 @@ impl OrgConfig {
         for rule in raw.rules {
             let matcher = match rule.rule_type.as_str() {
                 "custom_string" if !rule.pattern.is_empty() => {
-                    Matcher::Substring(rule.pattern.to_lowercase())
+                    match regex::Regex::new(&format!("(?i){}", regex::escape(&rule.pattern))) {
+                        Ok(re) => Matcher::Substring(re),
+                        Err(_) => {
+                            tracing::error!(rule_id = rule.id, "literal rule failed to compile");
+                            Matcher::Broken
+                        }
+                    }
                 }
                 "custom_regex" if !rule.pattern.is_empty() => {
-                    match Regex::new(&format!("(?is){}", rule.pattern)) {
+                    match crate::content_filter::build_regex(&rule.pattern) {
                         Ok(re) => Matcher::Pattern(re),
                         Err(_) => {
                             tracing::warn!(
@@ -292,13 +299,12 @@ impl RulesStore {
         }
     }
 
-    /// Re-reads `scope` from the source (bypassing L2), replacing L1; failure keeps the old entry.
+    /// Re-reads `scope` straight from the source (authoritative; L2 is not consulted) and
+    /// overwrites L1 and L2 with the result; failure keeps the previous entry. It never `DEL`s
+    /// the L2 key: refresh is triggered by that key's deletion event, so a DEL would re-trigger it.
     pub async fn refresh(&self, org: Option<i64>) {
         let scope = scope_of(org);
-        if let Some(l2) = &self.l2 {
-            l2.del(&cache::keys::content_filter_rules(scope)).await;
-        }
-        match self.fetch(scope, true).await {
+        match self.fetch(scope, false).await {
             Ok(cfg) => self.put(scope, cfg),
             Err(e) => tracing::warn!(error = %e, "rules refresh failed; keeping previous entry"),
         }
