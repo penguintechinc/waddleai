@@ -549,3 +549,45 @@ async fn requests_with_unkeyed_shaping_fields_neither_read_nor_write_the_cache()
         assert_eq!(r.cache.lookup(&plain).await.status, CacheStatus::Exact);
     }
 }
+
+#[tokio::test]
+async fn unknown_top_level_field_makes_the_request_cache_ineligible() {
+    // regression: security review -- a NEW shaping field not in any denylist must fail closed.
+    let r = rig();
+    let plain = ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Rust?");
+    r.cache
+        .lookup(&plain)
+        .await
+        .write_back
+        .unwrap()
+        .commit(&openai_body("plain"), &json!({}))
+        .await;
+    let gets = r.exact.gets.load(Ordering::SeqCst);
+    let mut novel = ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Rust?");
+    novel.body["frobnicate"] = json!(true);
+    let res = r.cache.lookup(&novel).await;
+    assert_eq!(res.status, CacheStatus::Miss);
+    assert!(res.write_back.is_none());
+    assert_eq!(r.exact.gets.load(Ordering::SeqCst), gets, "no read");
+    assert_eq!(r.exact.puts.load(Ordering::SeqCst), 1, "no write");
+}
+
+#[tokio::test]
+async fn known_safe_fields_cache_normally_and_n_equals_one_only() {
+    let r = rig();
+    let mut c = ctx(7, "gpt-4o", ResponseFormat::Openai, "What is Rust?");
+    c.body["stream"] = json!(true);
+    c.body["user"] = json!("u-1");
+    c.body["n"] = json!(1);
+    let wb = r.cache.lookup(&c).await.write_back.expect("eligible");
+    // inert fields do not change the key: identical to the golden key for the plain request
+    let g: Value = serde_json::from_str(include_str!("fixtures/python_golden.json")).unwrap();
+    assert_eq!(wb.key, g["cases"][0]["sha256"].as_str().unwrap());
+    wb.commit(&openai_body("a"), &json!({})).await;
+    assert_eq!(r.cache.lookup(&c).await.status, CacheStatus::Exact);
+    let mut two = c;
+    two.body["n"] = json!(2);
+    let res = r.cache.lookup(&two).await;
+    assert_eq!(res.status, CacheStatus::Miss);
+    assert!(res.write_back.is_none());
+}

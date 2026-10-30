@@ -23,8 +23,8 @@ use serde_json::Value;
 use crate::affinity::AffinityStore;
 use crate::config::ConfigSource;
 use crate::exact::{
-    has_unkeyed_shaping, is_cacheable_response, is_exact_eligible, py_float, py_truthy,
-    CachedResponse, ExactStore, PutLimits,
+    is_cacheable_response, is_exact_eligible, is_fully_keyed, py_float, py_truthy, CachedResponse,
+    ExactStore, PutLimits,
 };
 use crate::metrics::CacheMetrics;
 use crate::semantic::{is_semantic_eligible, CtxFlags, SemanticCache};
@@ -197,9 +197,11 @@ impl ResponseCache {
         };
         let vkey_id = req.vkey_id;
         let body = req.body;
-        if has_unkeyed_shaping(body) {
+        if !is_fully_keyed(body) {
             // Neither read nor write: the key cannot distinguish this request (see exact.rs).
-            tracing::debug!("response cache skipped: request carries fields the key omits");
+            tracing::debug!(
+                "response cache skipped: request carries fields outside the keyed/inert allowlist"
+            );
             return LookupResult::miss();
         }
         let messages = req.messages;

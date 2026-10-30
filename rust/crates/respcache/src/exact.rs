@@ -234,43 +234,40 @@ fn message_has_tool_result(message: &Value) -> bool {
     false
 }
 
-/// Request fields that shape the model's output but are NOT part of the cache key (neither Python's
-/// `derive_exact_key` nor the semantic `(org, model_class, context_hash)` scope includes them).
-/// Two requests differing only in one of these would share an entry: cross-request poisoning.
-/// Python has the same hole (flag for a coordinated fix there); changing the key would break
-/// byte-compat with the live Python cache, so Rust instead never reads or writes the cache for a
-/// request carrying any of them.
-const UNKEYED_SHAPING_FIELDS: [&str; 17] = [
-    "system",
-    "stop",
-    "stop_sequences",
-    "tool_choice",
-    "seed",
-    "top_k",
-    "frequency_penalty",
-    "presence_penalty",
-    "logit_bias",
-    "response_format",
-    "functions",
-    "function_call",
-    "logprobs",
-    "top_logprobs",
-    "thinking",
-    "reasoning_effort",
-    "max_completion_tokens",
+/// Top-level request fields already folded into the exact key (model via model_class).
+const KEYED_FIELDS: [&str; 6] = [
+    "model",
+    "messages",
+    "tools",
+    "temperature",
+    "top_p",
+    "max_tokens",
 ];
 
-/// True when the body carries an output-shaping field the cache key omits (see
-/// [`UNKEYED_SHAPING_FIELDS`]); `n` other than 1 also counts. Such requests bypass the cache.
-pub fn has_unkeyed_shaping(body: &Value) -> bool {
-    if UNKEYED_SHAPING_FIELDS
-        .iter()
-        .any(|f| body.get(*f).is_some_and(|v| !v.is_null()))
-    {
-        return true;
+/// Fields that do not shape response content: transport (`stream`, `stream_options`), caller
+/// metadata (`user`, `metadata`) and the WaddleAI affinity hint (`session_id`, read only by
+/// `annotate_miss`). `n` is handled separately (only `1` is inert).
+const INERT_FIELDS: [&str; 5] = ["stream", "stream_options", "user", "metadata", "session_id"];
+
+/// True when the cache key can fully distinguish this request: EVERY top-level body key is keyed
+/// or known-inert, and `n` is absent or 1. This is an ALLOWLIST on purpose (fail-closed): a new or
+/// unknown output-shaping API field (`system`, `stop`, `seed`, `tool_choice`, `logprobs`, a field
+/// invented next year, ...) makes the request bypass the cache entirely (no read, no write), since
+/// two requests differing only in it would otherwise share an entry (cross-request poisoning).
+/// Python's `derive_exact_key` has the same hole; changing the key would break byte-compat with the
+/// live Python cache, so only this gate differs. Python should get the same allowlist gate
+/// (coordinated fix).
+pub fn is_fully_keyed(body: &Value) -> bool {
+    let Some(obj) = body.as_object() else {
+        return false;
+    };
+    if !obj.keys().all(|k| {
+        KEYED_FIELDS.contains(&k.as_str()) || INERT_FIELDS.contains(&k.as_str()) || k == "n"
+    }) {
+        return false;
     }
-    body.get("n")
-        .is_some_and(|v| !v.is_null() && py_float(v) != Some(1.0))
+    obj.get("n")
+        .is_none_or(|v| v.is_null() || py_float(v) == Some(1.0))
 }
 
 /// Determinism-eligibility matrix for the exact cache (spec 6.1): `temperature` explicitly
@@ -364,11 +361,23 @@ mod tests {
     }
 
     #[test]
-    fn unkeyed_shaping_fields_are_detected() {
-        assert!(!has_unkeyed_shaping(
-            &json!({"model": "m", "temperature": 0, "tools": [], "max_tokens": 5})
+    fn allowlist_gate_is_fail_closed() {
+        assert!(is_fully_keyed(
+            &json!({"model": "m", "messages": [], "temperature": 0, "tools": [], "top_p": 1, "max_tokens": 5})
         ));
-        assert!(!has_unkeyed_shaping(&json!({"system": null, "n": 1})));
+        assert!(is_fully_keyed(
+            &json!({"model": "m", "stream": true, "user": "u", "metadata": {}, "stream_options": {}, "session_id": "s"})
+        ));
+        assert!(
+            is_fully_keyed(&json!({"n": 1}))
+                && is_fully_keyed(&json!({"n": 1.0}))
+                && is_fully_keyed(&json!({"n": null}))
+        );
+        assert!(!is_fully_keyed(&json!({"n": 2})));
+        assert!(
+            !is_fully_keyed(&json!({"model": "m", "frobnicate": true})),
+            "unknown field"
+        );
         for f in [
             "system",
             "stop",
@@ -377,12 +386,12 @@ mod tests {
             "seed",
             "top_k",
             "response_format",
+            "logprobs",
+            "strategy",
         ] {
-            assert!(has_unkeyed_shaping(&json!({ f: "x" })), "{f}");
+            assert!(!is_fully_keyed(&json!({ f: "x" })), "{f}");
         }
-        assert!(has_unkeyed_shaping(&json!({"seed": 0})));
-        assert!(has_unkeyed_shaping(&json!({"n": 2})));
-        assert!(!has_unkeyed_shaping(&json!({"n": 1.0})));
+        assert!(!is_fully_keyed(&json!([1])), "non-object body");
     }
 
     #[test]
