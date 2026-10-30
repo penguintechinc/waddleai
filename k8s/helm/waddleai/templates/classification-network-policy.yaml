@@ -3,7 +3,7 @@ CiliumNetworkPolicy set for classification (NOT plain NetworkPolicy). The
 namespace default-deny comes from cilium-network-policy.yaml; these are the
 explicit allows:
   ingress: ONLY the proxy pods -> 50051, and Prometheus -> 8080
-  egress : ONLY kube-dns, Valkey, allow-listed FQDNs (license/PostHog/JWKS host),
+  egress : ONLY kube-dns, Valkey, allow-listed FQDNs (license/PostHog + the resolved JWKS host),
            and the OTLP collector
 plus the mirror egress rule letting the proxy reach classification on 50051.
 Same guard as the rest of the Cilium bootstrap set.
@@ -12,6 +12,9 @@ Same guard as the rest of the Cilium bootstrap set.
 {{- $ns := .Values.namespace }}
 {{- $c := .Values.classification }}
 {{- $t := .Values.cilium.topology }}
+{{- $jwt := include "waddleai.classification.jwt" . | fromJson }}
+{{- /* JWKS host is derived from the SAME resolved JWKS_URL the Deployment uses. */}}
+{{- $fqdns := concat (list $jwt.jwksHost) $c.cilium.egress.fqdns | uniq }}
 ---
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -78,16 +81,14 @@ spec:
         - ports:
             - port: {{ $t.valkeyPort | quote }}
               protocol: TCP
-    {{- if $c.cilium.egress.fqdns }}
     - toFQDNs:
-        {{- range $c.cilium.egress.fqdns }}
+        {{- range $fqdns }}
         - matchName: {{ . | quote }}
         {{- end }}
       toPorts:
         - ports:
             - port: "443"
               protocol: TCP
-    {{- end }}
     - toEndpoints:
         - matchLabels:
             {{- range $k, $v := $c.cilium.egress.otlp.selector }}

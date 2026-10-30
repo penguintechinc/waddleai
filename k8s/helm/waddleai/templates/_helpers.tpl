@@ -863,3 +863,27 @@ generate 64 random chars (first install / helm template).
 {{- end -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Classification JWT trust anchor, resolved ONCE (JSON: issuer, jwksUrl, jwksHost) and
+used for BOTH the JWT_ISSUER/JWKS_URL env and the Cilium JWKS egress FQDN, so the
+two can never diverge. Explicit classification.jwt.issuer/jwksUrl win; otherwise
+derived from the chart's public host. FAILS the render if unresolved -- there is
+deliberately NO vendor-domain default for a trust anchor. JWKS must be https.
+*/}}
+{{- define "waddleai.classification.jwt" -}}
+{{- $c := .Values.classification.jwt -}}
+{{- $host := include "waddleai.publicHost" . -}}
+{{- $issuer := $c.issuer -}}
+{{- $jwks := $c.jwksUrl -}}
+{{- if and (not $issuer) $host -}}{{- $issuer = printf "https://%s" $host -}}{{- end -}}
+{{- if and (not $jwks) $host -}}{{- $jwks = printf "https://%s/.well-known/jwks.json" $host -}}{{- end -}}
+{{- if or (not $issuer) (not $jwks) -}}
+{{- fail "classification: JWT trust anchor is not configured -- set classification.jwt.issuer and classification.jwt.jwksUrl (or httproute.host / ingress host); there is no default" -}}
+{{- end -}}
+{{- $u := urlParse $jwks -}}
+{{- if ne $u.scheme "https" -}}
+{{- fail (printf "classification: JWKS URL must be https, got %q" $jwks) -}}
+{{- end -}}
+{{- dict "issuer" $issuer "jwksUrl" $jwks "jwksHost" $u.hostname | toJson -}}
+{{- end }}

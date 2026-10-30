@@ -341,6 +341,7 @@ monitoring:
 # gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
 # tag below is a placeholder until the first Beta image is published.
 classification:
+  enabled: true
   replicaCount: 1
   image:
     repository: classification

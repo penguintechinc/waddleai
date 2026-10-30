@@ -18,9 +18,21 @@ CILIUM = ["cilium.io/v2", "cert-manager.io/v1"]
 DEP = "waddleai-classification"
 
 
+PROD_ANCHOR = {
+    "classification.jwt.issuer": "https://auth.example.test",
+    "classification.jwt.jwksUrl": "https://auth.example.test/.well-known/jwks.json",
+}
+
+
 def _docs(values_file: str, **kw):
-    """Render the chart for one env with the Cilium + cert-manager CRDs advertised."""
-    return render(values_file, api_versions=CILIUM, **kw)
+    """Render for one env with Cilium + cert-manager CRDs advertised.
+
+    Production deliberately ships no trust anchor (render fails closed), so tests that
+    render it supply one via --set, like an operator must.
+    """
+    sets = dict(PROD_ANCHOR) if values_file == "values-production.yaml" else {}
+    sets.update(kw.pop("set_values", None) or {})
+    return render(values_file, api_versions=CILIUM, set_values=sets, **kw)
 
 
 def _container(docs):
@@ -242,3 +254,84 @@ def test_tetragon_allowlist_rendered_enforced():
     sel = pol["spec"]["kprobes"][0]["selectors"][0]
     assert sel["matchActions"] == [{"action": "Sigkill"}]
     assert "/opt/venv/bin/python3" in sel["matchArgs"][0]["values"]
+
+
+def _helm(*args):
+    """Run helm template in the chart dir, returning the CompletedProcess (no assert)."""
+    import subprocess
+
+    return subprocess.run(  # noqa: S603
+        ["helm", "template", "w", ".", *args, "--api-versions", "cilium.io/v2"],  # noqa: S607
+        cwd=CHART_DIR,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_render_fails_when_trust_anchor_unset():
+    """No publicHost, issuer or jwksUrl => the render errors; no vendor-domain default."""
+    r = _helm("-f", "values-production.yaml")
+    assert r.returncode != 0 and "trust anchor is not configured" in r.stderr
+    # Base chart enabling classification with nothing configured fails the same way.
+    r = _helm("--set", "classification.enabled=true")
+    assert r.returncode != 0 and "trust anchor is not configured" in r.stderr
+    # Partial config (issuer only) is also refused: both halves must resolve.
+    r = _helm("-f", "values-production.yaml", "--set", "classification.jwt.issuer=https://a.test")
+    assert r.returncode != 0
+
+
+def test_jwks_must_be_https():
+    """A plaintext JWKS URL is refused at render time."""
+    r = _helm(
+        "-f", "values-production.yaml",
+        "--set", "classification.jwt.issuer=https://a.test",
+        "--set", "classification.jwt.jwksUrl=http://a.test/jwks.json",
+    )  # fmt: skip
+    assert r.returncode != 0 and "must be https" in r.stderr
+
+
+def _egress_fqdns(docs):
+    """Return the matchName FQDNs in the classification egress policy."""
+    pol = find(docs, "CiliumNetworkPolicy", "waddleai-classification-egress")
+    return [n["matchName"] for r in pol["spec"]["egress"] for n in r.get("toFQDNs", [])]
+
+
+def _jwks_host(docs):
+    """Hostname of the rendered JWKS_URL env."""
+    from urllib.parse import urlparse
+
+    _, c = _container(docs)
+    return urlparse(_env(c)["JWKS_URL"]["value"]).hostname
+
+
+@pytest.mark.parametrize("values_file", ENVS)
+def test_egress_fqdn_tracks_resolved_jwks_host(values_file):
+    """The JWKS host in JWKS_URL is in the egress allow-list (beta: .cloud, not .io)."""
+    docs = _docs(values_file)
+    host = _jwks_host(docs)
+    assert host in _egress_fqdns(docs)
+    assert "license.penguintech.io" in _egress_fqdns(docs)
+
+
+def test_beta_jwks_egress_is_beta_host_not_vendor_default():
+    """Beta resolves waddleai.penguintech.cloud and never allows the old hardcoded host."""
+    docs = _docs("values-beta.yaml")
+    assert _jwks_host(docs) == "waddleai.penguintech.cloud"
+    assert "waddleai.penguintech.cloud" in _egress_fqdns(docs)
+    assert "waddleai.penguintech.io" not in _egress_fqdns(docs)
+
+
+def test_onprem_custom_issuer_egress_follows_jwks_host():
+    """On-prem style explicit issuer/jwksUrl on a custom host/port drives the egress FQDN."""
+    docs = _docs(
+        "values-beta.yaml",
+        set_values={
+            "classification.jwt.issuer": "https://sso.corp.internal",
+            "classification.jwt.jwksUrl": "https://sso.corp.internal:8443/jwks.json",
+        },
+    )
+    _, c = _container(docs)
+    env = _env(c)
+    assert env["JWT_ISSUER"]["value"] == "https://sso.corp.internal"
+    assert "sso.corp.internal" in _egress_fqdns(docs)
+    assert "waddleai.penguintech.cloud" not in _egress_fqdns(docs)

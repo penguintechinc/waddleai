@@ -317,7 +317,10 @@ proxy:
 # overrides command/args -- `--workers 1` breaks the engine's ProcessPoolExecutor
 # and the pod never becomes ready. Per-pod NER parallelism = nerPoolWorkers.
 classification:
-  enabled: true
+  # OFF at the base: the JWT trust anchor has no safe default, so each env overlay
+  # enables the service AND supplies its issuer/JWKS (explicitly, or via the public
+  # host). Enabled with no trust anchor => the render FAILS (fail-closed).
+  enabled: false
   replicaCount: 2
   image:
     repository: waddleai/classification
@@ -407,6 +410,8 @@ classification:
   # Token verification (shared.auth.jwks_verifier). JWKS_URL MUST be https:
   # management publishes /.well-known/jwks.json, so point at its public https host.
   # Empty = derived from the chart's public host (httproute.host / ingress host).
+  # NO vendor default: the render FAILS if neither is configured. The same resolved
+  # JWKS host feeds the Cilium egress allow-list.
   jwt:
     issuer: ""
     audience: "waddleai-classification"
@@ -463,11 +468,11 @@ classification:
       selector:
         app.kubernetes.io/name: prometheus
     egress:
-      # PostHog + license server + JWKS host (443). Override per env.
+      # PostHog + license server (443). The JWKS host is NOT listed here: it is
+      # derived from the resolved JWKS_URL (waddleai.classification.jwt helper).
       fqdns:
         - license.penguintech.io
         - app.posthog.com
-        - waddleai.penguintech.io
       otlp:
         namespace: monitoring
         selector:

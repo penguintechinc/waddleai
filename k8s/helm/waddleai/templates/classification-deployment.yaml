@@ -14,7 +14,7 @@ engine's ProcessPoolExecutor. Scale with replicas, not hypercorn workers.
 {{- if and $c.spiffeAllowedIds (not $c.tls.enabled) -}}
 {{- fail "classification: spiffeAllowedIds requires classification.tls.enabled=true (mTLS)" -}}
 {{- end -}}
-{{- $host := include "waddleai.publicHost" . | default "waddleai.penguintech.io" -}}
+{{- $jwt := include "waddleai.classification.jwt" . | fromJson -}}
 {{- $tlsDir := "/etc/waddleai/classification-tls" -}}
 {{- $caDir := "/etc/waddleai/classification-client-ca" -}}
 apiVersion: apps/v1
@@ -81,11 +81,11 @@ spec:
             - name: REDIS_URL
               value: {{ default (printf "redis://%s-valkey:6379/0" (include "waddleai.fullname" .)) $c.redisUrl | quote }}
             - name: JWT_ISSUER
-              value: {{ default (printf "https://%s" $host) $c.jwt.issuer | quote }}
+              value: {{ $jwt.issuer | quote }}
             - name: JWT_AUDIENCE
               value: {{ $c.jwt.audience | quote }}
             - name: JWKS_URL
-              value: {{ default (printf "https://%s/.well-known/jwks.json" $host) $c.jwt.jwksUrl | quote }}
+              value: {{ $jwt.jwksUrl | quote }}
             - name: OTEL_SERVICE_NAME
               value: "waddleai-classification"
             - name: OTEL_EXPORTER_OTLP_ENDPOINT

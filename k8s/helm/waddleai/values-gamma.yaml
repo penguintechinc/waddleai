@@ -12,6 +12,10 @@ global:
 # gRPC TLS from a cert-manager-issued Secret (see classification.tls). CI-built
 # tag below is a placeholder until the first Gamma image is published.
 classification:
+  enabled: true
+  jwt:
+    issuer: "https://waddleai-gamma.penguintech.cloud"
+    jwksUrl: "https://waddleai-gamma.penguintech.cloud/.well-known/jwks.json"
   replicaCount: 1
   image:
     repository: classification

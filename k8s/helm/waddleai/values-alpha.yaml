@@ -214,6 +214,7 @@ podSecurityAdmission:
 # CA / cert-manager issuer, and the pod otherwise fail-closes. NEVER copy this to
 # beta/gamma/production -- those mount a cert-manager TLS Secret.
 classification:
+  enabled: true
   replicaCount: 1
   image:
     tag: alpha-latest
