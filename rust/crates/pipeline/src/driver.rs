@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use tracing::Instrument;
 
-use crate::context::PipelineContext;
+use crate::context::{AbortSnapshot, PipelineContext};
 use crate::flags::FlagResolver;
 use crate::stage::{Stage, StageError};
 
@@ -141,7 +141,7 @@ impl ProxyPipeline {
     }
 }
 
-/// Takes and settles the quota guard exactly once, shielded from cancellation of the
+/// Takes and settles the quota guard exactly once via `settle_aborted` (charge if consumed), shielded from cancellation of the
 /// caller. A failing settlement is logged, never raised.
 async fn release_quota(ctx: &mut PipelineContext) {
     ctx.quota_reservation = None;
@@ -150,7 +150,8 @@ async fn release_quota(ctx: &mut PipelineContext) {
     };
     // The settlement runs as its own task: aborting/dropping the awaiting task detaches
     // the JoinHandle but the settle still runs to completion (mirrors settle_shielded).
-    let handle = tokio::spawn(guard.release());
+    let snapshot = AbortSnapshot::from_ctx(ctx);
+    let handle = tokio::spawn(guard.settle_aborted(snapshot));
     match handle.await {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::error!(error = %e, "quota release failed"),

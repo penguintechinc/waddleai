@@ -40,16 +40,73 @@ pub struct QuotaReservation {
     pub tokens: u64,
 }
 
+/// Owned copy of the context fields quota settlement needs, taken before the
+/// settle task is spawned (the task is `'static`, so it cannot borrow the context).
+/// Carries model names, counts and text for token counting; never logged by the driver.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AbortSnapshot {
+    /// Provider that served (or was serving) the request; "cache" on a cache hit.
+    pub provider: Option<String>,
+    /// Resolved model.
+    pub model: Option<String>,
+    /// Model as originally requested.
+    pub requested_model: Option<String>,
+    /// Whether the response came from cache.
+    pub cache_hit: bool,
+    /// True when no response text had accumulated.
+    pub response_empty: bool,
+    /// Accumulated response text (for local token counting when usage is absent).
+    pub response_text: String,
+    /// Chat messages (for local prompt token counting when usage is absent).
+    pub messages: Vec<Value>,
+    /// Upstream usage, when reported.
+    pub usage: Option<Usage>,
+}
+
+impl AbortSnapshot {
+    /// Snapshots the settlement-relevant fields of a context.
+    pub fn from_ctx(ctx: &PipelineContext) -> Self {
+        Self {
+            provider: ctx.provider.clone(),
+            model: ctx.model.clone(),
+            requested_model: ctx.requested_model.clone(),
+            cache_hit: ctx.cache_hit,
+            response_empty: ctx.response_text.is_empty(),
+            response_text: ctx.response_text.clone(),
+            messages: ctx.messages.clone(),
+            usage: ctx.usage.clone(),
+        }
+    }
+
+    /// True when upstream tokens were actually consumed and must be CHARGED, not refunded:
+    /// a non-empty provider other than "cache", no cache hit, and either response text
+    /// or non-zero reported usage. Mirrors Python `settle_aborted`.
+    pub fn consumed(&self) -> bool {
+        let used = self
+            .usage
+            .as_ref()
+            .is_some_and(|u| u.input_tokens > 0 || u.output_tokens > 0);
+        self.provider
+            .as_deref()
+            .is_some_and(|p| !p.is_empty() && p != "cache")
+            && !self.cache_hit
+            && (!self.response_empty || used)
+    }
+}
+
 /// Owned handle on a held quota reservation. The driver `take()`s it from the
 /// context and settles it exactly once, by value, inside a cancellation shield.
+/// There is deliberately no default that refunds: the abort path must decide.
 #[async_trait::async_trait]
 pub trait QuotaGuard: Send {
-    /// Refunds the reservation. Consumes the guard so it can only run once.
+    /// Zero-usage refund of the whole reservation. NOT called by the driver on the
+    /// abort path; settlement goes through [`QuotaGuard::settle_aborted`].
     async fn release(self: Box<Self>) -> Result<(), StageError>;
-    /// Settles after an aborted stream; defaults to a full refund.
-    async fn settle_aborted(self: Box<Self>, _ctx: &PipelineContext) -> Result<(), StageError> {
-        self.release().await
-    }
+    /// Settles a reservation when the request ends without a normal finalize (a later
+    /// stage blocked or errored). Implementations MUST charge (reconcile) when
+    /// `snap.consumed()` and refund only zero-usage requests; a blind refund of
+    /// consumed spend is a quota bypass. The driver always calls this method.
+    async fn settle_aborted(self: Box<Self>, snap: AbortSnapshot) -> Result<(), StageError>;
 }
 
 /// Wire format of the response; part of the response-cache key.

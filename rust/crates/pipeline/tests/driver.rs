@@ -6,9 +6,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use pipeline::{
-    Depseudonymizer, Extensions, FlagResolver, IdentityDepseudonymizer, NerClient, NerError,
-    NerRequest, NoNer, PipelineContext, PosthogFlagResolver, ProxyPipeline, PseudonymMap,
-    QuotaGuard, QuotaReservation, Stage, StageError, StaticFlagResolver,
+    AbortSnapshot, Depseudonymizer, Extensions, FlagResolver, IdentityDepseudonymizer, NerClient,
+    NerError, NerRequest, NoNer, PipelineContext, PosthogFlagResolver, ProxyPipeline, PseudonymMap,
+    QuotaGuard, QuotaReservation, Stage, StageError, StaticFlagResolver, Usage,
 };
 
 /// Test stage with scripted behavior and call counting.
@@ -65,17 +65,38 @@ impl Stage for Probe {
     }
 }
 
-/// Guard counting releases; optionally slow or failing.
+/// Guard recording which settle path ran: `releases` counts settle_aborted calls (the
+/// only path the driver may use), `plain` counts blind release() calls (must stay 0),
+/// `snaps` keeps each snapshot. Optionally slow or failing.
 struct Guard {
     releases: Arc<AtomicUsize>,
+    plain: Arc<AtomicUsize>,
+    snaps: Arc<Mutex<Vec<AbortSnapshot>>>,
     delay: Duration,
     fail: bool,
+}
+
+impl Guard {
+    fn new(releases: &Arc<AtomicUsize>) -> Self {
+        Self {
+            releases: releases.clone(),
+            plain: Arc::new(AtomicUsize::new(0)),
+            snaps: Arc::new(Mutex::new(Vec::new())),
+            delay: Duration::ZERO,
+            fail: false,
+        }
+    }
 }
 
 #[async_trait::async_trait]
 impl QuotaGuard for Guard {
     async fn release(self: Box<Self>) -> Result<(), StageError> {
+        self.plain.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+    async fn settle_aborted(self: Box<Self>, snap: AbortSnapshot) -> Result<(), StageError> {
         tokio::time::sleep(self.delay).await;
+        self.snaps.lock().unwrap().push(snap);
         self.releases.fetch_add(1, Ordering::SeqCst);
         if self.fail {
             Err(StageError::Upstream("refund failed".into()))
@@ -86,11 +107,7 @@ impl QuotaGuard for Guard {
 }
 
 fn guard(releases: &Arc<AtomicUsize>) -> Option<Box<dyn QuotaGuard>> {
-    Some(Box::new(Guard {
-        releases: releases.clone(),
-        delay: Duration::ZERO,
-        fail: false,
-    }))
+    Some(Box::new(Guard::new(releases)))
 }
 
 fn pipe(stages: Vec<Probe>, on: &[&str]) -> ProxyPipeline {
@@ -221,9 +238,8 @@ async fn release_failure_logged_never_raised() {
     let p = pipe(vec![Probe::new("quota").block()], &[]);
     let mut ctx = PipelineContext::default();
     ctx.quota_release = Some(Box::new(Guard {
-        releases: rel.clone(),
-        delay: Duration::ZERO,
         fail: true,
+        ..Guard::new(&rel)
     }));
     p.run(&mut ctx).await.unwrap();
     assert_eq!(rel.load(Ordering::SeqCst), 1);
@@ -237,9 +253,8 @@ async fn release_survives_task_cancellation() {
     let outer = tokio::spawn(async move {
         let mut ctx = PipelineContext::default();
         ctx.quota_release = Some(Box::new(Guard {
-            releases: rel2,
             delay: Duration::from_millis(150),
-            fail: false,
+            ..Guard::new(&rel2)
         }));
         let _ = p.run(&mut ctx).await;
     });
@@ -414,4 +429,159 @@ async fn seam_impls_noner_identity_and_extensions() {
         (m.get("<P1>"), m.len(), m.iter().count()),
         (Some("Alice"), 1, 1)
     );
+}
+
+/// Runs `stages` with a snapshot-recording guard; returns (settle calls, plain releases, snaps).
+async fn settle_case(
+    stages: Vec<Probe>,
+    ctx: &mut PipelineContext,
+) -> (usize, usize, Vec<AbortSnapshot>) {
+    let rel = Arc::new(AtomicUsize::new(0));
+    let g = Guard::new(&rel);
+    let (plain, snaps) = (g.plain.clone(), g.snaps.clone());
+    ctx.quota_release = Some(Box::new(g));
+    let _ = pipe(stages, &[]).run(ctx).await;
+    let out = snaps.lock().unwrap().clone();
+    (
+        rel.load(Ordering::SeqCst),
+        plain.load(Ordering::SeqCst),
+        out,
+    )
+}
+
+/// Stage that simulates a completed dispatch by filling provider/usage/text.
+struct Dispatched;
+
+#[async_trait::async_trait]
+impl Stage for Dispatched {
+    fn name(&self) -> &'static str {
+        "dispatch"
+    }
+    async fn call(&self, ctx: &mut PipelineContext) -> Result<(), StageError> {
+        ctx.provider = Some("openai".into());
+        ctx.model = Some("gpt".into());
+        ctx.response_text = "hello".into();
+        ctx.usage = Some(Usage {
+            input_tokens: 5,
+            output_tokens: 9,
+            ..Default::default()
+        });
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn block_after_dispatch_settles_with_charge_intent_not_release() {
+    let rel = Arc::new(AtomicUsize::new(0));
+    let g = Guard::new(&rel);
+    let (plain, snaps) = (g.plain.clone(), g.snaps.clone());
+    let stages: Vec<Arc<dyn Stage>> = vec![
+        Arc::new(Dispatched),
+        Arc::new(Probe::new("security_out").block()),
+    ];
+    let p = ProxyPipeline::new(stages, Arc::new(StaticFlagResolver::default()));
+    let mut ctx = PipelineContext {
+        quota_release: Some(Box::new(g)),
+        ..Default::default()
+    };
+    p.run(&mut ctx).await.unwrap();
+    assert_eq!(rel.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        plain.load(Ordering::SeqCst),
+        0,
+        "blind release() is a quota bypass"
+    );
+    let snaps = snaps.lock().unwrap();
+    assert!(snaps[0].consumed(), "consumed spend must be charged");
+    assert_eq!(
+        snaps[0]
+            .usage
+            .as_ref()
+            .map(|u| (u.input_tokens, u.output_tokens)),
+        Some((5, 9))
+    );
+    assert!(!snaps[0].response_empty);
+}
+
+#[tokio::test]
+async fn error_after_dispatch_settles_with_charge_intent() {
+    let rel = Arc::new(AtomicUsize::new(0));
+    let g = Guard::new(&rel);
+    let (plain, snaps) = (g.plain.clone(), g.snaps.clone());
+    let stages: Vec<Arc<dyn Stage>> = vec![
+        Arc::new(Dispatched),
+        Arc::new(Probe::new("security_out").fail()),
+    ];
+    let p = ProxyPipeline::new(stages, Arc::new(StaticFlagResolver::default()));
+    let mut ctx = PipelineContext {
+        quota_release: Some(Box::new(g)),
+        ..Default::default()
+    };
+    assert!(p.run(&mut ctx).await.is_err());
+    assert_eq!(plain.load(Ordering::SeqCst), 0);
+    assert!(snaps.lock().unwrap()[0].consumed());
+}
+
+#[tokio::test]
+async fn block_before_dispatch_settles_as_refund() {
+    let mut ctx = PipelineContext::default();
+    let (calls, plain, snaps) = settle_case(
+        vec![Probe::new("quota").block(), Probe::new("dispatch")],
+        &mut ctx,
+    )
+    .await;
+    assert_eq!((calls, plain), (1, 0));
+    assert!(!snaps[0].consumed(), "nothing consumed -> refund");
+    assert!(snaps[0].response_empty);
+}
+
+#[tokio::test]
+async fn cache_hit_settles_as_refund_even_with_usage() {
+    let mut ctx = PipelineContext {
+        cache_hit: true,
+        provider: Some("cache".into()),
+        response_text: "cached".into(),
+        usage: Some(Usage {
+            input_tokens: 3,
+            output_tokens: 4,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let (calls, plain, snaps) =
+        settle_case(vec![Probe::new("security_out").block()], &mut ctx).await;
+    assert_eq!((calls, plain), (1, 0));
+    assert!(snaps[0].cache_hit && !snaps[0].consumed());
+}
+
+#[test]
+fn consumed_predicate_matches_python() {
+    let base = AbortSnapshot {
+        provider: Some("openai".into()),
+        response_empty: true,
+        ..Default::default()
+    };
+    assert!(!base.consumed(), "no text, no usage");
+    let zero = AbortSnapshot {
+        usage: Some(Usage::default()),
+        ..base.clone()
+    };
+    assert!(!zero.consumed(), "zero usage");
+    let text = AbortSnapshot {
+        response_empty: false,
+        ..base.clone()
+    };
+    assert!(text.consumed());
+    let no_provider = AbortSnapshot {
+        provider: None,
+        response_empty: false,
+        ..base.clone()
+    };
+    assert!(!no_provider.consumed());
+    let cache_provider = AbortSnapshot {
+        provider: Some("cache".into()),
+        response_empty: false,
+        ..base
+    };
+    assert!(!cache_provider.consumed());
 }

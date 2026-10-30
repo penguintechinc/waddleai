@@ -11,8 +11,8 @@ mod seams;
 mod stage;
 
 pub use context::{
-    AuthMode, CacheStatus, Extensions, PipelineContext, PseudonymMap, QuotaGuard, QuotaReservation,
-    ResponseFormat, Usage, WriteBack,
+    AbortSnapshot, AuthMode, CacheStatus, Extensions, PipelineContext, PseudonymMap, QuotaGuard,
+    QuotaReservation, ResponseFormat, Usage, WriteBack,
 };
 pub use driver::ProxyPipeline;
 pub use flags::{FlagResolver, PosthogFlagResolver, StaticFlagResolver};
