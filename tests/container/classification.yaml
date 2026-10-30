@@ -1,0 +1,59 @@
+schemaVersion: "2.0.0"
+
+# Container-structure test for the classification image (T13a).
+# Run: make test-classification-image   (also adds the real --network none boot check)
+
+metadataTest:
+  user: "appuser"
+  exposedPorts: ["8080", "50051"]
+
+commandTests:
+  - name: non_root_user
+    command: "id"
+    args: ["-u"]
+    expectedOutput: ["10001"]
+
+  - name: spacy_model_present_at_build
+    # Loads the baked model with the download hook disabled: a missing model raises.
+    command: "python3"
+    args:
+      - "-c"
+      - "import spacy; n = spacy.load('en_core_web_lg'); print('MODEL_OK', n.meta['name'], n.meta['version'])"
+    expectedOutput: ["MODEL_OK core_web_lg 3\\.8\\.0"]
+
+  - name: no_torch_or_transformers_installed
+    command: "python3"
+    args:
+      - "-c"
+      - "import importlib.util as u, sys; bad=[m for m in ('torch','transformers') if u.find_spec(m)]; print('BAD', bad); sys.exit(1 if bad else 0)"
+    expectedOutput: ["BAD \\[\\]"]
+
+  - name: no_runtime_download_flag_unset
+    command: "sh"
+    args: ["-c", "test -z \"${WADDLEAI_NER_ALLOW_DOWNLOAD:-}\" && echo UNSET"]
+    expectedOutput: ["UNSET"]
+
+  - name: no_network_needed_at_startup
+    # All sockets are made to fail in-process; the real engine must still warm
+    # (model baked). The Makefile adds a full-app `docker run --network none` boot.
+    command: "python3"
+    args:
+      - "-c"
+      - |
+        import asyncio, socket
+        def _deny(*a, **k):
+            raise OSError("egress blocked")
+        socket.socket.connect = _deny
+        socket.create_connection = _deny
+        socket.getaddrinfo = _deny
+        from services.classification.app.engine import NerEngine
+        async def main():
+            e = NerEngine(workers=1, spacy_model="en_core_web_lg")
+            await e.start()
+            ok = e.ready
+            print("READY", ok)
+            await e.aclose()
+            raise SystemExit(0 if ok else 1)
+        if __name__ == "__main__":
+            asyncio.run(main())
+    expectedOutput: ["READY True"]

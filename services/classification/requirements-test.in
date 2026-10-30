@@ -1,0 +1,7 @@
+# Test-only deps for the in-image real-model suite (Docker 'test' stage). Never in the runtime image.
+-c requirements.txt
+pytest>=8
+pytest-asyncio>=0.24
+fakeredis==2.37.1
+passlib>=1.7.4  # tests/conftest.py imports shared.auth.rbac
+bcrypt>=4.1.0,<5.0

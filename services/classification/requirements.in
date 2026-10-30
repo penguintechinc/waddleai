@@ -8,7 +8,6 @@ protobuf>=5.27
 presidio-analyzer>=2.2
 spacy>=3.8
 redis>=5.0
-fakeredis==2.37.1  # test-only (unit tests)
 penguin-utils>=0.1.0
 penguin-aaa>=0.2.1
 grpcio-health-checking==1.81.1  # grpc.health.v1 (matches grpcio-tools)
@@ -18,3 +17,14 @@ penguin-licensing==0.1.0
 opentelemetry-sdk>=1.44
 opentelemetry-exporter-otlp-proto-grpc>=1.44
 opentelemetry-exporter-prometheus==0.65b0  # beta line paired with otel 1.44
+aiohttp>=3.14.4  # shared.security.content_filter (reused for the fail-mode metric) imports it
+cryptography>=50.0.0  # shared.security package __init__ imports credential_encryption
+posthog==7.60.1  # shared.utils.feature_flags (PostHog flag evaluation, default OFF)
+presidio-anonymizer>=2.2.354
+# spaCy model baked at build time (no runtime download); wheel is hash-verified.
+en_core_web_lg @ https://github.com/explosion/spacy-models/releases/download/en_core_web_lg-3.8.0/en_core_web_lg-3.8.0-py3-none-any.whl
+# Transitive security floors (trivy HIGH/CRITICAL at image-scan time)
+certifi>=2026.10.18
+msgpack>=1.2.3
+urllib3>=2.8.0
+setuptools>=78.1.1
