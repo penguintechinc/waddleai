@@ -321,6 +321,13 @@ def _egress_fqdns(docs):
     return [n["matchName"] for r in pol["spec"]["egress"] for n in r.get("toFQDNs", [])]
 
 
+def _egress_hosts(docs):
+    """Set of exact hostnames (parsed, not substrings) in the egress policy."""
+    from urllib.parse import urlparse
+
+    return {urlparse("//" + fqdn).hostname for fqdn in _egress_fqdns(docs)}
+
+
 def _jwks_host(docs):
     """Hostname of the rendered JWKS_URL env."""
     from urllib.parse import urlparse
@@ -334,15 +341,15 @@ def test_egress_fqdn_tracks_resolved_jwks_host(values_file):
     """The JWKS host in JWKS_URL is in the egress allow-list (beta: .cloud, not .io)."""
     docs = _docs(values_file)
     host = _jwks_host(docs)
-    assert host in _egress_fqdns(docs)
-    assert "license.penguintech.io" in _egress_fqdns(docs)
+    assert _egress_hosts(docs).issuperset({host})
+    assert _egress_hosts(docs).issuperset({"license.penguintech.io"})
 
 
 def test_beta_jwks_egress_is_beta_host_not_vendor_default():
     """Beta resolves waddleai.penguintech.cloud and never allows the old hardcoded host."""
     docs = _docs("values-beta.yaml")
     assert _jwks_host(docs) == "waddleai.penguintech.cloud"
-    assert "waddleai.penguintech.cloud" in _egress_fqdns(docs)
+    assert _egress_hosts(docs).issuperset({"waddleai.penguintech.cloud"})
     assert "waddleai.penguintech.io" not in _egress_fqdns(docs)
 
 
@@ -358,7 +365,7 @@ def test_onprem_custom_issuer_egress_follows_jwks_host():
     _, c = _container(docs)
     env = _env(c)
     assert env["JWT_ISSUER"]["value"] == "https://sso.corp.internal"
-    assert "sso.corp.internal" in _egress_fqdns(docs)
+    assert _egress_hosts(docs).issuperset({"sso.corp.internal"})
     assert "waddleai.penguintech.cloud" not in _egress_fqdns(docs)
 
 

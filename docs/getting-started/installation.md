@@ -1,6 +1,6 @@
 # Installation Guide
 
-WaddleAI has three deployable services — **proxy** (OpenAI-compatible data plane, port 8080 + gRPC 50051), **management** (Flask/Quart control plane, port 8001), and **webui** (port 8080 in-container, static React shell) — plus PostgreSQL and Valkey. Kubernetes via Helm is the only supported deployment path; Docker Compose is deprecated across the project and this repo does not ship a `docker-compose.yml`. An optional fourth service, **classification** (PII/NER over gRPC, off by default), is documented in [Classification Service](../docs-site/docs/deployment/classification-service.md).
+WaddleAI has three deployable services — **proxy** (OpenAI-compatible data plane, port 8080 + gRPC 50051), **management** (Flask/Quart control plane, port 8001), and **webui** (port 8080 in-container, static React shell) — plus PostgreSQL and Valkey. Kubernetes via Helm is the only supported deployment path; Docker Compose is deprecated across the project and this repo does not ship a `docker-compose.yml`. An optional fourth service, **classification** (PII/NER over gRPC, off by default), is documented in [Classification Service](../deployment/classification-service.md).
 
 ## Prerequisites
 
