@@ -49,6 +49,7 @@ class Runtime:
     health: health_aio.HealthServicer | None = None
     engine_task: asyncio.Task[None] | None = None
     mirror_task: asyncio.Task[None] | None = None
+    telemetry: Any = None
 
 
 class _SharedFlags:
@@ -99,7 +100,9 @@ async def startup(app: Quart) -> None:
     rt: Runtime = app.extensions["classification_runtime"]
     cfg: ClassificationConfig = app.config["CLASSIFICATION"]
     cfg.validate_transport()
-    init_telemetry(cfg)  # before servicer/interceptor build; OTLP from OTEL_* env, non-fatal
+    rt.telemetry = init_telemetry(
+        cfg
+    )  # before servicer/interceptor build; OTLP from OTEL_* env, non-fatal
     credentials = load_server_credentials(cfg)
     if credentials is None:
         log.warning(
@@ -155,3 +158,19 @@ async def shutdown(app: Quart) -> None:
     if rt.engine is not None:
         await rt.engine.aclose()
     log.info("classification_drained")
+    await _flush_telemetry(rt)
+
+
+async def _flush_telemetry(rt: Runtime) -> None:
+    """Force-flush and stop the OTel providers last so drain activity is exported.
+
+    Runs off-loop (the flush blocks up to its timeout) and never raises: a dead
+    collector must not break shutdown.
+    """
+    tel = rt.telemetry
+    if tel is None:
+        return
+    try:
+        await asyncio.to_thread(tel.shutdown)
+    except Exception as exc:  # noqa: BLE001 - telemetry flush is non-fatal by contract
+        log.warning("telemetry_flush_failed", error_type=type(exc).__name__)

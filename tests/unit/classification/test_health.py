@@ -238,3 +238,23 @@ def test_build_servicer_wires_real_components() -> None:
 
     servicer = build_servicer(ClassificationConfig(), af.FakeEngine())  # type: ignore[arg-type]
     assert servicer is not None
+
+
+async def test_after_serving_flushes_telemetry_last(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drain force-flushes + shuts down telemetry after the engine closes; errors are non-fatal."""
+    order: list[str] = []
+
+    class FakeTelemetry:
+        def shutdown(self) -> None:
+            order.append("telemetry")
+            raise RuntimeError("collector down")  # must not break shutdown
+
+    engine = af.FakeEngine(ready=False)
+    monkeypatch.setattr(
+        "services.classification.app.lifecycle.init_telemetry", lambda _cfg: FakeTelemetry()
+    )
+    app = _app(engine, health_interval_s=0.01)
+    async with app.test_app():
+        await asyncio.sleep(0.02)
+    assert engine.closed
+    assert order == ["telemetry"]
