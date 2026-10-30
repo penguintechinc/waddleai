@@ -1,0 +1,7 @@
+# Extra deps the generic CI test/test-integration jobs need to COLLECT
+# tests/*/classification (telemetry.py: Prometheus exporter; test_cache.py: fakeredis; health.py: grpc_health).
+# Installed on top of the root + management locks; constrained to the root lock so shared pins never drift.
+-c ../../requirements.txt
+opentelemetry-exporter-prometheus==0.65b0
+fakeredis==2.37.1
+grpcio-health-checking==1.81.1

@@ -249,6 +249,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r services/management/requirements.txt
+        pip install -r services/classification/requirements-ci.txt
         pip install pytest pytest-asyncio pytest-cov bandit
 
     - name: Run unit tests
@@ -640,6 +641,7 @@ jobs:
         pip install -r requirements.txt
         pip install -r proxy/requirements.txt
         pip install -r services/management/requirements.txt
+        pip install -r services/classification/requirements-ci.txt
         pip install pytest pytest-asyncio pytest-cov
 
     - name: Run integration tests (subset not requiring live external services)
