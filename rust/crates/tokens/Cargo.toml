@@ -9,7 +9,6 @@ description = "WaddleAI token counting (tiktoken parity), conversion rates, Toke
 [dependencies]
 db = { path = "../db", version = "=0.1.0" }
 pipeline = { path = "../pipeline", version = "=0.1.0" }
-auth = { path = "../auth", version = "=0.1.0" }
 async-trait = "=0.1.92"
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "clock"] }
 redis = { version = "=1.7.0", default-features = false, features = ["tokio-comp", "aio", "script"] }

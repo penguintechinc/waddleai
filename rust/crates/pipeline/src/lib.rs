@@ -4,12 +4,14 @@
 //! the [`ProxyPipeline`] driver (a port of Python `_run_stage`), and the P3/P4
 //! seam traits. Downstream crates depend on this one-way and implement the traits.
 
+mod budget;
 mod context;
 mod driver;
 mod flags;
 mod seams;
 mod stage;
 
+pub use budget::{KeyLimits, VkeyBudget};
 pub use context::{
     AbortSnapshot, AuthMode, CacheStatus, Extensions, PipelineContext, PseudonymMap, QuotaGuard,
     QuotaReservation, ResponseFormat, Usage, WriteBack,

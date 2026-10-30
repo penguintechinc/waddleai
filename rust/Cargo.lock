@@ -3333,7 +3333,6 @@ name = "tokens"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "auth",
  "chrono",
  "db",
  "pipeline",

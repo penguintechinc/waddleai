@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use pipeline::FlagResolver;
+use pipeline::{FlagResolver, KeyLimits};
 use redis::aio::MultiplexedConnection;
 use redis::{Script, Value};
 
@@ -20,26 +20,6 @@ pub const LUA_RESERVE: &str = include_str!("../lua/reserve.lua");
 pub const LUA_RECONCILE: &str = include_str!("../lua/reconcile.lua");
 /// Feature flag gating native rate limiting; OFF means every request is allowed ungated.
 pub const NATIVE_RATE_LIMIT_FLAG: &str = "waddleai.native_rate_limit";
-
-/// Rate limit configuration for a virtual key; `None` (or 0) means "no limit".
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct KeyLimits {
-    /// Tokens per minute.
-    pub tpm_limit: Option<i64>,
-    /// Tokens per calendar month.
-    pub monthly_token_limit: Option<i64>,
-    /// Micro-USD per calendar month.
-    pub monthly_usd_limit: Option<i64>,
-}
-
-impl KeyLimits {
-    /// True when no limit is configured, so gating can be skipped entirely.
-    pub fn is_unlimited(&self) -> bool {
-        self.tpm_limit.is_none()
-            && self.monthly_token_limit.is_none()
-            && self.monthly_usd_limit.is_none()
-    }
-}
 
 /// Outcome of a reserve call.
 #[derive(Debug, Clone, PartialEq, Eq)]

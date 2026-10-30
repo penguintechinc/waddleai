@@ -6,20 +6,10 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use pipeline::{PipelineContext, Stage, StageError};
+use pipeline::{PipelineContext, Stage, StageError, VkeyBudget};
 
 use crate::estimate::estimate_io_tokens;
-use crate::limiter::{BudgetGate, KeyLimits};
-
-/// The virtual-key budget subject the auth stage places in `ctx.extensions`. Absent means the
-/// request has no virtual key (stage skips); `limits: None` means the key has no limits.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VkeyBudget {
-    /// Virtual key id the budget is charged against.
-    pub vkey_id: i64,
-    /// The key's configured limits, if any.
-    pub limits: Option<KeyLimits>,
-}
+use crate::limiter::BudgetGate;
 
 /// Pipeline stage that estimates request size and reserves it against the key's budgets.
 pub struct TokenBudgetStage {

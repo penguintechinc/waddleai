@@ -19,7 +19,7 @@ pub use count::{
 };
 pub use estimate::estimate_io_tokens;
 pub use limiter::{
-    BudgetGate, GateDecision, KeyLimits, TokenLimiter, LUA_RECONCILE, LUA_RESERVE,
-    NATIVE_RATE_LIMIT_FLAG,
+    BudgetGate, GateDecision, TokenLimiter, LUA_RECONCILE, LUA_RESERVE, NATIVE_RATE_LIMIT_FLAG,
 };
-pub use stage::{TokenBudgetStage, VkeyBudget};
+pub use pipeline::{KeyLimits, VkeyBudget};
+pub use stage::TokenBudgetStage;

@@ -1,4 +1,4 @@
-.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-valkey test-e2e test-functional test-security \
+.PHONY: dev setup install-hooks verify-hooks venv test test-unit test-integration test-valkey token-parity-check test-e2e test-functional test-security \
         test-contract test-contract-selftest smoke-test smoke-test-production lint build docker-build docker-push deploy-dev deploy-prod \
         seed-mock-data clean pre-commit generate-openapi openapi-lint
 
@@ -123,6 +123,10 @@ test-unit:
 test-integration:
 	@echo "Running integration tests..."
 	$(PY) -m pytest tests/integration -v --no-cov
+
+token-parity-check: ## Fail if the Rust token corpus / exported Lua drift from the Python oracles
+	$(PY) scripts/gen-token-parity-corpus.py --check
+	python3 rust/scripts/gen-token-lua.py --check
 
 test-valkey:
 	@echo "Running real-Valkey quota tests (REQUIRE_VALKEY_TESTS=1: skip == fail)..."

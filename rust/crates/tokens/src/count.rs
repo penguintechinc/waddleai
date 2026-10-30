@@ -42,6 +42,9 @@ pub enum CountError {
 /// Picks the encoding for a provider/model exactly as `TokenManager.__init__` wires it:
 /// the explicit `openai` gpt-4 / gpt-3.5-turbo entries and the default are all cl100k.
 pub fn encoding_for(provider: &str, model: &str) -> Encoding {
+    // Deliberate oracle wiring: the explicit openai arm mirrors the Python encoder table and
+    // the wildcard mirrors `default_encoder`; both are cl100k_base today.
+    #[allow(clippy::match_same_arms)]
     match (provider, model) {
         ("openai", "gpt-4") | ("openai", "gpt-3.5-turbo") => Encoding::Cl100kBase,
         _ => Encoding::Cl100kBase,
