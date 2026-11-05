@@ -35,5 +35,5 @@ export default defineConfig({
     },
   ],
   webServer: null,
-  outputDir: '/tmp/playwright-waddleai',
+  outputDir: '/tmp/playwright-waddleai/results',
 });

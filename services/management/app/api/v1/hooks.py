@@ -82,6 +82,8 @@ class EvaluateResponse:
     reason: str | None
     rule_id: Any
     evaluated_in_ms: int
+    redirect_model: str | None
+    active_skills: list[str] | None
 
 
 @dataclass(slots=True)
@@ -173,6 +175,8 @@ async def evaluate_hook() -> tuple:
                 "reason": "agent hooks disabled",
                 "rule_id": None,
                 "evaluated_in_ms": 0,
+                "redirect_model": None,
+                "active_skills": None,
             },
             200,
         )
@@ -216,6 +220,12 @@ async def evaluate_hook() -> tuple:
             "reason": result.reason,
             "rule_id": result.rule_id,
             "evaluated_in_ms": evaluated_in_ms,
+            # Redirects/skill activation are intentionally server-policy
+            # derived only.  Until role-model recommendations are wired into
+            # this evaluator, adapters receive explicit nulls rather than a
+            # client-controlled routing hint.
+            "redirect_model": None,
+            "active_skills": None,
         },
         200,
     )
