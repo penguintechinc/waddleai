@@ -5,6 +5,15 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+# Informational "unmaintained" notices (not vulnerabilities) with no patched
+# release: the zbus/zvariant family is pulled only by keyring's Linux
+# secret-service store, upstream has no replacement crate yet. Re-evaluate
+# when keyring drops zbus; remove these entries then.
+ignore = [
+    "RUSTSEC-2026-0370", # zvariant unmaintained
+    "RUSTSEC-2026-0371", # zbus_names unmaintained
+    "RUSTSEC-2026-0372", # zvariant_derive unmaintained
+]
 
 [licenses]
 allow = [
