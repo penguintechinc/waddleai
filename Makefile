@@ -150,9 +150,9 @@ helm-render-vllm-ray: ## Render the chart with the vllm-ray fixture; any helm er
 test-helm: ## Helm render tests; any failure OR skip fails (a skipped render is not a pass)
 	@scripts/test_helm.sh $(PY)
 
-# vllm-ray image contract tests. Only the cuda image exists (rocm/xpu bases are unverified, see
-# images/); add them to VLLM_RAY_IMAGES together with their Dockerfiles.
-VLLM_RAY_IMAGES ?= cuda
+# vllm-ray image contract tests (images must be built first: docker buildx build --load -t
+# waddleai/vllm-ray-<v>:dev images/vllm-ray-<v>).
+VLLM_RAY_IMAGES ?= cuda rocm xpu
 VLLM_RAY_RAY_VERSION ?= 2.60.0
 VLLM_RAY_PY_MINOR ?= 3.12
 IMG_TAG ?= dev

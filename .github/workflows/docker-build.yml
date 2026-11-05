@@ -1366,9 +1366,9 @@ jobs:
         docker buildx imagetools create "${TAG_ARGS[@]}" "${IMAGE}@${DIGEST}"
 
   # vLLM-on-Ray worker images (images/vllm-ray-<vendor>). amd64 only (owner directive).
-  # Matrix is cuda only: the rocm and xpu bases could not be verified (no ROCm base whose vLLM
-  # matches the Ray-LLM bundle on the same Python minor; no oneAPI 2026.0.x tag exists), so their
-  # Dockerfiles are not shipped yet and are added here together with their images.
+  # cuda wraps rayproject/ray-llm; rocm and xpu build vLLM 0.29.0 from source (AM20: no rocm/vllm tag
+  # pairs vLLM 0.29 with py3.12; oneAPI 2026.0.x does not exist, 2025.3.2 is used). Their builds compile
+  # native code and are long (the job timeout is raised accordingly).
   # PRs and non-push tiers build with --load and run the image contract test; pushing tiers push
   # one run-unique tag, gate on Trivy by digest, then promote the floating ray<version>-py<minor> tag.
   build-vllm-ray-images:
@@ -1381,7 +1381,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        image: [cuda]
+        image: [cuda, rocm, xpu]
+    timeout-minutes: 360
     env:
       RAY_VERSION: "2.60.0"
       PYTHON_MINOR: "3.12"
@@ -1393,7 +1394,7 @@ jobs:
         fetch-depth: 0
         persist-credentials: false
 
-    # The CUDA Ray-LLM base is ~34 GB on disk: free the runner's preinstalled toolchains first.
+    # The CUDA Ray-LLM base is ~34 GB on disk (ROCm/oneAPI dev bases + build stages are comparable): free the runner's preinstalled toolchains first.
     - name: Free runner disk space
       run: |
         set -euo pipefail

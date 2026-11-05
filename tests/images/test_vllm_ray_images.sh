@@ -15,6 +15,12 @@ got=$(docker run --rm --entrypoint python3 "$img" -c 'import ray,sys;print(ray._
 [ "$got" = "$ray_ver $py_minor" ] || { echo "FAIL: got '$got' want '$ray_ver $py_minor'"; exit 1; }
 checks=$((checks + 1))
 
+# vLLM must import: proves the vendor build is complete (no GPU needed for the import itself).
+vllm_ver=$(docker run --rm --entrypoint python3 "$img" -c 'import vllm,sys;print(vllm.__version__)' | tail -n1)
+[ -n "$vllm_ver" ] || { echo "FAIL: import vllm printed no version"; exit 1; }
+echo "vllm $vllm_ver"
+checks=$((checks + 1))
+
 for b in ray python3 bash nvidia-smi rocm-smi xpu-smi; do
   if path=$(docker run --rm --entrypoint sh "$img" -c "command -v $b" 2>/dev/null); then
     echo "found $b $path"
