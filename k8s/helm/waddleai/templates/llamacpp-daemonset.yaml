@@ -128,13 +128,13 @@ spec:
           resources:
             {{- if $.Values.llamacpp.gpu.enabled }}
             requests:
-              {{ $.Values.llamacpp.gpu.type | default "nvidia" }}.com/gpu: {{ $model.gpuCount | default 1 }}
+              {{ include "waddleai.gpuResourceName" (dict "ctx" $ "class" $.Values.llamacpp.gpu.nvidiaClass "type" $.Values.llamacpp.gpu.type) }}: {{ $model.gpuCount | default 1 }}
               {{- with $.Values.llamacpp.resources.requests }}
               memory: {{ .memory }}
               cpu: {{ .cpu }}
               {{- end }}
             limits:
-              {{ $.Values.llamacpp.gpu.type | default "nvidia" }}.com/gpu: {{ $model.gpuCount | default 1 }}
+              {{ include "waddleai.gpuResourceName" (dict "ctx" $ "class" $.Values.llamacpp.gpu.nvidiaClass "type" $.Values.llamacpp.gpu.type) }}: {{ $model.gpuCount | default 1 }}
               {{- with $.Values.llamacpp.resources.limits }}
               memory: {{ .memory }}
               cpu: {{ .cpu }}

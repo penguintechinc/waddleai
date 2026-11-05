@@ -146,6 +146,8 @@ spec:
                 secretKeyRef:
                   name: {{ include "waddleai.vllmRay.tokenKeySecretName" . }}
                   key: fernet
+            - name: WADDLEAI_VLLM_RAY_BACKEND_CONFIG
+              value: /etc/waddleai/vllm-ray/backend-config.json
             {{- end }}
           {{- if .Values.management.livenessProbe.enabled }}
           livenessProbe:
@@ -200,6 +202,11 @@ spec:
               mountPath: /app/databases
             - name: app-config-marchproxy
               mountPath: /app/config/marchproxy
+            {{- if .Values.fleet.vllmRay.enabled }}
+            - name: vllm-ray-config
+              mountPath: /etc/waddleai/vllm-ray
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -209,6 +216,11 @@ spec:
           emptyDir: {}
         - name: app-config-marchproxy
           emptyDir: {}
+        {{- if .Values.fleet.vllmRay.enabled }}
+        - name: vllm-ray-config
+          configMap:
+            name: waddleai-vllm-ray-fleet-config
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

@@ -1111,6 +1111,7 @@ ollama:
     enabled: true
     type: nvidia
     count: 1
+    nvidiaClass: "" # required when fleet.vllmRay renames NVIDIA resources (nvidia.com/<class>)
 
   resources:
     requests:
@@ -1220,6 +1221,7 @@ ollamaEmbeddings:
     enabled: false
     type: nvidia
     count: 1
+    nvidiaClass: "" # required when fleet.vllmRay renames NVIDIA resources (nvidia.com/<class>)
 
   resources:
     requests:
@@ -1326,6 +1328,7 @@ llamacpp:
   gpu:
     enabled: true
     type: nvidia
+    nvidiaClass: "" # required when fleet.vllmRay renames NVIDIA resources (nvidia.com/<class>)
 
   resources:
     requests:
@@ -1400,6 +1403,10 @@ nvidia-gpu-operator:
     enabled: true
   devicePlugin:
     enabled: true
+    # Must be waddleai-nvidia-device-plugin-config (with config.default: config.yaml) when
+    # fleet.vllmRay.nvidiaClassMap is non-empty; the render fails otherwise.
+    config:
+      name: ""
   gfd:
     enabled: true
   dcgm:

@@ -22,8 +22,23 @@ fleet:
         minReplicas: 0
         maxReplicas: 2
         image: cuda
+        cost:
+          cardUsd: 1800
+          tdpWatts: 450
+          estTokensPerS: 60
+          cpuUsd: 500
+          ramGb: 128
+          nvmeGb: 2000
+          nvmePro: true
+          networkDevices: 1
+          nodeBaseWatts: 150
+          gpusPerNode: 2
   # AM15 external key injection: fixture supplies the TLS Secret so default renders need no
   # cert-manager CRDs; tests that exercise chart-generated certs clear this and pass api_versions.
   security:
     rayTls:
       existingSecret: fixture-ray-tls
+nvidia-gpu-operator:
+  devicePlugin:
+    config:
+      name: waddleai-nvidia-device-plugin-config

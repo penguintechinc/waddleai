@@ -1,9 +1,11 @@
 """KubeRay subchart is pinned, vendored, and gated on fleet.vllmRay.enabled (A1)."""
 
 import hashlib
+from pathlib import Path
 
 from tests.helm.conftest import CHART_DIR, render
 
+BASE = str(Path(__file__).parent / "fixtures" / "vllm-ray-base.yaml")
 KUBERAY_VERSION = "1.6.2"
 KUBERAY_TGZ_SHA256 = "660e709573ea49455fea0b34b40a38afc217b8354bcf0f17aab2a3249d3c1b5f"
 
@@ -25,7 +27,7 @@ def test_kuberay_operator_absent_when_disabled():
 
 def test_kuberay_operator_rendered_when_enabled():
     """Enabling vllmRay renders exactly one operator Deployment from the pinned chart version."""
-    docs = render("values-alpha.yaml", {"fleet.vllmRay.enabled": "true"})
+    docs = render(BASE)
     deploys = [
         d
         for d in docs
