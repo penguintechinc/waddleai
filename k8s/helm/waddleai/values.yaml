@@ -1526,6 +1526,21 @@ tetragon:
           - /llama-server
           - /bin/sh
           - /usr/bin/curl
+      # vLLM-on-Ray worker pods (renders only when fleet.vllmRay.enabled). Allowlist = binaries
+      # observed in the pinned ray-llm image running `ray start` (/proc/*/exe). nvidia-smi is injected
+      # by the NVIDIA toolkit at runtime and the ROCm/XPU images are not built yet, so vendor SMI
+      # tools are deliberately absent: confirm with mode: observe on dal2beta (E1) before widening.
+      ray-worker:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /home/ray/anaconda3/bin/ray
+          - /home/ray/anaconda3/bin/python
+          - /home/ray/anaconda3/bin/python3
+          - /home/ray/anaconda3/bin/python3.12
+          - /home/ray/anaconda3/lib/python3.12/site-packages/ray/core/src/ray/raylet/raylet
+          - /usr/bin/bash
+          - /bin/bash
   egress:
     # Observe/flag AIProxy egress + unexpected file-write activity (spec
     # §12.2). FQDN allow-listing to provider endpoints is the
