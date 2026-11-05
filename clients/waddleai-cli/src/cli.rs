@@ -70,6 +70,19 @@ pub enum Command {
         #[command(subcommand)]
         action: FleetCommand,
     },
+    /// Render a safe, default-disabled MCP configuration for a coding harness.
+    Harness {
+        #[command(subcommand)]
+        action: HarnessCommand,
+    },
+    /// Validate a DAC manifest. Applying requires the exact plan id from a dry run.
+    Apply {
+        #[arg(short, long)]
+        file: PathBuf,
+        /// Apply a previously reviewed plan. Without this, the command is dry-run only.
+        #[arg(long)]
+        confirm: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -85,6 +98,16 @@ pub enum KnowledgeCommand {
 pub enum FleetCommand {
     /// Show inference fleet backend status.
     Status,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum HarnessCommand {
+    /// Preview a WaddleAI MCP configuration fragment, or write it to a new explicit path.
+    Sync {
+        /// Write the fragment to this new file. Existing files are never overwritten.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
 }
 
 fn print_json(value: &impl Serialize) -> Result<()> {
@@ -129,6 +152,12 @@ pub async fn run(cli: Cli, store: &dyn TokenStore, opener: &dyn BrowserOpener) -
         Command::Fleet {
             action: FleetCommand::Status,
         } => cmd_fleet_status(&api_url, store).await,
+        Command::Harness {
+            action: HarnessCommand::Sync { output },
+        } => cmd_harness_sync(&api_url, output.as_deref()),
+        Command::Apply { file, confirm } => {
+            cmd_apply(&api_url, &file, confirm.as_deref(), store).await
+        }
     }
 }
 
@@ -235,6 +264,37 @@ async fn cmd_fleet_status(api_url: &str, store: &dyn TokenStore) -> Result<()> {
     let client = ApiClient::new(api_url, Some(token))?;
     let status = client.fleet_status().await?;
     print_json(&status)
+}
+
+fn cmd_harness_sync(api_url: &str, output: Option<&std::path::Path>) -> Result<()> {
+    match output {
+        Some(path) => {
+            crate::harness_sync::write_mcp_config(api_url, path)?;
+            println!(
+                "Wrote default-disabled MCP configuration to {}",
+                path.display()
+            );
+            Ok(())
+        }
+        None => print_json(&crate::harness_sync::render_mcp_config(api_url)?),
+    }
+}
+
+async fn cmd_apply(
+    api_url: &str,
+    file: &std::path::Path,
+    confirm: Option<&str>,
+    store: &dyn TokenStore,
+) -> Result<()> {
+    let manifest = tokio::fs::read_to_string(file).await.map_err(|err| {
+        CliError::InvalidInput(format!("cannot read manifest {}: {err}", file.display()))
+    })?;
+    let token = resolve_token(api_url, store).await?;
+    let client = ApiClient::new(api_url, Some(token))?;
+    let result = client
+        .apply_manifest(&manifest, confirm.is_none(), confirm)
+        .await?;
+    print_json(&result)
 }
 
 /// Renders a keys/usage/models command's raw JSON with any obvious token

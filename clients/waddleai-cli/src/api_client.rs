@@ -103,6 +103,31 @@ impl ApiClient {
         Self::handle_empty_response(resp).await
     }
 
+    /// `POST /api/v1/manifests/apply` — DAC always starts with `dry_run`.
+    pub async fn apply_manifest(
+        &self,
+        manifest: &str,
+        dry_run: bool,
+        plan_id: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            manifest: &'a str,
+            dry_run: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            plan_id: Option<&'a str>,
+        }
+        self.post_json(
+            "/api/v1/manifests/apply",
+            &Body {
+                manifest,
+                dry_run,
+                plan_id,
+            },
+        )
+        .await
+    }
+
     /// Uploads a file as `multipart/form-data` under the `file` field --
     /// used by `waddleai knowledge upload`.
     pub async fn upload_file<T: DeserializeOwned>(
@@ -180,9 +205,8 @@ impl ApiClient {
         self.upload_file("/api/v1/knowledge", file_path).await
     }
 
-    /// `GET /api/v1/integrations/mcp-endpoints/{id}` -- **planned**: lands
-    /// with the Management `/api/v1/integrations/*` surface (plan Task 10),
-    /// tracked separately. Fetched *before* [`Self::start_link`] so the
+    /// `GET /api/v1/integrations/mcp-endpoints/{id}`. Fetched *before*
+    /// [`Self::start_link`] so the
     /// caller has an admin-registered, trusted host to validate the
     /// link-flow's returned `auth_url` against -- see `crate::browser`.
     pub async fn get_mcp_endpoint(&self, endpoint_id: &str) -> Result<McpEndpointSummary> {
@@ -190,9 +214,8 @@ impl ApiClient {
             .await
     }
 
-    /// `GET /api/v1/integrations/mcp-endpoints/{id}/link` -- **planned**:
-    /// lands with the Management `/api/v1/integrations/*` surface (plan
-    /// Task 10), tracked separately.
+    /// `GET /api/v1/integrations/mcp-endpoints/{id}/link` starts a per-user
+    /// OAuth link flow and returns its authorization URL.
     pub async fn start_link(&self, endpoint_id: &str) -> Result<LinkStartResponse> {
         self.get_json(&format!(
             "/api/v1/integrations/mcp-endpoints/{endpoint_id}/link"
