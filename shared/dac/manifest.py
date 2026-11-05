@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -11,19 +12,21 @@ from dataclasses import dataclass
 from typing import Any
 
 import yaml
+from yaml.events import AliasEvent
 
 API_VERSION = "waddleai.penguintech.io/v1alpha1"
 _TOP_LEVEL = {"apiVersion", "kind", "metadata", "spec"}
 _SPEC_FIELDS = {"backends", "mcp_servers", "role_models", "hook_rules"}
-_SECRET_KEYS = {
-    "token",
-    "api_key",
-    "password",
-    "secret",
-    "client_secret",
-    "private_key",
-    "access_token",
-}
+_SECRET_PATTERN = re.compile(
+    r"token|secret|password|passwd|apikey|auth|credential|bearer|privatekey|key$"
+)
+# Exact normalised schema fields that match the pattern but are not secrets
+# (none exist in v1alpha1; add here with justification rather than weakening it).
+_SAFE_KEYS: frozenset[str] = frozenset()
+_REDACTED = "***REDACTED***"
+MAX_RAW_BYTES = 1024 * 1024
+MAX_NODES = 50_000
+MAX_DEPTH = 64
 
 
 class DacError(ValueError):
@@ -66,11 +69,27 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
+def _is_secret_key(key: Any) -> bool:
+    """Return True when a key, normalised (lowercase, no ``-``/``_``), looks like a secret.
+
+    Normalising defeats ``HF-Token`` / ``API_Key`` style evasion of exact matching.
+    """
+    norm = str(key).lower().replace("-", "").replace("_", "")
+    return norm not in _SAFE_KEYS and _SECRET_PATTERN.search(norm) is not None
+
+
+def _is_secret_pair(value: dict[Any, Any]) -> bool:
+    """Return True for an env-style ``{name, value}`` pair whose name looks secret."""
+    return "value" in value and "name" in value and _is_secret_key(value["name"])
+
+
 def _reject_secrets(value: Any, path: str = "") -> None:
+    """Raise DacError if any key or env-style pair name looks like an inline secret."""
     if isinstance(value, dict):
+        if _is_secret_pair(value):
+            raise DacError(f"inline secret field rejected: {path}{value['name']}")
         for key, nested in value.items():
-            lower = str(key).lower()
-            if lower in _SECRET_KEYS or lower in {"hf_token", "hf_api_token", "hf_access_token"}:
+            if _is_secret_key(key):
                 raise DacError(f"inline secret field rejected: {path}{key}")
             _reject_secrets(nested, f"{path}{key}.")
     elif isinstance(value, list):
@@ -78,9 +97,76 @@ def _reject_secrets(value: Any, path: str = "") -> None:
             _reject_secrets(nested, path)
 
 
+def redact_secrets(value: Any) -> Any:
+    """Return a deep copy with secret-looking values masked.
+
+    Defence in depth for persisted revisions: even if rejection is ever bypassed,
+    the stored ``manifest_redacted`` never carries the secret value.
+    """
+    if isinstance(value, dict):
+        pair = _is_secret_pair(value)
+        return {
+            k: (_REDACTED if (_is_secret_key(k) or (pair and k == "value")) else redact_secrets(v))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_secrets(v) for v in value]
+    return value
+
+
+class _NoAliasLoader(yaml.SafeLoader):
+    """SafeLoader that refuses anchors and aliases, preventing billion-laughs expansion."""
+
+    def compose_node(self, parent: Any, index: Any) -> Any:
+        """Raise DacError on any alias or anchor event before composing the node."""
+        if self.check_event(AliasEvent):
+            raise DacError("YAML aliases are not allowed")
+        event = self.peek_event()
+        if getattr(event, "anchor", None) is not None:
+            raise DacError("YAML anchors are not allowed")
+        return super().compose_node(parent, index)
+
+
+def _check_limits(value: Any) -> None:
+    """Iteratively enforce node-count and depth caps on a parsed document."""
+    nodes = 0
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > MAX_NODES:
+            raise DacError(f"manifest exceeds {MAX_NODES} nodes")
+        if depth > MAX_DEPTH:
+            raise DacError(f"manifest nesting too deep (>{MAX_DEPTH})")
+        if isinstance(item, dict):
+            for k, v in item.items():
+                stack.append((k, depth + 1))
+                stack.append((v, depth + 1))
+        elif isinstance(item, (list, tuple)):
+            stack.extend((v, depth + 1) for v in item)
+
+
+def _load_document(raw: str | bytes | dict[str, Any]) -> Any:
+    """Load a manifest from YAML text or dict, enforcing size/alias/depth/node caps."""
+    if isinstance(raw, (str, bytes)):
+        size = len(raw.encode()) if isinstance(raw, str) else len(raw)
+        if size > MAX_RAW_BYTES:
+            raise DacError("manifest too large")
+        try:
+            document = yaml.load(raw, Loader=_NoAliasLoader)  # noqa: S506  # nosec B506
+        except RecursionError as exc:
+            raise DacError(f"manifest nesting too deep (>{MAX_DEPTH})") from exc
+        except yaml.YAMLError as exc:
+            raise DacError(f"invalid YAML: {exc}") from exc
+    else:
+        document = raw
+    _check_limits(document)
+    return document
+
+
 def parse_manifest(raw: str | bytes | dict[str, Any], *, organization_id: str) -> dict[str, Any]:
     """Parse and strictly validate a v1alpha1 manifest without mutating state."""
-    document = yaml.safe_load(raw) if isinstance(raw, (str, bytes)) else raw
+    document = _load_document(raw)
     if not isinstance(document, dict) or set(document) - _TOP_LEVEL:
         raise DacError("manifest has unknown top-level fields")
     if document.get("apiVersion") != API_VERSION or document.get("kind") != "WaddleAIConfiguration":

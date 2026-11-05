@@ -22,6 +22,7 @@ from shared.dac.manifest import (
     DacPlanner,
     DacPlanStore,
     parse_manifest,
+    redact_secrets,
 )
 from shared.utils.feature_flags import is_feature_enabled
 
@@ -81,7 +82,7 @@ async def _persist_reviewed_plan(
             org_id=int(plan.organization_id),
             name=manifest["metadata"]["name"],
             manifest_digest=plan.manifest_digest,
-            manifest_redacted=manifest,
+            manifest_redacted=redact_secrets(manifest),
             created_by=actor_id,
         )
         db.manifest_apply_runs.insert(
