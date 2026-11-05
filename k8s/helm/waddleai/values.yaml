@@ -908,8 +908,81 @@ fleet:
         tag: "stable-bookworm"
         digest: "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
         pullPolicy: IfNotPresent
+  # vLLM-on-Ray GPU fleet (KubeRay RayCluster, one worker group per GPU vendor+class).
+  # Disabled by default: enabling renders nothing unless every digest below is set.
   vllmRay:
-    enabled: false                      # gated; default OFF (full block lands in A2)
+    enabled: false # gated; default OFF
+    ray:
+      version: "2.60.0" # identical across head and every worker image (latest published Ray as of 2026-11-05)
+      pythonMinor: "3.12" # head and all workers must match
+    # Own images (cuda/rocm/xpu) are built and pushed by CI (images/vllm-ray-*); their digest is
+    # only known after that build, so it MUST be supplied per environment (render fails if empty).
+    images:
+      cuda:
+        repository: ghcr.io/penguintechinc/waddleai/vllm-ray-cuda
+        tag: "ray2.60.0-py312"
+        digest: ""
+      rocm:
+        repository: ghcr.io/penguintechinc/waddleai/vllm-ray-rocm
+        tag: "ray2.60.0-py312"
+        digest: ""
+      xpu:
+        repository: ghcr.io/penguintechinc/waddleai/vllm-ray-xpu
+        tag: "ray2.60.0-py312"
+        digest: ""
+      head: # CPU head, same Ray and Python minor
+        repository: rayproject/ray
+        tag: "2.60.0-py312"
+        digest: "sha256:307d271427cbca373affad1c1d406776acd5f5a5dd041523008c8d44a796e4fd"
+    head:
+      resources:
+        requests: { cpu: "2", memory: "4Gi" }
+        limits: { cpu: "4", memory: "8Gi" }
+      nodeSelector: {} # override to a storage node until compute nodes land (spec 7)
+      affinity: # default: never on AI nodes
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: waddleai.penguintech.io/ai-node, operator: NotIn, values: ["true"] }
+    tco: # AM6 / spec 4.7 owner defaults; handed to the fleet backend config
+      kwhUsd: 0.18
+      lifecycleYears: 10
+      utilizationPct: 50
+      inputRatio: 0.2
+      ramUsdPerGb: 1
+      nvmeUsdPerGb: 1
+      nvmeProUsdPerGb: 2
+      networkDeviceUsd: 400
+    workerGroups: [] # required when enabled; render fails if empty
+    # workerGroups[] entry: {name, vendor (nvidia|amd|intel), gpuClass, resourceName,
+    #   gpusPerWorker (>=1), vramMbPerNode (int), minReplicas (0), maxReplicas (>=1),
+    #   nodeSelector {}, tolerations [], image (images key: cuda|rocm|xpu)}
+    #   cost {cardUsd, tdpWatts, estTokensPerS, cpuUsd, ramGb, nvmeGb, nvmePro (bool),
+    #     networkDevices, nodeBaseWatts, gpusPerNode, nodeBaseUsd (optional explicit override)}
+    #   cardUsd and tdpWatts are optional: unset = reference fallback (B4d load_pricing_inputs).
+    nvidiaClassMap: [] # [{pattern: "*RTX 4090*", name: rtx4090}]; empty = no renaming
+    modelStore: { storageClass: "", size: 500Gi, accessMode: ReadWriteMany }
+    hotCache:
+      enabled: false # opt-in; owner approved (spec 8.1)
+      hostPath: /var/lib/waddleai/models
+      kyvernoPolicyException: false # true = PolicyException for ray-worker pods instead of enforce=baseline (D5)
+      kyvernoPolicyNames: ["disallow-host-path"] # Kyverno host-path policies the exception covers
+    nccl:
+      ifname: "" # empty = pod primary interface
+    serve: { port: 8000 }
+    dashboard: { port: 8265 }
+    ports: { gcs: 6379, client: 10001, workerMin: 10002, workerMax: 10199 } # D2
+    autoscaler: { idleTimeoutSeconds: 300 }
+    rayInternalTls: true # AM11: Ray TLS envs + cert-manager certs (A2b); default on
+    restartGeneration: 1 # bumps pod-template annotation waddleai.penguintech.io/restart-generation (A2b)
+  security: # AM11/AM15
+    mutualAuth: true # Cilium mutual auth (SPIRE) on fleet CNPs (A5)
+    wireguard: true # PREREQUISITE: Cilium WireGuard encryption; documented, not rendered
+    spiffeTrustDomain: penguintech.io
+    rayAuthToken: { existingSecret: "", envSecret: "" } # env secret (key token) > existingSecret (key token) > chart-generated
+    rayTls: { existingSecret: "" } # keys tls.crt, tls.key, ca.crt; else chart-generated
+    tokenEncryptionKey: { existingSecret: "" } # key fernet; env WADDLEAI_FLEET_TOKEN_ENCRYPTION_KEY wins
 
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)

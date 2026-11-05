@@ -70,3 +70,10 @@ def find(docs: list[dict], kind: str, name: str) -> dict:
     matches = [d for d in docs if d.get("kind") == kind and d["metadata"]["name"] == name]
     assert len(matches) == 1, f"expected exactly one {kind}/{name}, found {len(matches)}"
     return matches[0]
+
+
+def find_optional(docs: list[dict], kind: str, name: str) -> dict | None:
+    """Return the single doc matching kind+name, or None when absent; ambiguity still fails."""
+    matches = [d for d in docs if d.get("kind") == kind and d["metadata"]["name"] == name]
+    assert len(matches) <= 1, f"expected at most one {kind}/{name}, found {len(matches)}"
+    return matches[0] if matches else None
