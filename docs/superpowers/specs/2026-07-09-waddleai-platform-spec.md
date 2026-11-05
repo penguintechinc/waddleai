@@ -4,6 +4,7 @@
 **Date**: 2026-07-09
 **Supersedes**: MarchProxy AILB integration (MarchProxy is deprecated)
 **Implementation handoff**: per-feature-branch TDD plans in `docs/superpowers/plans/` (all drafted, ~157 tasks total, TDD, each task ends in a commit):
+
 - `2026-07-09-phase0-license-server-waddleai-product.md` — §14.6 (license-server repo), 6 tasks
 - `2026-07-09-phase1-consolidation.md` — §4 `chore/consolidate-quart-k8s`, 20 tasks
 - `2026-07-09-phase1-aiproxy-migration.md` — §5 `feature/aiproxy-migration`, 16 tasks
@@ -22,7 +23,7 @@
 ## Locked Decisions
 
 | Topic | Decision |
-|---|---|
+| --- | --- |
 | Product pillars | Token efficiency + local knowledge + security layer |
 | Default apparatus | OpenCode (MIT); PenguinCode untouched (separate, lower-priority track) |
 | Big-5 providers | OpenAI, Anthropic, Google Gemini, xAI, AWS Bedrock (Azure via OpenAI base-URL override) |
@@ -58,7 +59,7 @@ WaddleAI is **not** a model host by itself and **not** a coding agent. It provis
 ### 1.2 Who deploys it and why
 
 | Persona | Deployment | Primary win |
-|---|---|---|
+| --- | --- | --- |
 | OSS developer / homelab | Single-node K8s (Free tier) | OpenCode + local models with real routing, memory, and caching — a coherent apparatus instead of raw Ollama |
 | Engineering team lead | Team cluster (Free/Pro) | One `wa-` key per dev; Claude Code/Cursor/OpenCode all point at WaddleAI; commercial spend drops via cache + local-first routing; shared CodeRAG over team repos |
 | Platform/security engineering | Org cluster (Pro/Enterprise) | Central policy: which models exist, who reaches them, what gets blocked/redacted, full usage metering; Cilium-enforced isolation; SSO; KMS + multi-tenancy at Enterprise |
@@ -93,6 +94,7 @@ WaddleAI treats commercial ecosystems as first-class escalation targets, not com
 All code dependencies MUST carry OSI-approved, commercially unrestricted licenses (MIT, Apache-2.0, BSD, GPL-2.0+, MPL-2.0). Forbidden: AGPL (third-party), SSPL, BUSL, Elastic, RSAL, Commons Clause, CC-BY-NC.
 
 Standing violations to fix in Phase 1:
+
 - `infrastructure/kubernetes/base/redis-deployment.yaml` uses `redis:7-alpine` (RSAL/SSPL) → **Valkey** (`valkey/valkey:8-bookworm`, digest-pinned) everywhere; the Helm chart already complies.
 - EXO (GPLv3) is compatible only as an **external orchestrated service** — API calls across a network boundary, no EXO code vendored or linked in-repo.
 
@@ -129,7 +131,7 @@ Mechanically this is the same shape as §2.3's non-commercial class — off by d
 Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Community) **only for runtime-pulled models, never vendored into images**, and every Gemma-ToU/Llama-Community default MUST have an Apache-2.0 alternative selectable in config ("dual-default pattern"). **Gemma 4 ships under Apache-2.0** — Google's own Gemma 4 terms page routes to the Apache-2.0 license, and the custom Gemma Terms of Use now cover only Gemma 1–3 and their variants (ShieldGemma included — see below). The routing classifier's default therefore moved to Gemma 4 (`gemma4:e4b` — note: **no `2b` tag exists**, only `e2b`/`e4b`/`12b`/`26b`/`31b`/`cloud`; the `e` prefix marks the MatFormer effective-size variants, so the 12B tag is `12b`, never `e12b`. The default was `e2b` until 2026-09-07, when testing found it too weak to classify reliably — **`e4b` is now the supported minimum** for routing and the other quick/light internal roles, with `12b` the documented recommendation — not a default — for more complex operations such as coding, wherever the host can carry it; migration 019 retags existing rows), and the dual-default rationale no longer applies to that role: an already-Apache default doesn't need a second Apache alternative to satisfy the license policy. This is a licensing-policy consequence, not a cosmetic rename.
 
 | Role | Default | License | Apache-2.0 alternative | Also selectable |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | Routing classifier | `gemma4:e4b` | Apache-2.0 | — (already Apache; dual-default requirement no longer applies) | `phi4-mini` (MIT), `smollm2:1.7b` (Apache-2.0) |
 | Security auditor / intent classifier (text) | `shieldgemma:2b` | Gemma ToU | `granite3-guardian:2b` (IBM, size-matched) | `granite4.1-guardian` (IBM, 8B) |
 | Embeddings | `nomic-embed-text` | Apache-2.0 | — (already Apache) | `mxbai-embed-large` (Apache-2.0) |
@@ -140,7 +142,7 @@ Model weights may use non-OSI-but-commercial licenses (Gemma ToU, Llama Communit
 **Licence admissibility test.** Because §2.2's deny-list is checked mechanically at model registration and again at fleet `place_model` time, "non-OSI-but-commercial" needs an explicit, checkable test rather than a case-by-case call. Four axes — all four must pass:
 
 | Axis | Rule |
-|---|---|
+| --- | --- |
 | Commercial use | MUST be permitted outright — no revenue threshold, no separately negotiated licence. This is what excludes **SD3.5** (Stability Community License — free under $1M/yr revenue, then a paid Enterprise licence) and **FLUX.1 [dev]** (non-commercial): both would impose licensing obligations on WaddleAI's *customers*, not just on WaddleAI |
 | Copyleft reach | Ordinary copyleft is **acceptable** — `GPL-2.0+`, `GPL-3.0`, `MPL-2.0`, matching what §2.1 already permits for code. What is forbidden is copyleft that reaches the deploying application over a network boundary: **`AGPL`, `SSPL`**. A GPL-2.0 video model is admissible; an AGPL one is not |
 | Acceptable-use restrictions | PERMITTED — OpenRAIL-style field-of-use limits bind operator conduct, not our code. This is what admits **SDXL** (CreativeML OpenRAIL++-M) |
@@ -161,10 +163,10 @@ Every model reference in code/config/Helm resolves through a **model registry** 
 ### 2.4 License tiers (enforced via license.penguintech.io)
 
 | Capability | Free | Professional | Enterprise |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Physical inference nodes | ≤ 5 | Unlimited (**metered per managed node**) | Unlimited |
 | Registered models | ≤ 3 | Unlimited | Unlimited |
-| Deployment targets | K8s/local only | + GCP Vertex AI, AWS Bedrock (hybrid) | + same |
+| Deployment targets | K8s/local only | + GCP Vertex AI, AWS Bedrock, Azure AI / Azure OpenAI, Ollama Cloud (hybrid/passthrough) | + same |
 | SSO | — | Google SSO/OAuth2 | + SAML 2.0 |
 | Data encryption | At-rest via DB/storage layer | same | + external KMS (AWS KMS, GCP Cloud KMS) envelope encryption for provider credentials, memory, cache |
 | Multi-tenancy | Single tenant | Single tenant | Multi-tenant (tenant claim isolation per house auth standard) |
@@ -172,6 +174,7 @@ Every model reference in code/config/Helm resolves through a **model registry** 
 | Support | Community | Standard | Premium (tiers priced separately) |
 
 **Professional metering model (dual):**
+
 - **Per identity/seat** — covers the proxy and user-facing features: authenticated identities (SSO users + named `wa-` key owners) counted monthly; seat count reported to the license server by Management.
 - **Per managed node** — covers deployment management: each node WaddleAI actively manages as an inference target (K8s fleet nodes, GCP Vertex AI endpoints, AWS Bedrock provisioned endpoints — cloud endpoints count as nodes) counted monthly.
 - A customer using only the proxy (no fleet management) pays seats only; a customer using WaddleAI purely as fleet automation pays nodes only.
@@ -179,6 +182,7 @@ Every model reference in code/config/Helm resolves through a **model registry** 
 **Tier name mapping**: the license server models tiers as `community < professional < enterprise`. WaddleAI's **Free = `community`**, **Professional = `professional`**, **Enterprise = `enterprise`**. Tier is per-product on the license (`licenses.products = {"waddleai": "professional"}`).
 
 Enforcement points (full integration contract in §14.6):
+
 - **Node/model caps (Free/`community`)**: checked in fleet backend `provision`/`place_model` and at model-registry registration; over-cap → clear error naming the tier limit. Counting semantics (Q#7 confirmed): *physical node* = distinct K8s node (by node UID) running ≥1 fleet pod, external nodes counted by registered endpoint; *model* = distinct model-registry entry with an active placement — **utility models (guard, routing classifier, embeddings) excluded** from the 3-model cap so the free stack's own machinery doesn't consume it.
 - **Pro/Enterprise features**: Google SSO, `vertex_ai`/`bedrock` fleet-backend creation, per-model/tool security scoping, KMS key-ring config, tenant creation — each gated by `LicenseClient.check_feature("<feature>")` (`penguin-licensing` SDK) **plus** its PostHog flag.
 - **Metering**: seat and managed-node counts reported to the license server via the periodic **checkin** payload (`usage: {users, nodes}`), which the server upserts into `entitlement_usage` and overage-checks (§14.6).
@@ -232,7 +236,7 @@ Four first-party containers: **AIProxy** (data plane, the `proxy/` container), *
 Both `/v1/chat/completions` and `/v1/messages` execute the **same `ProxyPipeline`** (parity is a Phase 1 bug fix — today `/v1/messages` skips filtering and memory):
 
 | Stage | What | Backed by | Phase |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 0. Edge | TLS, RPM rate-limit rejection | Cilium Gateway + CiliumEnvoyConfig (Management-reconciled) | 1 |
 | 1. Auth | OIDC JWT / `wa-`/`sk-` keys, org+tenant resolution | penguin-aaa, existing | — |
 | 2. Token/budget gate | TPM counters, monthly token/$ budgets (what Cilium can't see) | Valkey + `token_usage` aggregates | 1 |
@@ -249,6 +253,7 @@ Design rules: each stage is a class with `async def __call__(ctx) -> ctx`, featu
 ### 3.3 Control plane
 
 Management (Quart) owns configuration and reconciliation, never sits in the request path:
+
 - CRUD for orgs/users/keys/quotas/providers/model registry/routing policies/security policies/fleet backends/cache config.
 - **Cilium policy reconciler**: renders CiliumEnvoyConfig rate-limit + CiliumNetworkPolicy CRDs from DB settings; RBAC-scoped ServiceAccount; no-ops gracefully when Cilium CRDs absent.
 - **Indexing workers**: CodeRAG repo indexer, docs-cache fetcher (async jobs).
@@ -296,6 +301,7 @@ Before touching any code, capture request/response contract snapshots for every 
 ### 4.2 Flask → Quart management migration
 
 `services/management/` migrates from Flask to Quart (house standard; API-compatible — `quart.Blueprint`, `g`, `jsonify` are drop-ins):
+
 - Blueprint-by-blueprint conversion of `app/api/v1/*` to `async def` handlers; blocking DB calls wrapped per house async rules until penguin-dal async paths are wired.
 - Server: hypercorn (replaces any gunicorn/werkzeug invocation); Dockerfile CMD updated.
 - Auth: penguin-aaa OIDC middleware (same stack the proxy already uses) replaces any Flask-specific auth glue.
@@ -329,7 +335,7 @@ Migrate from marchproxy **`origin/release/v0.2.x`** (latest non-dependabot branc
 ### 5.2 Component disposition
 
 | marchproxy `proxy-ailb/` component | Disposition | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `app/tokens/token_manager.py` (+ 979-LOC test) | **Port** | Highest-value file: normalized-token/cost model + quota logic merges with `usage_tracker`; `DEFAULT_CONVERSION_RATES` becomes seed data for `token_conversion_rates`. **Rewrite required**: its in-memory fixed-window per-minute counters (thread-locked dict — unsafe across replicas) → Valkey atomic counters (Lua) for TPM/budget; RPM moves to the Cilium edge (§5.3) |
 | `app/router/intelligent.py` | **Merge** | Sibling of WaddleAI's `shared/utils/request_router.py` (common ancestor). Diff both; keep the superset of the six strategies + `ProviderStats` EMA. The crude breaker (3-failure trip, 5-min cooldown) is upgraded per §5.3.4 — half-open probe, retryable-errors-only, Valkey-backed. Output feeds the §7 unified engine |
 | `app/security/prompt_security.py` (481 LOC + 820-LOC test) | **Merge & wire** | `THREAT_PATTERNS` corpus (injection/jailbreak/data-extraction/prompt-leak/credential-harvesting) + strict/balanced/permissive policy tiers merge into `shared/security/prompt_security.py` — and get **wired into ProxyPipeline stage 3** (MarchProxy never wired it into its request path) |
@@ -365,7 +371,7 @@ Keep the AIProxy gRPC server skeleton (house standard, port 50051) but: define p
 ### 5.6 WaddleAI-side deletion inventory
 
 | Artifact | Action |
-|---|---|
+| --- | --- |
 | `services/management/app/services/marchproxy_config.py`, `provider_sync.py` | Delete (providers consumed directly from DB by AIProxy) |
 | `services/management/app/grpc/client.py` + `app/grpc/proto/marchproxy/` | Delete (was stubbed anyway) |
 | `services/management/app/api/v1/ailb.py`, `ailb_memory.py` | Delete; memory/RAG/embedding config endpoints re-home to `/api/v1/memory-config` |
@@ -434,6 +440,7 @@ When a conversation's token count crosses a threshold (per-key configurable), ol
 ### 6A.4 Tool-schema / system-prompt dedup store
 
 Agents resend identical large tool schemas and system prompts every turn. The proxy stores a canonical copy keyed by content-hash per (org, session) and:
+
 - feeds the §6.3 upstream prompt-cache logic (these stable blocks are exactly the >1024-token prefixes that get `cache_control` breakpoints / Ollama KV affinity);
 - **elides intra-request duplication** — the same file or block pasted multiple times in one request is de-duplicated to a single copy plus references, before dispatch and before token counting;
 - backs a **tokenizer-length cache** (token counts of stable prefixes keyed by hash) so huge unchanged contexts aren't re-tokenized every turn.
@@ -487,6 +494,7 @@ Org **policy filters and sorts** on top of both: allow-lists and tier caps filte
 **Escalation triggers under `local_first`** (any one suffices): (1) classifier complexity ≥ org threshold; (2) local route unhealthy/overloaded (breaker open, no fleet endpoint has the model, queue depth exceeded); (3) failure/retry signals (malformed tool calls, client re-sent same prompt, N consecutive error-ish turns); (4) explicit hint — `X-WaddleAI-Escalate: true` or `auto:high` suffix (`auto:low` = manual reset). Escalation goes to the assignment row's `escalation_model` when set, else the org's `escalation_target`.
 
 **Availability failover (cross-provider substitution)** — the "Anthropic is down → serve from Gemini" path, distinct from complexity escalation:
+
 - **Trigger: retryable errors only** (§5.3.4 taxonomy — timeout/429/5xx/breaker-open, after the provider's own retry budget is exhausted). Client-caused errors never substitute — a bad request must not be replayed to a second provider and billed twice.
 - For `auto`/alias-routed requests the mechanism is already the §7.1 design: the policy-sorted qualified-candidate list **is** the chain — on retryable failure the dispatcher advances to the next candidate, which may be a different provider.
 - For **Stage-0 explicit-model requests** (client named `claude-sonnet-4`), substitution is a data-governance event, not a routing nicety — redirecting a request destined for one provider to another changes where org data flows. Gated by `provider_failover`: **`off` (default)** — fail fast with the taxonomy error; `same_class` — substitute only along the ordered `fallback_models` list on the model's `model_assignments` row (admin-curated equivalents, e.g. `claude-sonnet-4 → [gemini-2.5-pro, gpt-4o]`); `any_qualified` — the full capability-qualified candidate list. Per-org, default off.
@@ -501,6 +509,7 @@ Org **policy filters and sorts** on top of both: allow-lists and tier caps filte
 **Budget-pressure routing** (resolved): graduated, **admin toggle, ON by default** — at ~80% consumed the escalation threshold rises (commercial harder to reach); at ~95% routing clamps local-only; at 100% the existing stage-2 hard block applies. Thresholds org-tunable; every pressure-induced shift is visible in the decision trace.
 
 **Budgets are typed and multi-scope.** Three budget types, evaluated together — pressure follows whichever binds first (minimum headroom wins):
+
 - **Token** — WaddleAI-token or raw-token monthly caps (org/key scope, the existing model);
 - **Dollar** — $ caps computed from the conversion-rate table (org/key scope);
 - **Plan/usage** — for subscription-billed provider accounts (e.g., a Claude Team/Max plan): the budget attaches to the **provider credential**, not the org, and is window-based rather than cumulative — a `plan_budget` config on `provider_credentials` records window length, reset schedule, and estimated capacity, with remaining headroom continuously corrected from provider rate-limit/usage response headers. Pressure near window exhaustion shifts traffic to other credentials in the pool or to local, and the window reset lifts it automatically.
@@ -548,7 +557,7 @@ A pre-dispatch classifier distinct from content filtering: a guard model evaluat
 §8.3's single `security-audit` assignment covers text only, but content reaching the pipeline is not text-only — Claude Code's `/v1/messages` content arrays carry `image` parts, and vision/audio-capable providers accept more. The security auditor is therefore a **registry of one guard model per modality**, not one guard model overall:
 
 | Modality | Default | Apache-2.0 alternative | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Text | `shieldgemma:2b` | `granite3-guardian:2b` (size-matched), `granite4.1-guardian` (8B) | Production — wired into pipeline stages 3/8 |
 | Image | `shieldgemma-2-4b-it` | — (Gemma ToU; no Apache-2.0 image-safety alternative identified yet) | **Needs a serving path** — ShieldGemma 2 is image-only, Gemma-3-based, and **not distributed on Ollama** (confirmed 404); the fleet backend (§10.1) would need a non-Ollama serving path (e.g. vLLM/HF Transformers/TGI) before this tier is usable |
 | Audio | none available | — | **Unverified** — no dedicated audio-safety guard model identified; the likely approach is transcribe-then-scan (Whisper → the text tier above), not yet designed or tested |
@@ -599,7 +608,6 @@ At §3.5 scale, tier-3/tier-4 cost dominates. Policies therefore support **sampl
 
 Adversarial fixture suite (PII, injection strings, intent categories) with expected verdict per tier; **guard-integrity suite** — manipulation corpus never yields allow, monotonic-verdict property tests (LLM tier can't downgrade a tier-1 finding), malformed guard output → fail_mode not allow; **bypass tests** — shadow logs-but-passes, skip audited, scope-narrowed grants, expiry honored; **upstream-filter tests** — HIPAA preset strips PHI before a mocked Anthropic dispatch while the same request reaches a local model unredacted, pseudonymize round-trip (provider sees placeholders, client response restored), map absent from Valkey after request end; fail-mode matrix under auditor timeout; policy-resolution precedence + cache invalidation; Granite Guardian formatter recorded-output tests; streaming output-redaction; latency-budget assertion; sampling determinism; flag-off = v1 behavior unchanged.
 
-
 ## 9. Phase 3 — Auto Memory Layer
 
 Four knowledge subsystems on one storage substrate (Postgres + pgvector; embeddings via the §7.1 `embeddings` assignment row, default `nomic-embed-text`, 768-dim). Flags: `waddleai.coderag`, `waddleai.docs_cache`, `waddleai.knowledge_ingest`.
@@ -642,7 +650,7 @@ A single org-wide memory blob is wrong for real teams — it leaks task context 
 **Scope hierarchy** (every read is a composite key; narrower scopes override, broader scopes are shared read-only):
 
 | Scope | Contains | Default visibility | Trust |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `org` | Admin-curated knowledge, uploaded manuals (§9.3) | All org members, read-only | Verified (highest) |
 | `project` / `workspace` | Cross-repo goals, conventions, shared decisions | Project members | Curated/confirmed |
 | `repo` (+ `branch`/worktree ref) | CodeRAG code index, repo facts | Repo members | Derived-from-source |
@@ -656,12 +664,14 @@ A single org-wide memory blob is wrong for real teams — it leaks task context 
 **Trust tiers & retrieval weighting**: `verified` (admin) > `confirmed` (user-approved) > `derived` (from source code/docs) > `unverified` (auto-captured). Retrieval ranks by relevance × trust; **unverified memory is always injected with an explicit provenance header** ("unverified note captured from user X's session on <date>") so the model treats it as a claim, not fact. Low-trust items decay (TTL) unless confirmed.
 
 **Correction & conflict** (the "user A entered wrong info" case):
+
 - Every memory is **versioned and attributable** (author, source, timestamp, scope) — nothing is anonymous or unattributable.
 - **Contradiction detection**: on write, semantically-conflicting existing memories are detected; rather than silently overwriting, the conflict is recorded and resolved by trust → confirmation → recency. A higher-trust correction supersedes and **quarantines** the wrong entry (held out of retrieval, not hard-deleted, for auditability).
 - **Edit/delete/dispute**: users correct their own memories; repo/project members flag disputed shared memories (disputed → quarantined pending review); admins curate any scope. WebUI + MCP (`memory_correct`, `memory_dispute`) + API surfaces.
 - A wrong auto-captured fact thus has three independent kill-switches: it decays on its own (low trust + TTL), it's superseded the moment anyone records the correct fact, and it can be explicitly disputed/deleted.
 
 **Injection protection** (extends §9.6, applies to every scope and to §6A recalls):
+
 1. **Writes are filtered**: content is scanned by security tiers 1–3 *before* storage — an injection payload ("ignore your instructions and…") is caught at store time and never persisted as clean memory; suspicious writes are quarantined and flagged.
 2. **Reads are data, never instruction**: retrieved memory is inserted only as quoted reference material with a provenance header, never as a system/developer message; it structurally cannot carry role authority.
 3. **Reads are re-filtered**: retrieved content passes tiers 1–3 again before entering a prompt (defense against pre-existing or scope-promoted poison).
@@ -674,20 +684,25 @@ New/changed schema for the model: memory tables gain `scope_type`, `scope_ref`, 
 
 Index this repo as fixture → symbol-retrieval precision on a labeled query set; incremental re-index correctness (one changed file → only its chunks re-embedded); docs fetch against a local HTTP fixture server (never live sites in CI) with TTL + attribution assertions; PDF/MD ingestion round-trip (upload → searchable → provenance intact); client-type detection matrix (MCP key vs plain key → injection on/off); token-budget truncation boundary tests; **scoping/trust/isolation suite**: session-memory isolation between two users in the same repo (security test), branch-scoped CodeRAG retrieval (feature/A never returns feature/B in-flight code), explicit-promotion-only (auto-captured memory never auto-appears at org scope), contradiction→quarantine→supersede flow, dispute/correct kill-switches, unverified-memory provenance header present, write-time injection caught before persistence, read-time re-filter on scope-promoted poison; org-isolation on all stores treated as security tests.
 
-
-
 ## 10. Phase 4 — Hardened Inference Fleet & Deployment Targets
 
 Flag: `waddleai.fleet_v2`.
 
 ### 10.1 Fleet backend interface
 
-`shared/fleet/base.py` — abstract `InferenceFleetBackend`: `provision(spec)`, `deprovision`, `health()`, `list_nodes()`, `place_model(model, constraints)`, `endpoints_for(model)`. Existing `OllamaDeploymentManager` + `LlamaCppManager` refactor to implement it (restructure, not rewrite — they already have docker/k8s/daemonset/external modes). Registry table: `fleet_backends(id, org_id, type enum(ollama|llamacpp|exo|vertex_ai|bedrock), mode, management_scope enum(register_and_route|full_lifecycle), config jsonb, credentials_ref, status)`.
+`shared/fleet/base.py` — abstract `InferenceFleetBackend`: `provision(spec)`, `deprovision`, `health()`, `list_nodes()`, `place_model(model, constraints)`, `endpoints_for(model)`. Existing `OllamaDeploymentManager` + `LlamaCppManager` refactor to implement it (restructure, not rewrite — they already have docker/k8s/daemonset/external modes). The initial registry table is `fleet_backends(id, org_id, type enum(ollama|llamacpp|exo|vertex_ai|bedrock|azure_ai|ollama_cloud), mode, management_scope enum(register_and_route|full_lifecycle), config jsonb, credentials_ref, status)`. A managed MCP-server lifecycle is a separately scoped §11 extension, not an inference backend enum value in migration 013.
 
-- **Ollama** — primary; DaemonSet default (Deployment-with-nodeSelector pool mode available for mixed-GPU clusters).
+- **Ollama** — primary local fleet; DaemonSet default (Deployment-with-nodeSelector pool mode available for mixed-GPU clusters).
 - **llama.cpp** — existing DaemonSet/remote modes; exact token counts via `/tokenize`.
+- **Managed MCP servers (framed follow-on)** — deployment/lifecycle of containerized or remote MCP servers is owned by §11, where image provenance, RBAC, network policy, tool discovery, endpoint ownership, and cleanup can be defined. It is not implemented as a text-inference backend in the first fleet migration.
+- **Direct Hugging Face pulling (framed follow-on)** — Ollama, llama.cpp, and a future dedicated runner may pull approved Hugging Face/GGUF artefacts after credential-reference authorization, origin/licence validation, and digest-pinned artefact validation. The detailed credential, storage, quota, and revocation contract is required before implementation; no `hf_*` token is accepted in fleet configuration.
 - **EXO** — `type: exo, mode: external` API-only plugin; GPLv3 boundary — no EXO code in-repo, network calls only.
-- **Vertex AI / Bedrock** (Professional-gated at backend creation): `VertexAIFleetBackend` via `google-cloud-aiplatform`, `BedrockFleetBackend` via `boto3` (both Apache-2.0). Per Q#9 the admin chooses `management_scope` per backend: `register_and_route` (route/health/meter existing endpoints) or `full_lifecycle` (deploy/scale/undeploy — with **mandatory idle-teardown cost controls**: configurable idle window → automatic endpoint teardown, redeploy-on-demand, every action audit-logged). Cloud credentials per-org via the provider-credential pattern; cloud endpoints count as managed nodes for Pro metering (§2.4).
+- **Cloud & Managed Targets (GCP Vertex AI, AWS Bedrock, Azure AI / Azure OpenAI, Ollama Cloud)** (Professional-gated at backend creation):
+  - **GCP Vertex AI**: `VertexAIFleetBackend` via `google-cloud-aiplatform` (Apache-2.0).
+  - **AWS Bedrock**: `BedrockFleetBackend` via `boto3` (Apache-2.0).
+  - **Azure AI / Azure OpenAI**: `AzureAIFleetBackend` uses Azure Resource Manager for deployment control and the Azure OpenAI data plane for an optional authenticated readiness probe. ARM is the only lifecycle authority; credentials use the corresponding Entra audiences.
+  - **Ollama Cloud**: `OllamaCloudFleetBackend` is a register-and-route-only hosted-model target via direct API passthrough. It does not expose a tenant-controlled model or instance lifecycle, so it is excluded from idle teardown.
+  - Per Q#9 the admin chooses `management_scope` per backend: `register_and_route` / passthrough (route/health/meter existing managed endpoints) or `full_lifecycle` (deploy/scale/undeploy — with **mandatory idle-teardown cost controls**: configurable idle window → automatic endpoint teardown, redeploy-on-demand, every action audit-logged). Cloud credentials per-org via the provider-credential pattern; cloud endpoints count as managed nodes for Pro metering (§2.4).
 
 **Open gap, not yet designed**: the `InferenceFleetBackend` interface above is shaped for text-LLM serving (token streaming, request/response, context-length-driven placement) and does not fit diffusion/generative backends (§16), which need a **second interface shape**: no token streaming; long-running asynchronous jobs rather than request/response; artifacts (images, video, audio files) requiring storage, retention, and serving policy; placement driven by VRAM and job duration rather than context length; and queue/concurrency semantics closer to a batch scheduler than a request router. This needs its own scoping pass — no interface signature, schema, migration, or delivery wave is defined here.
 
@@ -698,6 +713,7 @@ Flag: `waddleai.fleet_v2`.
 ### 10.3 Access control
 
 Ollama/llama.cpp have no native auth → **the AIProxy is the only authenticated path to inference**:
+
 - In-cluster: fleet Services are ClusterIP-only; CiliumNetworkPolicy admits ingress exclusively from AIProxy pods (§12).
 - External/bare-metal nodes (Q#4): **mTLS via cert-manager-issued certs in beta/prod; shared-token sidecar in alpha/dev**.
 
@@ -707,9 +723,7 @@ Fleet backends report per-node loaded models + VRAM headroom; the §7 routing en
 
 ### 10.5 Acceptance
 
-Interface conformance suite run against all five backends (Ollama + llama.cpp real in kind; EXO/Vertex/Bedrock mocked); CNP verification in kind (unauthorized pod cannot reach Ollama service); hardened image: Trivy gate + runs-as-nonroot/readonly-rootfs Helm assertions + model pull works via initContainer under `hardened` tag; mTLS handshake test against an external-node simulator; idle-teardown lifecycle test (idle window → teardown → redeploy-on-demand, all audit-logged); Free-tier cap tests at both enforcement points; Pro gating test for `vertex_ai`/`bedrock` creation.
-
-
+Interface conformance suite runs against every registered model-serving backend (Ollama + llama.cpp real in kind; EXO and cloud targets mocked); CNP verification in kind (unauthorized pod cannot reach Ollama service); hardened image: Trivy gate + runs-as-nonroot/readonly-rootfs Helm assertions + model pull works via initContainer under `hardened` tag; mTLS handshake test against an external-node simulator; idle-teardown lifecycle test (idle window → teardown → redeploy-on-demand, all audit-logged); Free-tier cap tests at both enforcement points; Pro-gating tests for every cloud-target type.
 
 ## 11. Phase 4 — Integrations
 
@@ -718,6 +732,7 @@ Flag: `waddleai.mcp_v2`. Integration *docs* publish incrementally from v0.2 (Cla
 ### 11.1 MCP server v2 (WaddleAI as MCP server)
 
 Official `mcp` Python SDK (MIT). Two transports:
+
 - **Streamable HTTP** mounted at `/mcp` in the AIProxy (auth via `wa-` bearer keys; shares the pipeline's auth/session);
 - **stdio** via `waddleai-mcp` — a **Rust static binary** for dev machines (no Python runtime), talking to the proxy over HTTP.
 
@@ -727,20 +742,26 @@ Tools exposed: `search_code`, `get_symbol`, `search_docs`, `fetch_docs`, `memory
 
 A Rust static binary — the same binary as the MCP shim, with `waddleai mcp` as the stdio-transport subcommand — a pure thin client of `/api/v1`: `login` (browser/device OAuth, token in OS keychain per client standards), `link <mcp-endpoint>` (per-user external-MCP linking, §11.4), `keys`, `usage`, `models`, `knowledge upload <pdf|md>`, `fleet status`. **WebUI remains the first-class, primary surface** — every capability ships in the WebUI first; the CLI mirrors it for headless/terminal users; neither holds business logic.
 
-### 11.3 Client apparatus setup
+### 11.3 Client apparatus setup & Harness Hook Auto-Installation
+
+WaddleAI integrates directly with client coding harnesses (Claude Code, Antigravity / AGY, OpenCode, Cursor, Cortex):
 
 - **OpenCode (default apparatus)**: `docs/integrations/opencode.md` + `examples/opencode/opencode.json` (custom provider → WaddleAI `/v1`, models from `/v1/models`, MCP entry); Management endpoint `/api/v1/integrations/opencode-config` renders per-virtual-key config.
 - **Claude Code**: `ANTHROPIC_BASE_URL` + `wa-` token docs; depends on the Phase-1 `/v1/messages` fidelity work (streaming, tool_use, system arrays, thinking blocks, prompt-cache passthrough, `count_tokens`).
-- **Cursor / Antigravity / generic**: OpenAI base-URL docs with per-tool quirk notes.
+- **Antigravity (AGY) / Cursor / generic**: Native base-URL, custom plugin/extension configs, and per-tool quirk notes.
+- **Harness Hook Integration & Auto-Installation of MCP Servers**:
+  - Leverages client harness hooks (e.g. `session_start`, `pre_tool_use`, setup scripts, or CLI `waddleai mcp install` commands) to automatically register/install MCP servers (both native WaddleAI tools and fleet-managed/external servers from §10.1/§11.4) into the client harness configuration (e.g., `~/.claude/settings.json`, `.gemini/antigravity-ide/mcp/`, OpenCode config).
+  - **Default Disabled State**: Auto-installed MCP servers are installed with **enabled: false (disabled by default)**. This ensures tools are discoverable and available in the harness without causing context bloat, token consumption, or unintended prompt surface expansion until explicitly toggled on by the developer or workspace policy.
+  - Controlled via CLI (`waddleai harness sync`), desktop daemon (`penguind`), or setup scripts.
 - **VS Code extension refresh**: update to new endpoints + surface cache/routing metadata; explicitly last and cuttable.
 
-### 11.4 MCP gateway (WaddleAI as MCP client)
+### 11.4 MCP gateway (WaddleAI as MCP client & tool orchestrator)
 
-WaddleAI also *consumes* external MCP servers (e.g., the Elder MCP server): admins register endpoints via `/api/v1/integrations/mcp-endpoints` + WebUI (URL, transport, auth config — via the provider-credential pattern), org-scoped. Discovered tools are **namespaced** (`elder.*`) and re-served through WaddleAI's own MCP surface, so a client configures one MCP connection and sees the whole aggregated toolset.
+WaddleAI *consumes* external and fleet-managed MCP servers (e.g., the Elder MCP server, or internally deployed MCP servers managed via §10.1): admins register or deploy endpoints via `/api/v1/integrations/mcp-endpoints` + WebUI (URL, transport, auth config — via the provider-credential pattern), org-scoped. Discovered tools are **namespaced** (`elder.*`, or deployed server namespace) and re-served through WaddleAI's own MCP surface, presenting them directly to client-side harnesses (OpenCode, Claude Code, Cursor, Antigravity, penguin desktop) so that a client configuring one WaddleAI MCP connection automatically sees native tools, managed MCP tools, and external MCP tools in a unified catalog. Discovered/deployed MCP servers can also be projected directly into client harnesses in a default-disabled state (§11.3).
 
 - **Outbound auth**: static headers (`Authorization: Bearer <token>`, custom API-key headers) **and** OAuth2 — client-credentials for M2M plus the MCP-spec authorization-code flow with dynamic client registration; tokens cached/refreshed by Management, never exposed to end clients.
 - **Identity mode per endpoint**: *shared account* (one org-wide credential) or *per-user identity* — the user links by logging in via WebUI/CLI and completing the OAuth2 authorization-code flow against the external server; WaddleAI stores the per-user+endpoint token (encrypted at rest, external-KMS envelope at Enterprise) and refreshes it, so calls carry the real caller's identity and the external system applies its own permissions. Unlinked users get a link-your-account URL in the tool result; unattributed keys fall back to the shared account if configured, else the tool is withheld.
-- **Policy chokepoint**: external tool calls traverse the §8 per-tool security policies (block/flag/audit) — WaddleAI governs third-party MCP tools, not just models.
+- **Policy chokepoint**: external and fleet-managed tool calls traverse the §8 per-tool security policies (block/flag/audit) — WaddleAI governs third-party and deployed MCP tools, not just models.
 
 ### 11.5 MCP assistants — user and admin endpoints
 
@@ -753,7 +774,7 @@ Hosting them server-side rather than on the client also removes three problems: 
 #### Two endpoints, not one tool set filtered by role
 
 | Endpoint | Audience | Gate |
-|---|---|---|
+| --- | --- | --- |
 | `/mcp` | End users | Authenticated `wa-` key / OAuth2 session |
 | `/mcp/admin` | Administrators | `Role.ADMIN` (`shared/auth/rbac.py`) |
 
@@ -810,6 +831,7 @@ Cilium is the assumed substrate (§3). Protections ship **ON by default** (Q#8),
 ### 12.1 Managed-by-WaddleAI policy (Management reconciler)
 
 `services/management/app/services/cilium_policy.py` renders and upserts CRDs from DB settings via an RBAC-scoped ServiceAccount:
+
 - **Rate limiting** — CiliumEnvoyConfig with Envoy `local_ratelimit` on the Gateway/HTTPRoute path, per-org descriptors (per-key stays in the AIProxy token gate — Q#10, no CRD churn on key rotation).
 - **Network isolation** — CiliumNetworkPolicy: default-deny per namespace; explicit flows (client→Gateway, Gateway→AIProxy, AIProxy→fleet/Postgres/Valkey, Management→Postgres/Valkey/kube-apiserver); **fleet pods admit ingress only from AIProxy** (§10.3).
 
@@ -826,8 +848,6 @@ On Cilium deployments the installer **detects missing CRDs/agents** (e.g., Tetra
 
 `helm template` golden files per toggle combination; kind-cluster deploy verifies proxy + management + fleet pods, CNP default-deny effective (unauthorized cross-namespace call blocked), rate-limit CEC applied; CRD-absent path renders and deploys without the Cilium CRDs present; RBAC least-privilege check on the reconciler ServiceAccount; admission-policy negative test (a root/hostPath pod is rejected).
 
-
-
 ## 13. Data Model & Migration Ledger
 
 Baseline: Alembic migrations `001`–`006` exist (baseline, provider_credentials, routing_matrix credential_label, drop provider api_key, content_filter tables, **memory scope** — `006_add_memory_scope` shipped 2026-07-15 with the v0.2.x memory access-control feature: `memory_embeddings.scope_type`/`author_user_id` + backfill). New work starts at **007**. SQLAlchemy models in `services/management/app/models_sqlalchemy.py`; penguin-dal for runtime, Alembic sole schema authority (house rule). Every migration ships with a downgrade and a round-trip test on a seeded snapshot.
@@ -835,7 +855,7 @@ Baseline: Alembic migrations `001`–`006` exist (baseline, provider_credentials
 ### 13.1 Migration sequence
 
 | # | Phase | Migration | Changes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 007 | §5,§12 | `drop_ailb_add_native_limits` | Drop `marchproxy_ailb_sync`; fold `ailb_usage_events`+`ailb_usage_records` → `token_usage` (`source='ailb_import'`) then drop; drop `virtual_keys.ailb_*`; guard-add `virtual_keys.budget_monthly_tokens/budget_monthly_usd` (rpm_limit/tpm_limit already exist — check-if-missing); add `token_usage.source`; add `organizations.rpm_limit` (per-org Cilium edge RPM, §12.1); seed `token_conversion_rates` from migrated `DEFAULT_CONVERSION_RATES` |
 | 008 | §2,§5 | `model_registry` | `model_registry` (name, role, license, origin, min_vram, ollama_tag, resolved_digest, is_utility); seed dual-default set; add `provider_credentials.plan_budget jsonb` |
 | 009a | §6 | `response_cache` | `cache_configs`, `response_cache_entries` (pgvector + HNSW); add `token_usage.cache_status/tokens_saved` |
@@ -845,7 +865,9 @@ Baseline: Alembic migrations `001`–`006` exist (baseline, provider_credentials
 | 012 | §9 | `knowledge` | `code_repos`, `code_chunks`, `docs_cache_pages`, `docs_sources` (per-source license table, §2.5) (all pgvector); extend `rag_documents`/`memory_embeddings` with the remaining §9.7 scope/trust/version/status/provenance columns (`memory_embeddings.scope_type`/`author_user_id` already shipped in 006 — extend, don't re-add) |
 | 013 | §10 | `fleet` | `fleet_backends`; extend `ollama_deployments`/`llamacpp_deployments` for the backend interface + `management_scope` |
 | 014 | §11 | `integrations` | `mcp_endpoints`, `mcp_user_links` (per-user external-MCP tokens, encrypted) |
-| 015 | §18 | `hooks` | `hook_rules`, `hook_denylist_entries`, `hook_configs`, `hook_telemetry_events` (agent-hooks evaluation, §18.7) |
+| 015 | §17 | `local_vectorstore` | `local_vector_collections`, `local_vector_points` (the local-only pgvector-compatible store) |
+| 016 | §18 | `hooks` | `hook_rules`, `hook_denylist_entries`, `hook_configs`, `hook_telemetry_events` (agent-hooks evaluation, §18.7) |
+| 017 | §20 | `configuration_revisions` | `configuration_revisions`, `manifest_apply_runs`, and stable resource-identity fields needed to reconcile the v1alpha1 DAC subset; exact schema is part of the §20 implementation plan |
 
 All migrations land within the `release/v0.2.X` line (one per feature branch, §14.1). **Numbers here express intended dependency order, not fixed Alembic revisions**: parallel feature branches (notably 009a/009b, and 010+ which branch off 008/009) get their final `down_revision` set to the actual head **at merge time** — each plan rebases onto the then-current head. This is the normal Alembic-DAG-resolved-at-merge model; do not treat the integers as pre-committed. Applied sequentially at release.
 
@@ -873,7 +895,7 @@ All migrations land within the `release/v0.2.X` line (one per feature branch, §
 **Branch plan (each merges into `release/v0.2.X`):**
 
 | Branch | Delivers | Depends on |
-|---|---|---|
+| --- | --- | --- |
 | `chore/license-server-waddleai-product` *(license-server repo)* | §14.6 define `waddleai` product + features + entitlement rows + `waddleai-flags` PostHog project | — (prerequisite) |
 | `chore/consolidate-quart-k8s` | §4 Flask→Quart, retire FastAPI plane, one k8s tree, proxy in Helm, Valkey, contract snapshots | — (first) |
 | `feature/aiproxy-migration` | §5 AILB code merge, token gate, big-5 dispatch, `/v1/messages` parity, `ProxyPipeline`, migrations 007–008 | consolidate |
@@ -885,10 +907,11 @@ All migrations land within the `release/v0.2.X` line (one per feature branch, §
 | `feature/knowledge-layer` | §9 CodeRAG, docs cache, PDF/MD ingest, hybrid delivery, migration 012 | pipeline, embedding cache |
 | `feature/inference-fleet-v2` | §10 fleet interface, hardened Ollama, cloud targets, migration 013 | routing |
 | `feature/mcp-v2-integrations` | §11 MCP server/gateway, CLI, apparatus docs, migration 014 | knowledge, routing |
-| `feature/agent-hooks` | §18 agent-hooks evaluation engine (tier1 denylist, admin `hook_rules`, opt-in Tier-2 §8 reuse), migration 015 | security-v2 |
+| `feature/local-vectorstore` | §17 local-only vectorstore profile, migration 015 | knowledge, response-cache |
+| `feature/agent-hooks` | §18 agent-hooks evaluation engine (tier1 denylist, admin `hook_rules`, opt-in Tier-3 §8 reuse), migration 016 | security-v2, desktop companion contract |
 | `chore/tetragon-admission-policies` | §12 optional Tetragon + admission policy values | cilium-reconciler |
 
-Deferred to a later release (explicitly out of v0.2.x): `task_detect` de-escalation (§7.3), PenguinCode convergence, VS Code extension refresh (§11.3, cuttable). Every feature ships behind its PostHog flag defaulted OFF (§14.5), flipped on after beta validation, flag removed once stable. Licensed sub-features additionally gate on the license client (§14.6).
+Deferred to a later release (explicitly out of v0.2.x): §20 DAC (`feature/configuration-as-code`, migration 017), `task_detect` de-escalation (§7.3), PenguinCode convergence, VS Code extension refresh (§11.3, cuttable). Every feature ships behind its PostHog flag defaulted OFF (§14.5), flipped on after beta validation, flag removed once stable. Licensed sub-features additionally gate on the license client (§14.6).
 
 ### 14.2 Standing gates (every release)
 
@@ -906,7 +929,7 @@ Deferred to a later release (explicitly out of v0.2.x): `task_detect` de-escalat
 - **smart-routing (§7)**: capability-veto + all four escalation triggers + idle_reset boundaries + sensitivity clamp + budget-pressure (typed token/dollar/plan budgets, toggle-off) + chaos failover.
 - **security-v2 (§8)**: adversarial + guard-integrity + bypass + upstream-filter suites (§8.10).
 - **knowledge-layer (§9)**: CodeRAG symbol-retrieval precision + incremental re-index + injection-safety; docs fetch against local fixture server + attribution; PDF/MD ingestion round-trip; client-type injection matrix + token-budget truncation; org-isolation on all knowledge stores.
-- **inference-fleet / mcp-integrations (§10,§11)**: fleet interface conformance across five backends (Ollama/llama.cpp real in kind, others mocked); CNP unauthorized-pod-blocked; hardened image Trivy + nonroot/readonly + initContainer pull; mTLS handshake against external-node simulator; idle-teardown lifecycle; Free-tier cap + Pro gating; MCP v2 over both transports; external-MCP gateway header+OAuth2 × both identity modes; per-tool security policy on an external tool call.
+- **inference-fleet / mcp-integrations (§10,§11)**: fleet interface conformance across every registered model-serving backend (Ollama/llama.cpp real in kind, others mocked); CNP unauthorized-pod-blocked; hardened image Trivy + nonroot/readonly + initContainer pull; mTLS handshake against external-node simulator; idle-teardown lifecycle; Free-tier cap + Pro gating; MCP v2 over both transports; external-MCP gateway header+OAuth2 × both identity modes; per-tool security policy on an external tool call.
 - **cilium / tetragon-admission (§12)**: `helm template` golden per toggle combo + kind deploy + CRD-absent graceful path + RBAC least-privilege + admission negative test.
 
 ### 14.4 Test infrastructure
@@ -935,6 +958,7 @@ if features.enabled("smart_routing", distinct_id=org_id):   # waddleai.smart_rou
 **SDK**: `penguin-licensing` (PyPI) — `LicenseClient(license_key=…, product="waddleai", base_url=LICENSE_SERVER_URL)`; `product` **must** be passed (SDK default is `elder`). Env: `LICENSE_KEY`, `LICENSE_SERVER_URL` (default `https://license.penguintech.io`), `PRODUCT_NAME=waddleai`, `RELEASE_MODE` (gating active only when `true` — dev builds ungated), `APP_VERSION`; PostHog: `POSTHOG_KEY`, `POSTHOG_HOST`.
 
 **Calls used**:
+
 - `validate()` → tier + features + limits (5-min cached); startup + periodic.
 - `check_feature("<feature>")` → bool for entitlement gates (fail-closed).
 - `keepalive({"users": N, "nodes": M})` → the metering checkin; server upserts each key into `entitlement_usage` and returns overage warnings. WaddleAI reports **`users`** (Pro seats: SSO identities + named `wa-` key owners) and **`nodes`** (managed inference nodes incl. cloud endpoints) on a scheduled job (supercronic, per container standards).
@@ -942,6 +966,7 @@ if features.enabled("smart_routing", distinct_id=org_id):   # waddleai.smart_rou
 **Two-layer gate** (house rule): a licensed feature checks its PostHog flag (general enablement) **and** `check_feature()` (entitlement). Free/`community` never sees Pro/Enterprise features even with a flag on.
 
 **⚠️ New work required — no `waddleai` product exists in the license server yet** (survey confirmed: only test fixtures reference it). A prerequisite task (branch `chore/license-server-waddleai-product`, in the license-server repo) must define:
+
 - a `products` row `name="waddleai"`;
 - `product_features` rows with `flag_key=waddleai.{feature}`, `tier_requirements` mapping (e.g. `sso`, `hybrid_targets`, `security_scoping`, `semantic_cache` → professional; `kms_encryption`, `multi_tenancy` → enterprise; core proxy/routing/exact-cache/basic-security → community);
 - `entitlement_usage` rows pre-seeded with `max_allowed` for `users`/`nodes` per tier (community: nodes ≤5, models ≤3; professional/enterprise: unlimited = `-1` / metered);
@@ -960,7 +985,7 @@ External AI-gateway review. Most items already live in the spec; recorded here a
 ### 15.1 Already covered (map to existing sections)
 
 | Suggestion | Where it lives |
-|---|---|
+| --- | --- |
 | Automatic provider fallback + circuit breaking (Anthropic 5xx/**529**/rate-limit → alternate provider incl. Bedrock/Azure OpenAI) | §5.3.4 (taxonomy + breaker) + §7.3 availability failover — **add HTTP 529 "Overloaded" to the retryable set explicitly** |
 | Semantic caching (vector, ~0.95 similarity, <10ms) | §6.2 semantic cache (pgvector/HNSW, 0.95, restricted classes) |
 | Tiered / smart model downgrading (simple prompt → cheaper model) | §7 smart routing cascade + §7.3 budget-pressure downgrade |
@@ -974,7 +999,7 @@ External AI-gateway review. Most items already live in the spec; recorded here a
 ### 15.2 Net-new (tracked; not yet specified)
 
 | # | Item | Target | Notes |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | G1 | **SCIM 2.0 user/group provisioning** (auto create/revoke from Okta/Entra/Google groups) | v0.6.x (Enterprise) | Distinct from SSO login (§2.4); needs a SCIM endpoint + directory-group→role/scope mapping |
 | G2 | **External secrets managers for upstream provider keys** (HashiCorp Vault, AWS Secrets Manager, Azure Key Vault) — fetch at runtime instead of storing in Postgres | v0.5.x (Enterprise) | Complements, not replaces, §8 credential encryption; a `SecretsBackend` interface like the fleet interface (§10.1). Ties to security-review finding on at-rest provider keys |
 | G3 | **Immutable audit log + SIEM export** (append-only admin-action log → Splunk/Datadog/CloudWatch/Elastic) | v0.6.x (Enterprise) | §2.4 names audit logs; this adds tamper-evidence + external export sinks. Directly addresses the "no immutable trail of admin actions" gap the security review exposed |
@@ -992,6 +1017,7 @@ Net-new schema (chargeback tags G5, SCIM mappings G1, secrets-backend config G2,
 **Where it is built:** instrumentation lands **inside the §5 `ProxyPipeline` stage classes as they are written**, not as a later retrofit — each stage emits a span, so the pipeline's stage-log and its trace are the same structure. A separate bolt-on pass would have to re-open every stage.
 
 **Scope for v0.2.x:**
+
 - **Tracer/meter bootstrap** in both services (`proxy` and `management`): OTLP exporter, resource attributes (`service.name`, `service.version` from `.version`, `deployment.environment`), sampling config. All via env (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_SERVICE_NAME`, …) — no OTel endpoint configured ⇒ instrumentation is a no-op, never a startup failure.
 - **Span per pipeline stage** (auth → token/budget gate → security-in → cache → routing → dispatch → security-out → meter), parented to the inbound request span; the dispatch span wraps the upstream provider call so provider latency is separable from proxy overhead.
 - **GenAI semantic conventions** on the dispatch span: `gen_ai.system`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.response.finish_reason`. **These conventions are still Development status upstream** (attribute names may change without a major bump), so emit via `OTEL_SEMCONV_STABILITY_OPT_IN` dual-emission rather than hard-coding today's names.
@@ -1014,7 +1040,7 @@ Product intent, not yet a specified feature: image, audio, music, and video **ge
 **Security-first constraints — binding on any future scoping pass.** "With the safety layer" means more than filtering the artifact after the fact; the following are design constraints, not nice-to-haves:
 
 | Constraint | Why |
-|---|---|
+| --- | --- |
 | **Generation prompts are screened pre-dispatch** by §8.3's request-intent classifier, not only post-hoc by §8.3a and §8.4's output guardrails | The prompt is itself the policy surface. A request for sexual imagery of minors, non-consensual intimate imagery, or a deepfake of an identifiable person must be refused *before* a backend is invoked — filtering the returned artifact means the platform generated it first. §8.3's concern categories extend with generation-specific ones |
 | **Generated artifacts carry machine-readable provenance** (C2PA-style content credentials or equivalent) | Attribution of synthetic media is a live regulatory obligation, not a courtesy. §15's EU AI Act readiness item covers the transparency duties for AI-generated content; the exact obligation and its scope need legal confirmation, but designing artifacts as unmarked-by-default would be the wrong starting point |
 | **Likeness and identity controls** are a first-class policy category, org-configurable per §8.1 scopes | Deepfake generation is the highest-severity abuse case for this feature and the one most likely to create legal exposure for a deployment operator |
@@ -1028,7 +1054,7 @@ Gathered against the §2.2 origin policy and the §2.3 licence admissibility tes
 **Image**
 
 | Model | Origin | Licence | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | FLUX.1 [schnell] | Black Forest Labs (Germany) | Apache-2.0 — model card: "Released under the apache-2.0 licence… personal, scientific, and commercial purposes" | Default candidate |
 | SANA 1.6B | NVIDIA + MIT Han Lab (US) | Apache-2.0 | Default candidate |
 | AuraFlow | Fal.ai (US) | Apache-2.0 | Default candidate |
@@ -1040,7 +1066,7 @@ Gathered against the §2.2 origin policy and the §2.3 licence admissibility tes
 **Video**
 
 | Model | Origin | Licence | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Mochi 1 | Genmo (US) | Apache-2.0 — model card: "releasing the model under a permissive Apache 2.0 license" | Default candidate |
 | Allegro | Rhymes.AI (US) | Apache-2.0 — model card: "This repo is released under the Apache 2.0 License" | Default candidate |
 | LTX-2 | Lightricks (Israel) | Custom "LTX-Video Open Weights License", non-OSI | Selectable pending legal review. **Clause specifics UNVERIFIED** — the model card links the licence rather than displaying it. Research reports a $10M/yr revenue gate, liquidated double-damages, a ban on building competing products, and viral terms forcing derivatives to stay restrictive; the competing-products clause is a direct risk for an AI platform vendor. Do not admit as a default until the primary licence text is read |
@@ -1060,7 +1086,7 @@ Hosted passthrough for video (not self-hostable, not scoped here) is where Googl
 **No qualifying self-hostable model exists** — every self-hostable candidate fails the §2.3 commercial-use axis:
 
 | Model | Origin | Licence | Status |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | MusicGen / AudioCraft | Meta (US) | CC-BY-NC weights (note: AudioCraft *code* is MIT, so training a model on separately-licensed data is a legitimate path) | Free-tier-only, non-commercial-labelled per the §2.3 third licence class |
 | AudioLDM 2 | University of Surrey (UK) | CC-BY-NC-SA | Free-tier-only, non-commercial-labelled per the §2.3 third licence class |
 | Stable Audio | Stability AI | Revenue-gated | Fails the §2.3 commercial-use axis — excluded |
@@ -1093,7 +1119,7 @@ Flag: `waddleai.local_only_profile`. Off by default. An optional deployment prof
 `LocalProfileConfig` (`shared/vectorstore/factory.py`) — every value env-overridable, no literals scattered through call sites:
 
 | Field | Env var | Default |
-|---|---|---|
+| --- | --- | --- |
 | Qdrant URL | `WADDLEAI_LOCAL_QDRANT_URL` | `http://localhost:6333` |
 | Qdrant API key | `WADDLEAI_LOCAL_QDRANT_API_KEY` | unset |
 | Collection prefix | `WADDLEAI_LOCAL_COLLECTION_PREFIX` | `waddleai_local` |
@@ -1105,11 +1131,28 @@ Flag: `waddleai.local_only_profile`. Off by default. An optional deployment prof
 
 Cross-backend conformance suite (pgvector + Qdrant, both against fakes — `FakeDAL` from §10.5's suite, `FakeAsyncQdrantClient`) covering idempotent `ensure_collection`, dimensions- and embedder-mismatch refusal, upsert/search/delete/delete_collection round trips, `min_score`/`top_k`; a unit test asserting flag-off uses the pgvector path and constructs no Qdrant client; a live Qdrant+Ollama integration pass (`tests/integration/test_vectorstore_local_profile.py`, auto-skipped when either is unreachable) that embeds real text via `nomic-embed-text` and proves the 768-vs-384 mismatch is refused for real, not only against a fake.
 
-## 18. Agent Hooks — Developer-Ecosystem Lifecycle Integration
+## 18. Agent Hooks — Developer-Ecosystem Lifecycle Integration & Client-Side Orchestration
 
-Server-side evaluation for hooks fired by developer-agent tooling (Claude Code/Cortex, Google Antigravity/AGY CLI, VS Code) -- `PreToolUse`/`PostToolUse`/session/notification events. **Hooks fire synchronously inside the agent's loop**, so latency is a correctness concern, not a nicety: a naive round trip per tool call is unacceptable as a default, and the design below is shaped around that constraint at every layer. Per-ecosystem client adapters are out of scope here (built against this section as a fixed contract); this section is the server side only.
+Server-side evaluation and client-side harness hooks fired by developer-agent tooling (Claude Code/Cortex, Google Antigravity/AGY CLI, OpenCode, VS Code) -- `PreToolUse`/`PostToolUse`/session/notification events. **Hooks fire synchronously inside the agent's loop**, so latency is a correctness concern, not a nicety: a naive round trip per tool call is unacceptable as a default, and the design below is shaped around that constraint at every layer.
 
-**Desktop-companion split (load-bearing architectural boundary).** A Rust module in the `penguin` desktop client (per `client.md`'s desktop-consolidation rule -- one modular desktop app, not one per product) is the component that actually installs and manages the per-ecosystem hook shims, caches the Tier-1 denylist for the offline fail-closed path (§18.2), and stores any credentials in platform secure storage (Keychain/Keystore/Credential Manager). It deliberately holds **no policy logic** of its own -- every `allow`/`deny`/`ask` decision comes from `POST /api/v1/hooks/evaluate` on this server, never from logic embedded in the desktop companion. This is why hook and proxy decisions cannot drift in either direction: there is exactly one place policy is evaluated, and the desktop companion is a thin installer/cache/transport layer in front of it, not a second decision-maker.
+### 18.0 Client/Harness-Side Routing & Orchestration (Offloading the Proxy)
+
+Hooks empower client-side harnesses to handle role specialization, workflow redirection, and subagent dispatch locally so that fewer calls need to be dynamically re-routed by the proxy. **The AIProxy still validates all requests** (auth, token budgets, security filtering, caching, policy compliance, and audit), but pre-routing in the harness dramatically lowers proxy compute/memory overhead and cuts request turnaround latency:
+
+- **Architect / Foreman / Worker Hierarchy**: Harness hooks inspect the active task context, role definitions, and agent tier to enforce structural separation of concerns directly client-side:
+  - **Admin Role-Model Configuration (CLI / WebUI via Hub-API)**: Within WaddleAI (via `waddleai` CLI or the WebUI calling the Hub-API `/api/v1/routing/role-models`), administrators configure which candidate models are permitted/available for each role tier:
+    - **Architect Role**: Set candidate models (e.g. Claude Fable, Gemini Ultra/Pro, Codex/GPT-5-preview).
+    - **Foreman / Orchestrator Role**: Set candidate models (e.g. Claude Opus, GPT-4o, Gemini 3.5 Pro).
+    - **Worker Role**: Set candidate models across specialized sub-roles (e.g. named specialists, Claude Sonnet, Claude Haiku, Codex, Google Antigravity/AGY, and local fleet engines like Ollama/llama.cpp).
+  - **Capability & Context-Based Resolution**: WaddleAI automatically determines the best model for each concrete assignment based on:
+    1. **Model Capabilities**: Context window size, reasoning/code evaluation scores, tool-use fidelity, latency profile, and structured output support.
+    2. **Admin-Provided Context & Policy**: Cost tiers, local-first vs commercial preferences, data sensitivity clamps, and provider plan budgets configured by the admin.
+  - The resolved model configuration is synchronized down to client harnesses via `waddleai harness sync` or session-start hooks, allowing the harness to execute role dispatches against pre-resolved optimal models.
+- **Force Redirect & Upstream Model Alignment**: Instead of having every turn arrive as a generic frontier-model request that the proxy must inspect and reroute via server-side heuristics/classifiers, client hooks enforce optimal model assignment before dispatch. Routine operations (e.g., git commands, file scanning, formatting) are steered directly to lightweight or local models, eliminating proxy re-routing hops and reducing time-to-first-token.
+- **Skill & MCP Tool Scoping**: Client-side hooks selectively inject or activate particular skills and MCP server tools (auto-installed in a disabled state per §11.3) based on task intent and active worker roles. Only the tools relevant to the worker's bounded assignment are exposed, preventing prompt context bloat.
+- **Defense in Depth via Proxy Validation**: The proxy remains the authoritative gatekeeper. Even when a harness selects or redirects to a model/endpoint, the proxy validates that the identity has permission for that model, checks token/quota limits, scans for prompt injection and PII, records cache hits, and meters usage. The harness optimization provides speed and efficiency without sacrificing security or governance.
+
+**Desktop-companion split (load-bearing architectural boundary).** A Rust module in the `penguin` desktop client (per `client.md`'s desktop-consolidation rule -- one modular desktop app, not one per product) is the component that actually installs and manages the per-ecosystem hook shims, caches the Tier-1 denylist for the offline fail-closed path (§18.2), and stores any credentials in platform secure storage (Keychain/Keystore/Credential Manager). It evaluates client-side routing/orchestration hooks locally while delegating central policy decisions to `POST /api/v1/hooks/evaluate`. This ensures hook and proxy decisions cannot drift in either direction: there is exactly one place policy is evaluated, and the desktop companion is a thin installer/cache/transport layer in front of it.
 
 ### 18.1 Contract
 
@@ -1125,7 +1168,12 @@ Server-side evaluation for hooks fired by developer-agent tooling (Claude Code/C
 Response:
 
 ```json
-{"decision":"allow|deny|ask","reason":"str","rule_id":"str|null","evaluated_in_ms":int}
+{"decision":"allow|deny|ask|redirect",
+ "reason":"str",
+ "rule_id":"str|null",
+ "evaluated_in_ms":int,
+ "redirect_model":"str|null",
+ "active_skills":["str"]|null}
 ```
 
 `POST /api/v1/hooks/telemetry` -- `post_tool_use`/`session_start`/`notification` events that need no decision; fire-and-forget, must never block the agent. `GET /api/v1/hooks/policy` -- the canonical Tier-1 denylist for adapters to sync and cache locally. All three are authenticated the same as every other endpoint (JWT/API-key -> `g.user["organization_id"]`, never a client-supplied org) and deliberately return the **flat** shapes above, not the house `{"status","data","meta"}` envelope -- adapters are coded against this exact contract, and wrapping it would break interop. Admin CRUD for the tables below (§18.3/§18.4) uses the house envelope as normal.
@@ -1137,7 +1185,7 @@ Response:
 Four tiers, evaluated in order, short-circuiting as soon as one produces a decision (`shared/security/hooks_engine.py`):
 
 | Tier | What | Fail mode |
-|---|---|---|
+| --- | --- | --- |
 | 1. Canonical denylist | Builtin seed (`.env*`, `.git/**`, `*.pem`, `*.key`, `id_rsa*`/`id_ed25519*`, `credentials.json`, `~/.ssh/**`, `~/.aws/**`, lockfiles) ∪ admin-added entries, matched against the flattened `tool_input` text | **Fails closed**, both sides: adapters enforce this list **offline** (zero network cost) and keep enforcing their last-synced copy if WaddleAI is unreachable; the server also checks it unconditionally, before Tier 2/3 even load, as defense in depth |
 | 2. Admin `hook_rules` | Declarative matcher (ecosystem/event/tool_name/pattern) -> `allow`\|`deny`\|`ask`, authored by an admin (§18.3) | A match is authoritative -- skips Tier 3 entirely |
 | 3. Remote policy evaluation | Opt-in (`hook_configs.remote_eval_enabled`, default OFF), org-scoped, calls the **existing** §8 `SecurityPolicyEngine`/`ContentFilter` against the flattened `tool_input` text -- never a bespoke reimplementation, so hook and proxy security decisions cannot drift | Explicit per-org config choice, defaulted **open** -- see below |
@@ -1179,7 +1227,7 @@ All authored logic lives server-side -- versioned, auditable, instantly revocabl
 Emitted via the existing `shared/utils/metrics.py::WaddleAIMetrics` pattern (`get_management_metrics()`):
 
 | Metric | Labels | Purpose |
-|---|---|---|
+| --- | --- | --- |
 | `waddleai_hook_invocations_total` | ecosystem, event, decision | Volume + decision mix |
 | `waddleai_hook_evaluation_duration_seconds` | ecosystem, event | Histogram -- hooks sit on the critical path, so p50/p95/p99 of server-side evaluation is the number that matters |
 | `waddleai_hook_timeouts_total` | tier | Tier-3 (and future-tier) timeout count |
@@ -1277,16 +1325,159 @@ exists to remove.
 
 ---
 
+## 20. Declarative Configuration as Code (DAC / Manifest-Driven State)
+
+> **Draft framing — separate post-v0.2 delivery.** DAC is not part of the MCP, fleet, or agent-hooks implementation branches. It becomes implementable only after the underlying Management APIs, stable resource identities, audit logging, and the credential-reference contract have landed. The first release is a management-plane API/CLI feature; it does not introduce a Kubernetes CRD, a continuously running GitOps controller, or autonomous deletion.
+
+To support Git-backed change review and automated configuration pipelines (Ansible, Terraform, CI/CD), WaddleAI will provide declarative Configuration-as-Code (DAC). Admins define a bounded desired state — initially fleet backends/model placements, registered MCP endpoints, routing role assignments, and declarative hook rules — in a YAML manifest and apply it through the **Management API**, the **WebUI** diff view, or the **CLI** (`waddleai apply -f manifest.yaml`). A manifest references a credential; it never carries a credential value.
+
+### 20.1 Manifest Schema (`waddleai.penguintech.io/v1alpha1`)
+
+Manifests follow a declarative Kubernetes/ArgoCD-style resource format (`apiVersion`, `kind`, `metadata`, `spec`):
+
+```yaml
+apiVersion: waddleai.penguintech.io/v1alpha1
+kind: WaddleAIConfiguration
+metadata:
+  name: production-ai-fleet
+  organization: engineering-core
+spec:
+  # 1. Inference Fleet Backends & Cloud Deployments (§10.1)
+  backends:
+    - name: local-gpu-pool
+      type: ollama
+      mode: daemonset
+      management_scope: full_lifecycle
+      config:
+        gpu_type: nvidia
+        max_vram_gb: 48
+      models:
+        - name: gemma4:e4b
+          pull_source: ollama_library
+          pinned: true
+        - name: granite-code:8b
+          pull_source: huggingface
+          hf_repo: ibm-granite/granite-8b-code-instruct-GGUF
+          quantization: Q4_K_M
+    - name: aws-us-east-1-bedrock
+      type: bedrock
+      region: us-east-1
+      management_scope: register_and_route
+      credentials_ref: vault://secret/aws/bedrock-creds
+      models:
+        - name: anthropic.claude-3-5-sonnet-20241022-v2:0
+        - name: anthropic.claude-3-haiku-20240307-v1:0
+    - name: azure-eastus-openai
+      type: azure_ai
+      region: eastus
+      management_scope: full_lifecycle
+      credentials_ref: vault://secret/azure/openai-creds
+      config:
+        idle_teardown_minutes: 60
+      models:
+        - name: gpt-4o
+        - name: o1-preview
+
+  # 2. Model Roles & Hierarchy Configuration (§18.0)
+  role_models:
+    architect:
+      candidates:
+        - claude-fable-5
+        - gemini-3.5-pro
+      selection_policy: highest_reasoning
+    foreman:
+      candidates:
+        - claude-3-5-opus
+        - gpt-4o
+        - gemini-3.5-pro
+      selection_policy: balanced_orchestration
+    worker:
+      default_candidates:
+        - claude-3-5-sonnet
+        - gemma4:e4b
+      specialists:
+        code_refactor:
+          - claude-3-5-sonnet
+          - granite-code:8b
+        ops_search:
+          - claude-3-5-haiku
+          - local-gpu-pool/gemma4:e4b
+
+  # 3. Model Context Protocol (MCP) Servers (§10.1, §11.3, §11.4)
+  mcp_servers:
+    - name: code-search-service
+      type: managed_container
+      image: ghcr.io/penguintechinc/mcp-codesearch:v1.0.0
+      transport: stdio
+      auto_install:
+        enabled_by_default: false  # Auto-installed in disabled state per §11.3
+        target_harnesses: [claude_code, agy, opencode, cursor]
+    - name: postgres-dev-db
+      type: external
+      url: https://mcp-pg.internal.corp:8443
+      transport: streamable_http
+      auth_ref: vault://secret/mcp/postgres-token
+      auto_install:
+        enabled_by_default: false
+
+  # 4. Security Policies & Content Filters (§8, §18.2)
+  security:
+    content_filter:
+      tier1_builtin_patterns: enforced
+      ner_detection:
+        enabled: true  # Professional/Enterprise feature (§19.1)
+        entities: [PERSON, ORGANIZATION, LOCATION]
+      custom_rules:
+        - name: block-internal-ips
+          pattern: "10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}"
+          action: redact
+    agent_hooks:
+      fail_mode: open  # §18.2 default
+      capture_raw_payloads: false  # §18.5 privacy default
+      rules:
+        - name: deny-ssh-access
+          match_pattern: "~/.ssh/**"
+          decision: deny
+```
+
+### 20.2 Reconciler & Ingestion Workflows
+
+1. **API Endpoint (`POST /api/v1/manifests/apply`)**:
+   - Accepts `text/yaml` or parsed JSON.
+   - **Plan/dry-run mode (`?dry_run=true`)**: validates the schema, verifies that the caller may use every credential reference (without returning or materializing its secret), runs licence/cap checks (§2.4), and returns a deterministic create/update/no-op/delete plan. It never mutates state.
+   - **Apply mode**: requires a current `plan_id` and executes only that plan in topological dependency order (credential references → fleet backends → model placements → MCP endpoints → routing roles → hook rules). A stale plan is rejected and must be regenerated.
+   - Reconciliation is idempotent by `(organization_id, metadata.name)` plus the resource's server-issued immutable ID. A name collision without the matching identity is a conflict, never an implicit takeover.
+2. **CLI Integration (`waddleai apply`)**:
+   - `waddleai apply -f config.yaml --dry-run` is the default; `--confirm <plan_id>` performs an apply. `--prune` is not available in the first release.
+   - `waddleai export` emits references and redacted configuration only; it never exports tokens, client secrets, or encrypted blobs.
+3. **WebUI DAC Studio**:
+   - Admins can validate manifests and view a side-by-side plan. Applying requires the same explicit `plan_id`, confirmation step, RBAC checks, and audit note as the CLI.
+
+### 20.3 First-release boundary and safety invariants
+
+- **Included:** only resources backed by landed, flag-gated Management APIs; the implementation plan enumerates the exact v1alpha1 fields and rejects unknown kinds/fields.
+- **Excluded:** a GitOps controller/CRD, direct provider-credential creation, arbitrary shell/hooks, auto-installing desktop configuration, and automatic deletion/pruning. Those each need an independent threat model and rollout plan.
+- **Auth and tenancy:** the organization is taken exclusively from the authenticated principal; `metadata.organization` is display-only and must match the caller's organization. Normal resource RBAC still applies to every planned operation.
+- **Secrets:** manifests may contain only approved `credentials_ref`/`auth_ref` identifiers. Inline token, password, key, or client-secret fields are rejected before plan generation and redacted in audit/events.
+- **Audit and rollback:** persist the source digest, actor, plan, result, and per-resource outcome in `manifest_apply_runs`. Apply is transactional where the backing APIs support it; otherwise the response names completed operations and compensating actions. A previous revision can be re-applied, but DAC does not promise an unsafe automatic rollback.
+- **Feature gate:** `waddleai.configuration_as_code`, default OFF and fail-safe OFF. Flag-off returns feature-disabled before parsing a manifest.
+
+### 20.4 Follow-on: GitOps controller
+
+ArgoCD/Flux integration, a `WaddleAIConfiguration` CRD, scheduled reconciliation, and an opt-in prune policy are explicitly follow-on work. They require webhook/repository identity, signature and provenance verification, a reconciliation service account, drift policy, backoff/observability, and a deletion threat model. They must not be inferred from the first-release API.
+
+---
+
 ## Status
 
-**§19 records product positioning and the 2026-08-21 direction (licence-gated PII, credential reference injection, SPIFFE readiness); §19.2 and §19.3 are drafted, not built.** **Sections 1–15 complete** (incl. §6A proxy memory layers, §9.7 memory scoping/trust/isolation model, and §15 enterprise-readiness backlog from external review); **§16 records generative-media product direction as roadmap, not yet scoped**; **§17 (local-only profile) complete**, migration 015; **§18 (Agent Hooks) complete**, migration 016. All 11 open questions resolved. Everything ships in **v0.2.x** across the per-feature branches in §14.1. Licensing/flagging aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition flagged as a prerequisite. Ready for full-spec review, after which each feature branch gets a task-by-task TDD implementation plan in `docs/superpowers/plans/` (following the existing llamacpp plan format) for Opus to implement on `release/v0.2.X`.
+**This is an implementation specification, not a completion record.** Sections §4–§15 have branch-level TDD plans; §17 and §18 have their architecture and release boundaries framed but still require task-by-task plans; §19.2/§19.3 and §20 are drafted, not built. §16 remains product-direction roadmap only. The v0.2.x branch map is §14.1; DAC is explicitly post-v0.2.x. All 11 original open questions are resolved. Licensing/flagging is aligned to the real `penguin-licensing` + self-hosted PostHog contract (§14.5/§14.6), with the license-server `waddleai` product definition a prerequisite. No feature is considered complete until its flag-off proof, migration round-trip, required acceptance suite, and release gates have passed.
 
 ---
 
 ## Open Questions Ledger — ALL RESOLVED (2026-07-09)
 
 | # | Question | Decision |
-|---|---|---|
+| --- | --- | --- |
 | 1 | AILB historical usage rows | **Fold into `token_usage`** with `source='ailb_import'`, then drop tables — billing/dashboard continuity |
 | 2 | Anthropic `cache_control` auto-inject | **Default ON** (prefixes >1024 tokens seen ≥2×), per-org toggle, billing-profile change documented |
 | 3 | Semantic-cache first-cut scope | **Restricted classes @ 0.95**: default OFF; when enabled — single-turn/last-turn-only, no tools, no memory injection, temperature 0, router-classified informational/Q&A; threshold per-org tunable |

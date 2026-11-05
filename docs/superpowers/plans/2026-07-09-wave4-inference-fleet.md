@@ -8,11 +8,20 @@
 
 ---
 
-**Goal:** A pluggable `InferenceFleetBackend` interface behind which five backend types live — **Ollama** (primary, DaemonSet + pool mode), **llama.cpp** (DaemonSet/remote), **EXO** (external-only, GPLv3 network boundary), **Vertex AI** and **Bedrock** (Professional-gated cloud, with mandatory idle-teardown). The two existing managers are **restructured, not rewritten**, to implement it. A `fleet_backends` registry table carries `type` + `management_scope` (`register_and_route` | `full_lifecycle`). Placement is placement-aware: the §7 router consults `endpoints_for(model)` with session affinity, hot-model pinning, lazy pull, and origin deny-list; Free-tier caps (≤5 nodes / ≤3 models, utility models excluded) are enforced via the license client at `provision`/`place_model`/registry-registration. A hardened, digest-pinned, non-root, read-only-rootfs `ghcr.io/penguintechinc/waddleai/ollama` image (hardened + debug tags, Trivy-gated) replaces the upstream image in the DaemonSet and GPU subcharts. The AIProxy is the **only** authenticated path to inference: ClusterIP + CiliumNetworkPolicy in-cluster (cross-ref Cilium branch §12); mTLS (cert-manager) in beta/prod and shared-token sidecar in alpha for external nodes.
+**Goal:** A pluggable `InferenceFleetBackend` interface behind which fleet backends live — **Ollama** (primary, DaemonSet + pool mode), **llama.cpp** (DaemonSet/remote), **EXO** (external-only, GPLv3 network boundary), and professional-gated **Vertex AI**, **Bedrock**, **Azure AI**, and **Ollama Cloud** targets with mandatory idle-teardown. The existing managers are **restructured, not rewritten**, to implement it. A `fleet_backends` registry table carries `type` + `management_scope` (`register_and_route` | `full_lifecycle`). Placement is placement-aware: the §7 router consults `endpoints_for(model)` with session affinity, hot-model pinning, lazy pull, and origin deny-list; Free-tier caps (≤5 nodes / ≤3 models, utility models excluded) are enforced via the license client at `provision`/`place_model`/registry-registration. A hardened, digest-pinned, non-root, read-only-rootfs `ghcr.io/penguintechinc/waddleai/ollama` image (hardened + debug tags, Trivy-gated) replaces the upstream image in the DaemonSet and GPU subcharts. The AIProxy is the **only** authenticated path to inference: ClusterIP + CiliumNetworkPolicy in-cluster (cross-ref Cilium branch §12); mTLS (cert-manager) in beta/prod and shared-token sidecar in alpha for external nodes.
 
-**Architecture:** `shared/fleet/base.py` defines the ABC (`provision` / `deprovision` / `health` / `list_nodes` / `place_model` / `endpoints_for`) plus `@dataclass(slots=True)` value types (`ProvisionSpec`, `NodeInfo`, `ModelPlacement`, `FleetHealth`, `Endpoint`). A `shared/fleet/registry.py` factory maps `type` → backend class and resolves `config`/`credentials_ref` (provider-credential pattern, Fernet at rest). Caps, node-metering, idle-teardown, and origin-deny are cross-cutting helpers (`caps.py`, `idle_teardown.py`, `placement.py`) shared by every backend so no backend hand-rolls them. Cloud endpoints count as managed nodes for Pro metering (`keepalive({"nodes": M})`, §14.6). Everything new sits behind PostHog flag `waddleai.fleet_v2` (default OFF), evaluated via `shared/licensing/features.py::features.enabled("fleet_v2", distinct_id=str(org_id))` with fail-safe OFF; `vertex_ai`/`bedrock` creation additionally requires `LicenseClient.check_feature("hybrid_targets")`. Flag OFF ⇒ the legacy single-backend Ollama/llama.cpp deployment API stays byte-compatible; the multi-backend registry, cloud backends, caps, and placement path no-op.
+**Architecture:** `shared/fleet/base.py` defines the ABC (`provision` / `deprovision` / `health` / `list_nodes` / `place_model` / `endpoints_for`) plus `@dataclass(slots=True)` value types (`ProvisionSpec`, `NodeInfo`, `ModelPlacement`, `FleetHealth`, `Endpoint`). A `shared/fleet/registry.py` factory maps `type` → backend class and resolves `config`/`credentials_ref` through the provider-credential pattern (Fernet at rest). Caps, node-metering, idle-teardown, and origin-deny are cross-cutting helpers (`caps.py`, `idle_teardown.py`, `placement.py`) shared by every backend so no backend hand-rolls them. Cloud endpoints count as managed nodes for Pro metering (`keepalive({"nodes": M})`, §14.6). Everything new sits behind PostHog flag `waddleai.fleet_v2` (default OFF), evaluated via `shared/licensing/features.py::features.enabled("fleet_v2", distinct_id=str(org_id))` with fail-safe OFF; cloud-target creation additionally requires `LicenseClient.check_feature("hybrid_targets")`. Flag OFF ⇒ the legacy single-backend Ollama/llama.cpp deployment API stays byte-compatible; the multi-backend registry, cloud backends, caps, and placement path no-op.
 
 **Tech Stack:** Python 3.13, Quart + hypercorn, penguin-dal (runtime) / SQLAlchemy + Alembic (schema), penguin-aaa (auth), penguin-licensing (`LicenseClient`), Valkey 8 (session affinity + node/model cap counters), `google-cloud-aiplatform` (Apache-2.0, Vertex), `boto3` (Apache-2.0, Bedrock), `kubernetes` client, aiohttp (EXO/health), pytest + pytest-asyncio, fakeredis + `unittest.mock` (unit), kind (Ollama/llama.cpp real, cloud/EXO mocked). Hardened image via moby-expert; Helm/CNP via k8s-manifest-builder.
+
+### Draft extension boundary
+
+The current executable tasks cover serving/model backends only. Two adjacent ideas remain **framed follow-on work**, not implied by `BackendType` or this migration:
+
+- **Managed MCP server deployment** belongs to the MCP gateway plan. It needs a separate deployment contract (image provenance and digest policy, namespace/network policy, service account/RBAC, readiness, tool-discovery lifecycle, endpoint ownership, and cleanup) before a `mcp_server` fleet type can be implemented. Until then, fleet-managed MCP endpoints are registered through the §11 gateway rather than treated as text-inference endpoints.
+- **Hugging Face pulling** needs an approved source/artefact contract: provider-account linking or a credential reference, repo/revision/commit SHA and file digest pinning, licence and origin review before download, allowlisted destination storage, resumable-download quotas, malware/format validation, and revocation/deletion behavior. A user token must remain in the credential vault; a manifest or model-placement request may carry only its reference. No `hf_*` token may enter `fleet_backends.config`, logs, Helm values, or a client harness.
+
+Each follow-on gets its own migration only if it requires durable state, its own flag defaulting OFF, unit/integration acceptance tests, and a branch plan. This preserves a clean boundary between model serving (§10) and tool orchestration (§11).
 
 ---
 
@@ -29,7 +38,7 @@
 | Create | `tests/unit/management/test_migration_013.py` | Round-trip + downgrade on seeded snapshot |
 | Modify | `services/management/app/models_sqlalchemy.py` | `FleetBackend` model; `management_scope` + interface cols on `ollama_deployments`/`llamacpp_deployments` |
 | Modify | `services/management/app/services/ollama_manager.py` | `OllamaDeploymentManager(InferenceFleetBackend)` — restructure |
-| Create | `tests/conformance/test_fleet_conformance.py` | Parametrized 5-backend interface conformance suite |
+| Create | `tests/conformance/test_fleet_conformance.py` | Parametrized registered-backend interface conformance suite |
 | Modify | `services/management/app/services/llamacpp_manager.py` | `LlamaCppManager(InferenceFleetBackend)` — restructure |
 | Create | `shared/fleet/caps.py` | Free-tier node/model cap enforcement (license client) + managed-node metering aggregation |
 | Create | `tests/unit/fleet/test_caps.py` | Cap enforcement + utility-exclusion + keepalive-nodes tests |
@@ -61,17 +70,17 @@
 
 ### Task 1: `InferenceFleetBackend` ABC + value types (`shared/fleet/base.py`)
 
-The pluggable interface all five backends implement (§10.1). Abstract methods `provision(spec)`, `deprovision(node_or_backend)`, `health()`, `list_nodes()`, `place_model(model, constraints)`, `endpoints_for(model)`. Value types are `@dataclass(slots=True)` per house rule. No behavior yet — pure contract. Flag `waddleai.fleet_v2` is read by callers, not the ABC.
+The pluggable interface every registered model-serving backend implements (§10.1). Abstract methods `provision(spec)`, `deprovision(node_or_backend)`, `health()`, `list_nodes()`, `place_model(model, constraints)`, `endpoints_for(model)`. Value types are `@dataclass(slots=True)` per house rule. No behavior yet — pure contract. Flag `waddleai.fleet_v2` is read by callers, not the ABC.
 
 **Files:** Create `shared/fleet/__init__.py`, `shared/fleet/base.py`, `tests/unit/fleet/test_fleet_base.py`.
 
-- [ ] **Step 1: Write failing tests** — `tests/unit/fleet/test_fleet_base.py`: (a) `InferenceFleetBackend` is `abc.ABC` and cannot be instantiated; (b) a minimal in-test subclass that implements all six methods instantiates; (c) omitting any one method raises `TypeError` at instantiation; (d) `BackendType` enum has exactly `ollama|llamacpp|exo|vertex_ai|bedrock`; `ManagementScope` has `register_and_route|full_lifecycle`; (e) dataclasses `ProvisionSpec`/`NodeInfo`/`ModelPlacement`/`FleetHealth`/`Endpoint` are `slots=True` (assert `__slots__`, no `__dict__`) and round-trip their fields.
+- [ ] **Step 1: Write failing tests** — `tests/unit/fleet/test_fleet_base.py`: (a) `InferenceFleetBackend` is `abc.ABC` and cannot be instantiated; (b) a minimal in-test subclass that implements all six methods instantiates; (c) omitting any one method raises `TypeError` at instantiation; (d) `BackendType` enum has exactly `ollama|llamacpp|exo|vertex_ai|bedrock|azure_ai|ollama_cloud`; `ManagementScope` has `register_and_route|full_lifecycle`; (e) dataclasses `ProvisionSpec`/`NodeInfo`/`ModelPlacement`/`FleetHealth`/`Endpoint` are `slots=True` (assert `__slots__`, no `__dict__`) and round-trip their fields.
 
 - [ ] **Step 2: Run tests, verify they fail** — `python3 -m pytest tests/unit/fleet/test_fleet_base.py -v --no-cov` → `ModuleNotFoundError: shared.fleet.base`.
 
 - [ ] **Step 3: Implement** —
   ```python
-  class BackendType(str, Enum): OLLAMA="ollama"; LLAMACPP="llamacpp"; EXO="exo"; VERTEX_AI="vertex_ai"; BEDROCK="bedrock"
+  class BackendType(str, Enum): OLLAMA="ollama"; LLAMACPP="llamacpp"; EXO="exo"; VERTEX_AI="vertex_ai"; BEDROCK="bedrock"; AZURE_AI="azure_ai"; OLLAMA_CLOUD="ollama_cloud"
   class ManagementScope(str, Enum): REGISTER_AND_ROUTE="register_and_route"; FULL_LIFECYCLE="full_lifecycle"
 
   @dataclass(slots=True)
@@ -321,24 +330,28 @@ Professional-gated cloud backend via `google-cloud-aiplatform` (Apache-2.0). Per
 
 ---
 
-### Task 11: `BedrockFleetBackend` (`shared/fleet/bedrock.py`)
+### Task 11: Cloud & Managed Backends — `BedrockFleetBackend`, `AzureAIFleetBackend`, `OllamaCloudFleetBackend`
 
-Professional-gated cloud backend via `boto3` (Apache-2.0), same scope/metering/idle-teardown contract as Vertex; blocking boto calls wrapped in `asyncio.to_thread`.
+Professional-gated cloud targets via official SDKs/clients:
+- `BedrockFleetBackend` (`shared/fleet/bedrock.py`) via `boto3` (Apache-2.0), blocking calls wrapped in `asyncio.to_thread`.
+- `AzureAIFleetBackend` (`shared/fleet/azure_ai.py`) uses Azure Resource Manager (ARM) for deployment lifecycle and Azure OpenAI's data plane only for an optional authenticated readiness probe. `register_and_route` lists existing ARM deployments; `full_lifecycle` performs ARM `PUT`/`DELETE` against the configured Cognitive Services account. Credentials are a vaulted Entra application credential; ARM and data-plane tokens use their distinct audiences.
+- `OllamaCloudFleetBackend` (`shared/fleet/ollama_cloud.py`) is a direct async HTTP, **register-and-route-only** backend. Ollama Cloud provides model discovery/routing, not a tenant-controlled instance/model lifecycle, so `provision` and `deprovision` must reject even when the management scope is incorrectly configured as `full_lifecycle`.
+Bedrock and Azure full-lifecycle operations participate in idle teardown; Ollama Cloud never does. Blocking SDK calls remain wrapped in `asyncio.to_thread`.
 
-**Files:** Create `shared/fleet/bedrock.py`, `tests/unit/fleet/test_bedrock.py`. Register in factory.
+**Files:** Create `shared/fleet/bedrock.py`, `shared/fleet/azure_ai.py`, `shared/fleet/ollama_cloud.py`, `tests/unit/fleet/test_cloud_backends.py`. Register in factory.
 
-- [ ] **Step 1: Write failing tests** — mocked boto3 `bedrock`/`bedrock-runtime`: `register_and_route` reflects existing provisioned-throughput endpoints; `full_lifecycle` `provision`/`deprovision` map to `create_provisioned_model_throughput`/`delete_...` + idle-teardown; endpoints are `NodeInfo(kind="cloud")` metered; boto calls off the event loop.
+- [ ] **Step 1: Write failing tests** — mocked SDKs/clients: (a) Bedrock retains its current lifecycle contract; (b) Azure lists ARM deployments and maps only `provisioningState="Succeeded"` to healthy nodes, gets an ARM token using `https://management.azure.com/.default`, and uses `PUT`/`DELETE` on the Cognitive Services deployment resource only under `full_lifecycle`; (c) Ollama Cloud sends its vaulted API key as a bearer header, lists `/api/tags`, and returns routable models, while both lifecycle methods reject; (d) cloud endpoints are `NodeInfo(kind="cloud")` metered and no blocking SDK call occurs on the event loop.
 
 - [ ] **Step 2: Run tests, verify they fail.**
 
-- [ ] **Step 3: Implement `BedrockFleetBackend`** — `type = BackendType.BEDROCK`; `@register(...)`.
+- [ ] **Step 3: Implement `AzureAIFleetBackend` and `OllamaCloudFleetBackend`** — `type = BackendType.AZURE_AI` and `OLLAMA_CLOUD`; `@register(...)`; extend the already-landed Bedrock tests only if its shared conformance contract needs adjustment. Azure config requires `subscription_id`, `resource_group`, `account_name`, and `tenant_id`; the deployment API version is one centrally defined, tested setting. Ollama Cloud config requires an HTTPS base URL and rejects private/link-local hosts before a request is made.
 
-- [ ] **Step 4: Run tests, verify pass** — add Bedrock (mocked) to conformance `BACKENDS` (all five now present).
+- [ ] **Step 4: Run tests, verify pass** — add Bedrock, Azure AI, and Ollama Cloud (mocked) to conformance `BACKENDS`.
 
 - [ ] **Step 5: Commit**
   ```bash
-  git add shared/fleet/bedrock.py tests/unit/fleet/test_bedrock.py tests/conformance/test_fleet_conformance.py
-  git commit -m "feat(fleet): BedrockFleetBackend (Pro-gated, boto3 off event loop, idle-teardown)" \
+  git add shared/fleet/{bedrock,azure_ai,ollama_cloud}.py tests/unit/fleet/test_cloud_backends.py tests/conformance/test_fleet_conformance.py
+  git commit -m "feat(fleet): Bedrock, Azure AI, and Ollama Cloud fleet backends (Pro-gated cloud targets, idle-teardown)" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -346,11 +359,11 @@ Professional-gated cloud backend via `boto3` (Apache-2.0), same scope/metering/i
 
 ### Task 12: Fleet-backend API + Pro gating (`api/v1/fleet.py`)
 
-`fleet_backends` CRUD (`/api/v1/fleet/backends`), `management_scope` selection at creation, and **Pro gating on `vertex_ai`/`bedrock` creation** — `features.enabled("fleet_v2")` **and** `LicenseClient.check_feature("hybrid_targets")` (two-layer gate, §14.6). Status/health surfaced via the interface. Existing `ollama.py`/`llamacpp.py` routes stay compatible (they resolve through the registry when a `fleet_backend_id` is present, else legacy path).
+`fleet_backends` CRUD (`/api/v1/fleet/backends`), `management_scope` selection at creation, and **Pro gating on cloud target (`vertex_ai`/`bedrock`/`azure_ai`/`ollama_cloud`) creation** — `features.enabled("fleet_v2")` **and** `LicenseClient.check_feature("hybrid_targets")` (two-layer gate, §14.6). Status/health surfaced via the interface. Existing `ollama.py`/`llamacpp.py` routes stay compatible (they resolve through the registry when a `fleet_backend_id` is present, else legacy path).
 
 **Files:** Create `services/management/app/api/v1/fleet.py`. Modify `services/management/app/api/v1/__init__.py`. Create `tests/unit/management/test_fleet_api.py`.
 
-- [ ] **Step 1: Write failing tests** — (a) CRUD create/list/get/delete of ollama/llamacpp/exo backends works under any tier when flag ON; (b) creating a `vertex_ai`/`bedrock` backend under `community` → 403 naming the tier; under `professional` with flag ON → 201; (c) `check_feature` false but flag on → still blocked (two-layer); (d) flag `fleet_v2` OFF → the new `/fleet/backends` routes return feature-disabled, and legacy `/ollama/deployments` behaves exactly as before (regression guard); (e) `management_scope` persisted and echoed.
+- [ ] **Step 1: Write failing tests** — (a) CRUD create/list/get/delete of ollama/llamacpp/exo backends works under any tier when flag ON; (b) creating a `vertex_ai`/`bedrock`/`azure_ai`/`ollama_cloud` backend under `community` → 403 naming the tier; under `professional` with flag ON → 201; (c) `check_feature` false but flag on → still blocked (two-layer); (d) flag `fleet_v2` OFF → the new `/fleet/backends` routes return feature-disabled, and legacy `/ollama/deployments` behaves exactly as before (regression guard); (e) `management_scope` persisted and echoed.
 
 - [ ] **Step 2: Run tests, verify they fail.**
 
@@ -361,7 +374,7 @@ Professional-gated cloud backend via `boto3` (Apache-2.0), same scope/metering/i
 - [ ] **Step 5: Commit**
   ```bash
   git add services/management/app/api/v1/fleet.py services/management/app/api/v1/__init__.py tests/unit/management/test_fleet_api.py
-  git commit -m "feat(fleet): fleet_backends API + two-layer Pro gating on vertex_ai/bedrock" \
+  git commit -m "feat(fleet): fleet_backends API + two-layer Pro gating on cloud backends" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -432,13 +445,13 @@ The AIProxy is the **only** authenticated path to inference (§10.3): fleet Serv
 
 ---
 
-### Task 16: §10.5 acceptance — conformance across 5 backends + kind/mTLS/idle/caps/gating
+### Task 16: §10.5 acceptance — conformance across 7 backends + kind/mTLS/idle/caps/gating
 
-Turn every §10.5 acceptance item into an explicit verify step: the interface conformance suite across all five backends (Ollama + llama.cpp **real in kind**; EXO/Vertex/Bedrock mocked); CNP verification in kind (unauthorized pod cannot reach the Ollama service); hardened-image Trivy gate + runs-as-nonroot/readonly-rootfs Helm assertions + initContainer pull under the `hardened` tag; mTLS handshake against an external-node simulator; idle-teardown lifecycle (idle→teardown→redeploy, all audit-logged); Free-tier cap tests at both enforcement points; Pro gating for `vertex_ai`/`bedrock` creation.
+Turn every §10.5 acceptance item into an explicit verify step: the interface conformance suite across all seven backends (Ollama + llama.cpp **real in kind**; EXO/Vertex/Bedrock/Azure AI/Ollama Cloud mocked); CNP verification in kind (unauthorized pod cannot reach the Ollama service); hardened-image Trivy gate + runs-as-nonroot/readonly-rootfs Helm assertions + initContainer pull under the `hardened` tag; mTLS handshake against an external-node simulator; idle-teardown lifecycle (idle→teardown→redeploy, all audit-logged); Free-tier cap tests at both enforcement points; Pro gating for every cloud target.
 
 **Files:** Create `tests/integration/test_fleet_acceptance.py`.
 
-- [ ] **Step 1: Conformance green across 5 backends** — `python3 -m pytest tests/conformance/test_fleet_conformance.py -v --no-cov` (kind for Ollama/llama.cpp, mocks for the rest).
+- [ ] **Step 1: Conformance green across 7 backends** — `python3 -m pytest tests/conformance/test_fleet_conformance.py -v --no-cov` (kind for Ollama/llama.cpp, mocks for the rest).
 - [ ] **Step 2: CNP negative test in kind** — deploy fleet + a non-AIProxy pod; assert the pod cannot reach the Ollama ClusterIP; AIProxy pod can.
 - [ ] **Step 3: Hardened image** — Trivy gate passes; Helm assertions confirm non-root + readOnlyRootFS; initContainer pull works under the `hardened` (no-shell) tag.
 - [ ] **Step 4: mTLS handshake** — external-node simulator; assert a request without a valid cert-manager cert is refused, a valid one succeeds (beta/prod path); alpha token-sidecar path succeeds with the shared token.
@@ -450,7 +463,7 @@ Turn every §10.5 acceptance item into an explicit verify step: the interface co
 - [ ] **Step 10: Commit**
   ```bash
   git add tests/integration/test_fleet_acceptance.py
-  git commit -m "test(fleet): §10.5 acceptance — 5-backend conformance, CNP, mTLS, idle-teardown, caps, Pro gating" \
+  git commit -m "test(fleet): §10.5 acceptance — 7-backend conformance, CNP, mTLS, idle-teardown, caps, Pro gating" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
