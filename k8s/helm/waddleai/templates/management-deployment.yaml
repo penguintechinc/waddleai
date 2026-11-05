@@ -88,6 +88,8 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
             {{- end }}
+            # OTLP export config (values-driven; endpoint unset by default).
+            {{- include "waddleai.otelEnv" (dict "root" . "serviceName" .Values.management.otelServiceName) | nindent 12 }}
             - name: CACHE_HOST
               value: "{{ include "waddleai.fullname" . }}-valkey"
             - name: CACHE_PORT

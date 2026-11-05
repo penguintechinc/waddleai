@@ -113,6 +113,9 @@ management:
   # Wired to the HYPERCORN_WORKERS env var the image now reads at startup.
   workers: 2
 
+  # OTEL_SERVICE_NAME for this service (rest of the OTLP config: top-level otel:)
+  otelServiceName: waddleai-management
+
   env:
     DB_TYPE: postgres
     FLASK_ENV: production
@@ -270,6 +273,9 @@ proxy:
   # was hardcoded `grace=5`; now read from PROXY_GRPC_SHUTDOWN_GRACE_SECONDS.
   grpcShutdownGraceSeconds: 5
 
+  # OTEL_SERVICE_NAME for this service (rest of the OTLP config: top-level otel:)
+  otelServiceName: waddleai-proxy
+
   env:
     LOG_LEVEL: INFO
     HTTP_PORT: "8080"
@@ -324,15 +330,21 @@ webui:
     port: 8080
     targetPort: 8080
 
+  # Node/Express static+proxy server (replaces the old nginx runtime) --
+  # needs more headroom than nginx did.
   resources:
     requests:
-      memory: "64Mi"
+      memory: "128Mi"
       cpu: "100m"
     limits:
-      memory: "128Mi"
+      memory: "256Mi"
       cpu: "200m"
 
-  # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Static nginx content --
+  # API_UPSTREAM for the Express /api proxy. Empty = the in-cluster
+  # management Service FQDN built by templates/webui-deployment.yaml.
+  apiUpstream: ""
+
+  # HorizontalPodAutoscaler (O4: "No HPA anywhere"). Static content --
   # CPU is the only meaningful scaling signal (no memory target; a static
   # file server's memory footprint doesn't move with request volume).
   # Disable per-environment via webui.autoscaling.enabled: false.
@@ -701,6 +713,23 @@ fleet:
         digest: "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
         pullPolicy: IfNotPresent
 
+# OpenTelemetry export (management + proxy). The apps emit OTel in-process;
+# these standard OTLP env vars only choose WHERE it goes. endpoint is empty by
+# default = no exporter wired (apps keep serving; /metrics on the app remains
+# the scrape surface). Beta/gamma/prod set otel.endpoint in their values file.
+otel:
+  endpoint: ""               # e.g. http://otel-collector.observability.svc:4317
+  protocol: grpc             # grpc | http/protobuf
+  # Auth/headers for the collector. Prefer headersSecret (secretKeyRef, never
+  # inline). `headers` is for NON-secret headers only.
+  headers: ""
+  headersSecret:
+    name: ""
+    key: ""
+  # Extra OTEL_RESOURCE_ATTRIBUTES (comma-separated k=v, no PII); the chart
+  # always prepends deployment.environment=<.Values.environment>.
+  resourceAttributes: ""
+
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)
 secrets:
@@ -725,11 +754,14 @@ secrets:
   # secrets.manage: false and provide the whole waddleai-secrets Secret
   # externally, including this key.
   proxyGrpcAuthToken: ""
-  # Bootstrap admin password (management, ADMIN_INITIAL_PASSWORD). Empty by
-  # design — NOT auto-generated like the keys above. Leaving it unset lets
-  # services/management/app/extensions.py's own fail-closed random-password
-  # path run instead (see templates/secret.yaml). Set explicitly via
-  # --set-string secrets.adminInitialPassword=... before first install.
+  # Bootstrap admin password (management, ADMIN_INITIAL_PASSWORD). Left
+  # empty on purpose: templates/secret.yaml auto-generates a 32-char random
+  # value when this is unset (kept stable across `helm upgrade` via `lookup`
+  # -- see waddleai.adminInitialPassword in _helpers.tpl), so admin login
+  # works on a fresh install in every environment. Read it with:
+  #   kubectl -n <ns> get secret waddleai-secrets \
+  #     -o jsonpath='{.data.admin-initial-password}' | base64 -d
+  # Set explicitly to pin a known value (beta/prod: from External Secrets).
   adminInitialPassword: ""
   # License key (management + proxy, LICENSE_KEY). Empty by default =
   # community tier — see templates/secret.yaml.

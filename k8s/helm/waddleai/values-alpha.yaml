@@ -9,6 +9,11 @@ environment: alpha
 global:
   imageRegistry: localhost:32000
 
+# OTel - Alpha: endpoint intentionally empty (no exporter wired); telemetry is
+# validated via the apps' /metrics endpoint here. Beta/gamma/prod set otel.endpoint.
+otel:
+  endpoint: ""
+
 # Management Service - Alpha
 management:
   replicaCount: 1
@@ -69,12 +74,13 @@ webui:
     tag: alpha-latest
     pullPolicy: Always
 
+  # Node/Express server (not nginx) -- 256Mi limit for Node headroom.
   resources:
     requests:
-      memory: "32Mi"
+      memory: "128Mi"
       cpu: "50m"
     limits:
-      memory: "64Mi"
+      memory: "256Mi"
       cpu: "100m"
 
   autoscaling:

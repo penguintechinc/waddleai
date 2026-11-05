@@ -38,13 +38,8 @@ spec:
             runAsNonRoot: true
             runAsUser: 1000
             allowPrivilegeEscalation: false
-            # trivy KSV-0014. nginx needs exactly three writable paths, all
-            # mounted as emptyDir below: /tmp, /var/cache/nginx (client_temp,
-            # proxy_temp and friends -- nginx mkdir()s these at startup) and
-            # /var/run (nginx.pid). /var/log/nginx is deliberately NOT mounted:
-            # the base image symlinks access.log/error.log to /dev/stdout and
-            # /dev/stderr, and an emptyDir over it would shadow those symlinks
-            # and silently divert container logs into the volume.
+            # trivy KSV-0014. The Express static+proxy server writes nowhere
+            # but /tmp (emptyDir below); everything else stays read-only.
             readOnlyRootFilesystem: true
             seccompProfile:
               type: RuntimeDefault
@@ -57,13 +52,19 @@ spec:
             - name: http
               containerPort: 8080
               protocol: TCP
+          env:
+            # In-cluster management API the Express server proxies /api to.
+            # Values override (webui.apiUpstream) wins; the default is the
+            # management Service FQDN built from the release + namespace.
+            - name: API_UPSTREAM
+              value: {{ .Values.webui.apiUpstream | default (printf "http://%s-management.%s.svc.cluster.local:%v" (include "waddleai.fullname" .) .Values.namespace .Values.management.service.port) | quote }}
           {{- /*
           O4-c: liveness and readiness used to be hardcoded to the exact
           same httpGet check, so a readiness-only dependency failure could
           never be distinguished from a dead process -- both always failed
           together. Now wired to webui.livenessProbe (tcpSocket, cheap
           process-alive check) and webui.readinessProbe (httpGet, proves
-          nginx is actually serving) in values.yaml, each independently
+          the Express server is actually serving) in values.yaml, each independently
           enable-able.
           */}}
           {{- if .Values.webui.livenessProbe.enabled }}
@@ -112,16 +113,8 @@ spec:
           volumeMounts:
             - name: tmp
               mountPath: /tmp
-            - name: nginx-cache
-              mountPath: /var/cache/nginx
-            - name: nginx-run
-              mountPath: /var/run
       volumes:
         - name: tmp
-          emptyDir: {}
-        - name: nginx-cache
-          emptyDir: {}
-        - name: nginx-run
           emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:

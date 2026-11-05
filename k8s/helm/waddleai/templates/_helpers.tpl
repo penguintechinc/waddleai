@@ -820,3 +820,58 @@ afterwards for readiness.
       cpu: "250m"
 {{- end }}
 {{- end }}
+
+{{/*
+Bootstrap admin password (ADMIN_INITIAL_PASSWORD, management). Same
+generate-once-and-keep-stable pattern as waddleai.proxyGrpcAuthToken above:
+explicit override wins, else reuse the value already in the live Secret, else
+generate a fresh 32-char random one. Never a static default, so a fresh
+alpha install gets a working (retrievable) admin login without weakening
+beta/prod -- an unset value is never a well-known credential.
+*/}}
+{{- define "waddleai.adminInitialPassword" -}}
+{{- if .Values.secrets.adminInitialPassword -}}
+{{- .Values.secrets.adminInitialPassword -}}
+{{- else -}}
+{{- $existing := lookup "v1" "Secret" .Values.namespace "waddleai-secrets" -}}
+{{- if and $existing (hasKey $existing.data "admin-initial-password") (index $existing.data "admin-initial-password") -}}
+{{- index $existing.data "admin-initial-password" | b64dec -}}
+{{- else -}}
+{{- randAlphaNum 32 -}}
+{{- end -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+OpenTelemetry OTLP env (management + proxy). Usage:
+  include "waddleai.otelEnv" (dict "root" . "serviceName" "waddleai-proxy")
+OTEL_EXPORTER_OTLP_ENDPOINT / _HEADERS are emitted ONLY when configured, so
+the default (empty endpoint) leaves the SDK with no exporter and the app keeps
+serving -- a dead/absent exporter must never break the app. Headers come from
+a Secret (otel.headersSecret) or, for non-secret values only, otel.headers.
+*/}}
+{{- define "waddleai.otelEnv" -}}
+{{- $root := .root -}}
+{{- $otel := $root.Values.otel -}}
+{{- if $otel.endpoint }}
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: {{ $otel.endpoint | quote }}
+{{- end }}
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: {{ $otel.protocol | default "grpc" | quote }}
+{{- if and $otel.headersSecret $otel.headersSecret.name $otel.headersSecret.key }}
+- name: OTEL_EXPORTER_OTLP_HEADERS
+  valueFrom:
+    secretKeyRef:
+      name: {{ $otel.headersSecret.name }}
+      key: {{ $otel.headersSecret.key }}
+      optional: true
+{{- else if $otel.headers }}
+- name: OTEL_EXPORTER_OTLP_HEADERS
+  value: {{ $otel.headers | quote }}
+{{- end }}
+- name: OTEL_SERVICE_NAME
+  value: {{ .serviceName | quote }}
+- name: OTEL_RESOURCE_ATTRIBUTES
+  value: {{ printf "deployment.environment=%s%s" $root.Values.environment (ternary (printf ",%s" $otel.resourceAttributes) "" (ne (default "" $otel.resourceAttributes) "")) | quote }}
+{{- end }}
