@@ -4527,6 +4527,13 @@ paths:
               schema:
                 description: Fixed §18.2 response shape for POST /evaluate.
                 properties:
+                  active_skills:
+                    anyOf:
+                    - items:
+                        type: string
+                      type: array
+                    - type: 'null'
+                    title: Active Skills
                   decision:
                     title: Decision
                     type: string
@@ -4538,6 +4545,11 @@ paths:
                     - type: string
                     - type: 'null'
                     title: Reason
+                  redirect_model:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    title: Redirect Model
                   rule_id:
                     title: Rule Id
                 required:
@@ -4545,6 +4557,8 @@ paths:
                 - reason
                 - rule_id
                 - evaluated_in_ms
+                - redirect_model
+                - active_skills
                 title: EvaluateResponse
                 type: object
           description: Fixed §18.2 response shape for POST /evaluate.
@@ -4891,6 +4905,31 @@ paths:
           description: Fixed §18.2 response shape for POST /telemetry.
       summary: POST /api/v1/hooks/telemetry -- fire-and-forget, must never block the
         agent.
+  /api/v1/integrations/managed-mcp:
+    post:
+      description: '
+
+        Validates the spec, drives the lifecycle and returns the created record.'
+      operationId: post_create_managed_mcp
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Provision a managed MCP server from the request body.
+  /api/v1/integrations/managed-mcp/{server_id}:
+    delete:
+      description: '
+
+        Cleans up its workload and removes the stored record.'
+      operationId: delete_delete_managed_mcp
+      parameters:
+      - in: path
+        name: server_id
+        required: true
+        schema:
+          type: number
+      responses:
+        '200': *id001
+      summary: Tear down a managed MCP server by id.
   /api/v1/integrations/mcp-endpoints:
     get:
       description: ''
@@ -6372,6 +6411,16 @@ paths:
           description: 'Generic ``{"message": str}`` envelope used by several llama.cpp
             endpoints.'
       summary: Remove a running llama.cpp deployment.
+  /api/v1/manifests/apply:
+    post:
+      description: '
+
+        Requires the exact unexpired plan so changes are explicit and auditable.'
+      operationId: post_apply_manifest
+      parameters: []
+      responses:
+        '200': *id001
+      summary: Apply a previously reviewed configuration manifest plan.
   /api/v1/memory-config:
     get:
       description: ''
