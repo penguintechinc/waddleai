@@ -8,7 +8,13 @@ metadata:
     {{- if .Values.podSecurityAdmission.enabled }}
     # Pod Security Admission baseline (spec §12.2). See values.yaml /
     # values-beta.yaml for why `enforce` differs from `restricted` today.
-    pod-security.kubernetes.io/enforce: {{ .Values.podSecurityAdmission.enforce }}
+    {{- $enforce := .Values.podSecurityAdmission.enforce }}
+    {{- /* vLLM-on-Ray hot cache (opt-in hostPath, D5): relax `restricted` enforce to `baseline`
+         unless a Kyverno PolicyException exempts the Ray worker pods instead. warn/audit stay put. */}}
+    {{- if and .Values.fleet.vllmRay.enabled .Values.fleet.vllmRay.hotCache.enabled (not .Values.fleet.vllmRay.hotCache.kyvernoPolicyException) (eq $enforce "restricted") }}
+    {{- $enforce = "baseline" }}
+    {{- end }}
+    pod-security.kubernetes.io/enforce: {{ $enforce }}
     pod-security.kubernetes.io/audit: {{ .Values.podSecurityAdmission.audit }}
     pod-security.kubernetes.io/warn: {{ .Values.podSecurityAdmission.warn }}
     {{- end }}

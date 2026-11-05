@@ -42,3 +42,6 @@ nvidia-gpu-operator:
   devicePlugin:
     config:
       name: waddleai-nvidia-device-plugin-config
+# values-alpha parity: restricted Pod Security Admission (the vLLM fleet constraint is PSA restricted).
+podSecurityAdmission:
+  enforce: restricted

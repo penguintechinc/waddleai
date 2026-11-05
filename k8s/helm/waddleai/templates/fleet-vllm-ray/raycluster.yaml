@@ -119,7 +119,11 @@ spec:
               volumeMounts:
                 - {name: tmp, mountPath: /tmp}
                 - {name: dshm, mountPath: /dev/shm}
+                - {name: models, mountPath: /models}
                 - {name: deployment-keys, mountPath: /secrets/deployment-keys/, readOnly: true}
+                {{- if $v.hotCache.enabled }}
+                - {name: hot-cache, mountPath: /models-cache}
+                {{- end }}
                 {{- include "waddleai.vllmRay.authMounts" $ | nindent 16 }}
           volumes:
             - name: tmp
@@ -130,6 +134,18 @@ spec:
               secret:
                 secretName: waddleai-vllm-deployment-keys
                 optional: true
+            - name: models
+              persistentVolumeClaim:
+                claimName: waddleai-vllm-ray-models
+            {{- if $v.hotCache.enabled }}
+            # STATEFUL EXCEPTION (approved)
+            # Opt-in node-local NVMe weight cache (spec 6.4): hostPath on WORKER pods only. Pod
+            # Security Admission must admit it: see namespace.yaml and hotCache.kyvernoPolicyException.
+            - name: hot-cache
+              hostPath:
+                path: {{ $v.hotCache.hostPath }}
+                type: DirectoryOrCreate
+            {{- end }}
             {{- include "waddleai.vllmRay.authVolumes" $ | nindent 12 }}
     {{- end }}
 {{- end }}
