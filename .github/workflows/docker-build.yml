@@ -1365,6 +1365,123 @@ jobs:
         fi
         docker buildx imagetools create "${TAG_ARGS[@]}" "${IMAGE}@${DIGEST}"
 
+  # vLLM-on-Ray worker images (images/vllm-ray-<vendor>). amd64 only (owner directive).
+  # Matrix is cuda only: the rocm and xpu bases could not be verified (no ROCm base whose vLLM
+  # matches the Ray-LLM bundle on the same Python minor; no oneAPI 2026.0.x tag exists), so their
+  # Dockerfiles are not shipped yet and are added here together with their images.
+  # PRs and non-push tiers build with --load and run the image contract test; pushing tiers push
+  # one run-unique tag, gate on Trivy by digest, then promote the floating ray<version>-py<minor> tag.
+  build-vllm-ray-images:
+    needs: [determine-tier, test, dependency-security, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [cuda]
+    env:
+      RAY_VERSION: "2.60.0"
+      PYTHON_MINOR: "3.12"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    # The CUDA Ray-LLM base is ~34 GB on disk: free the runner's preinstalled toolchains first.
+    - name: Free runner disk space
+      run: |
+        set -euo pipefail
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+        df -h /
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302  # v6.2.0
+      with:
+        images: ${{ env.REGISTRY }}/${{ github.repository }}/vllm-ray-${{ matrix.image }}
+        tags: |
+          type=raw,value=ci-${{ github.sha }}-${{ github.run_id }}
+
+    - name: Build vllm-ray-${{ matrix.image }}
+      id: build
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+      with:
+        context: ./images/vllm-ray-${{ matrix.image }}
+        file: ./images/vllm-ray-${{ matrix.image }}/Dockerfile
+        platforms: linux/amd64
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        load: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') }}
+        provenance: false
+        sbom: false
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha,scope=vllm-ray-${{ matrix.image }}
+        cache-to: type=gha,scope=vllm-ray-${{ matrix.image }},mode=max
+
+    # Image contract gate: uid 1000, Ray version, Python minor. Runs on the loaded image for
+    # non-pushing runs and on the pulled digest for pushing runs; a skipped gate is not a pass.
+    - name: Image contract test
+      env:
+        IMAGE_REF: ${{ steps.meta.outputs.tags }}
+        PUSHED: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+        REPO: ${{ env.REGISTRY }}/${{ github.repository }}/vllm-ray-${{ matrix.image }}
+      run: |
+        set -euo pipefail
+        if [ "$PUSHED" = "true" ]; then
+          [ -n "$DIGEST" ] || { echo "::error::empty build digest"; exit 1; }
+          docker pull "${REPO}@${DIGEST}"
+          ref="${REPO}@${DIGEST}"
+        else
+          ref="$(echo "$IMAGE_REF" | head -n1)"
+        fi
+        bash tests/images/test_vllm_ray_images.sh "$ref" "$RAY_VERSION" "$PYTHON_MINOR"
+
+    - name: Trivy vulnerability gate
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/vllm-ray-${{ matrix.image }}@${{ steps.build.outputs.digest }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        ignore-unfixed: true
+        exit-code: '1'
+        version: 'v0.69.3'
+
+    - name: Promote floating tag (post-gate)
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      env:
+        IMAGE: ${{ env.REGISTRY }}/${{ github.repository }}/vllm-ray-${{ matrix.image }}
+        DIGEST: ${{ steps.build.outputs.digest }}
+      run: |
+        set -euo pipefail
+        [[ -n "$DIGEST" ]] || { echo "::error::empty build digest -- refusing to promote"; exit 1; }
+        PYTAG="py${PYTHON_MINOR//./}"
+        docker buildx imagetools create --tag "${IMAGE}:ray${RAY_VERSION}-${PYTAG}" "${IMAGE}@${DIGEST}"
+
+    - name: Cleanup
+      if: always()
+      run: |
+        docker image prune --all --force || true
+        docker builder prune --all --force || true
+
   security-scan:
     needs: merge-manifests
     runs-on: ubuntu-latest
