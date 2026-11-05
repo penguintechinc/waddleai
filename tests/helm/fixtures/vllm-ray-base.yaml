@@ -22,3 +22,8 @@ fleet:
         minReplicas: 0
         maxReplicas: 2
         image: cuda
+  # AM15 external key injection: fixture supplies the TLS Secret so default renders need no
+  # cert-manager CRDs; tests that exercise chart-generated certs clear this and pass api_versions.
+  security:
+    rayTls:
+      existingSecret: fixture-ray-tls

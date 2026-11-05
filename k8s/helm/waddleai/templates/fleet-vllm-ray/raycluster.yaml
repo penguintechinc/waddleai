@@ -30,6 +30,8 @@ spec:
         labels:
           {{- include "waddleai.selectorLabels" . | nindent 10 }}
           app.kubernetes.io/component: ray-head
+        annotations:
+          waddleai.penguintech.io/restart-generation: {{ $v.restartGeneration | quote }}
       spec:
         securityContext:
           {{- include "waddleai.vllmRay.podSecurityContext" . | nindent 10 }}
@@ -52,16 +54,20 @@ spec:
               - {name: dashboard, containerPort: {{ $v.dashboard.port }}}
               - {name: client, containerPort: {{ $v.ports.client }}}
               - {name: serve, containerPort: {{ $v.serve.port }}}
+            env:
+              {{- include "waddleai.vllmRay.authEnv" . | nindent 14 }}
             resources:
               {{- toYaml $v.head.resources | nindent 14 }}
             volumeMounts:
               - {name: tmp, mountPath: /tmp}
               - {name: dshm, mountPath: /dev/shm}
+              {{- include "waddleai.vllmRay.authMounts" . | nindent 14 }}
         volumes:
           - name: tmp
             emptyDir: {}
           - name: dshm
             emptyDir: {medium: Memory}
+          {{- include "waddleai.vllmRay.authVolumes" . | nindent 10 }}
   workerGroupSpecs:
     {{- range $g := $v.workerGroups }}
     {{- $image := include "waddleai.vllmRay.image" (dict "ctx" $ "key" $g.image) }}
@@ -80,6 +86,8 @@ spec:
             {{- include "waddleai.selectorLabels" $ | nindent 12 }}
             app.kubernetes.io/component: ray-worker
             ray.io/group: {{ $g.name }}
+          annotations:
+            waddleai.penguintech.io/restart-generation: {{ $v.restartGeneration | quote }}
         spec:
           securityContext:
             {{- include "waddleai.vllmRay.podSecurityContext" $ | nindent 12 }}
@@ -104,6 +112,7 @@ spec:
                 - {name: NCCL_SOCKET_IFNAME, value: {{ $v.nccl.ifname | quote }}}
                 {{- end }}
                 - {name: HF_HOME, value: /models}
+                {{- include "waddleai.vllmRay.authEnv" $ | nindent 16 }}
               resources:
                 limits:
                   {{ $g.resourceName | quote }}: {{ int $g.gpusPerWorker }}
@@ -111,6 +120,7 @@ spec:
                 - {name: tmp, mountPath: /tmp}
                 - {name: dshm, mountPath: /dev/shm}
                 - {name: deployment-keys, mountPath: /secrets/deployment-keys/, readOnly: true}
+                {{- include "waddleai.vllmRay.authMounts" $ | nindent 16 }}
           volumes:
             - name: tmp
               emptyDir: {}
@@ -120,5 +130,6 @@ spec:
               secret:
                 secretName: waddleai-vllm-deployment-keys
                 optional: true
+            {{- include "waddleai.vllmRay.authVolumes" $ | nindent 12 }}
     {{- end }}
 {{- end }}

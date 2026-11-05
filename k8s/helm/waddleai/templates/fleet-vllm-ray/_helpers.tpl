@@ -74,3 +74,61 @@ readOnlyRootFilesystem: true
 capabilities:
   drop: ["ALL"]
 {{- end -}}
+
+{{/*
+Secret name resolution. One rule for every chart-generated key (AM15):
+env-sourced Secret > fleet.security.<key>.existingSecret > chart-generated.
+*/}}
+{{- define "waddleai.vllmRay.rayAuthSecretName" -}}
+{{- $s := .Values.fleet.security.rayAuthToken -}}
+{{- default (default "waddleai-ray-auth" $s.existingSecret) $s.envSecret -}}
+{{- end -}}
+
+{{- define "waddleai.vllmRay.rayTlsSecretName" -}}
+{{- default "waddleai-ray-tls" .Values.fleet.security.rayTls.existingSecret -}}
+{{- end -}}
+
+{{- define "waddleai.vllmRay.tokenKeySecretName" -}}
+{{- default "waddleai-fleet-token-key" .Values.fleet.security.tokenEncryptionKey.existingSecret -}}
+{{- end -}}
+
+{{/*
+Ray auth + TLS container env (head and workers). Token auth is always on; the token itself is a
+mounted file, never a literal. WADDLEAI_RAY_AUTH_TOKEN is added only when an env Secret is named.
+*/}}
+{{- define "waddleai.vllmRay.authEnv" -}}
+- {name: RAY_AUTH_MODE, value: token}
+- {name: RAY_AUTH_TOKEN_PATH, value: /etc/ray-auth/token}
+{{- with .Values.fleet.security.rayAuthToken.envSecret }}
+- name: WADDLEAI_RAY_AUTH_TOKEN
+  valueFrom:
+    secretKeyRef: {name: {{ . | quote }}, key: token}
+{{- end }}
+{{- if .Values.fleet.vllmRay.rayInternalTls }}
+- {name: RAY_USE_TLS, value: "1"}
+- {name: RAY_TLS_SERVER_CERT, value: /etc/ray-tls/tls.crt}
+- {name: RAY_TLS_SERVER_KEY, value: /etc/ray-tls/tls.key}
+- {name: RAY_TLS_CA_CERT, value: /etc/ray-tls/ca.crt}
+{{- end }}
+{{- end -}}
+
+{{- define "waddleai.vllmRay.authMounts" -}}
+- {name: ray-auth, mountPath: /etc/ray-auth, readOnly: true}
+{{- if .Values.fleet.vllmRay.rayInternalTls }}
+- {name: ray-tls, mountPath: /etc/ray-tls, readOnly: true}
+{{- end }}
+{{- end -}}
+
+{{- define "waddleai.vllmRay.authVolumes" -}}
+- name: ray-auth
+  secret:
+    secretName: {{ include "waddleai.vllmRay.rayAuthSecretName" . }}
+    defaultMode: 0440
+    items:
+      - {key: token, path: token}
+{{- if .Values.fleet.vllmRay.rayInternalTls }}
+- name: ray-tls
+  secret:
+    secretName: {{ include "waddleai.vllmRay.rayTlsSecretName" . }}
+{{- end }}
+{{- end -}}
