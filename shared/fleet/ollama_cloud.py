@@ -2,7 +2,7 @@
 
 import asyncio
 import socket
-from ipaddress import IPv4Address, IPv4Network, IPv6Address, ip_address
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, IPv6Network, ip_address
 from typing import Any
 from urllib.parse import urlparse
 
@@ -26,23 +26,49 @@ _CGNAT = IPv4Network("100.64.0.0/10")
 _FORBIDDEN_MSG = "Ollama Cloud endpoint_url must not target a private or local address"
 
 
-def _is_forbidden(address: IPv4Address | IPv6Address) -> bool:
-    """Return True for any address that is not a routable public unicast IP.
+_NAT64 = IPv6Network("64:ff9b::/96")
+_NAT64_LOCAL = IPv6Network("64:ff9b:1::/48")
 
-    Covers private, loopback, link-local, reserved, multicast, unspecified,
-    CGNAT 100.64.0.0/10, and IPv4-mapped IPv6 forms of all of those.
+
+def _candidates(address: IPv4Address | IPv6Address) -> list[IPv4Address | IPv6Address]:
+    """Return the address plus every IPv4 embedded in it by a transition scheme.
+
+    Decodes IPv4-mapped, NAT64 (64:ff9b::/96, 64:ff9b:1::/48), 6to4 and Teredo
+    (both server and client) so each embedded target is vetted too.
     """
-    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
-        address = address.ipv4_mapped
-    return (
-        address.is_private
-        or address.is_loopback
-        or address.is_link_local
-        or address.is_reserved
-        or address.is_multicast
-        or address.is_unspecified
-        or (isinstance(address, IPv4Address) and address in _CGNAT)
-    )
+    found: list[IPv4Address | IPv6Address] = [address]
+    if isinstance(address, IPv6Address):
+        if address.ipv4_mapped is not None:
+            found.append(address.ipv4_mapped)
+        if address in _NAT64 or address in _NAT64_LOCAL:
+            found.append(IPv4Address(int(address) & 0xFFFFFFFF))
+        if address.sixtofour is not None:
+            found.append(address.sixtofour)
+        if address.teredo is not None:
+            found.extend(address.teredo)
+    return found
+
+
+def _is_forbidden(address: IPv4Address | IPv6Address) -> bool:
+    """Return True unless the address and all embedded IPv4s are public unicast.
+
+    Allow-style: every candidate must be globally routable, not multicast,
+    loopback, link-local, unspecified or reserved, and not CGNAT 100.64.0.0/10.
+    """
+    for candidate in _candidates(address):
+        if candidate.is_multicast or candidate.is_unspecified or candidate.is_loopback:
+            return True
+        if candidate.is_link_local or candidate.is_reserved or candidate.is_private:
+            # NAT64 well-known prefix itself is flagged non-global; its embedded v4 is vetted.
+            if not (isinstance(candidate, IPv6Address) and candidate in _NAT64):
+                return True
+        if isinstance(candidate, IPv4Address) and candidate in _CGNAT:
+            return True
+        if not candidate.is_global and not (
+            isinstance(candidate, IPv6Address) and candidate in _NAT64
+        ):
+            return True
+    return False
 
 
 async def resolve_public_addresses(host: str, port: int) -> list[str]:

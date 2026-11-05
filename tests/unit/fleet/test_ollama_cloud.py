@@ -1,6 +1,7 @@
 """Tests for the hosted Ollama register-and-route backend."""
 
 import socket
+from ipaddress import ip_address
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,6 +9,7 @@ import pytest
 from shared.fleet.base import BackendType, ManagementScope, ProvisionSpec
 from shared.fleet.ollama_cloud import (
     OllamaCloudFleetBackend,
+    _is_forbidden,
     _PinnedResolver,
     resolve_public_addresses,
 )
@@ -136,3 +138,26 @@ async def test_models_uses_pinned_connector_and_no_redirects():
         await _backend().endpoints_for("gemma4:e4b")
     assert isinstance(client.call_args.kwargs["connector"]._resolver, _PinnedResolver)
     assert session.get.call_args.kwargs["allow_redirects"] is False
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "64:ff9b::a9fe:a9fe",
+        "2002:0a00:0001::",
+        "2001:0:4136:e378:8000:63bf:f5ff:fffe",  # teredo server 65.54.227.120, client 10.0.0.1
+        "2001:0:0a00:0001:8000:63bf:3fff:fdd2",  # teredo server 10.0.0.1
+        "::ffff:127.0.0.1",
+        "64:ff9b:1::a00:1",
+        "224.0.0.1",
+    ],
+)
+def test_embedded_ipv4_and_non_global_forms_forbidden(bad):
+    """Verify: NAT64/6to4/Teredo/mapped wrappers around non-public IPv4 are forbidden."""
+    assert _is_forbidden(ip_address(bad))
+
+
+@pytest.mark.parametrize("good", ["104.18.7.1", "2606:4700::6812:701", "64:ff9b::6812:701"])
+def test_public_forms_allowed(good):
+    """Verify: genuinely public IPv4/IPv6 (incl. NAT64 of a public v4) stay allowed."""
+    assert not _is_forbidden(ip_address(good))
