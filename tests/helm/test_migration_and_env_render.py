@@ -38,21 +38,21 @@ class TestMigrationJobGating:
 
 
 class TestMigrationJobHookOrdering:
-    """The Job and the Secret it depends on are both pre-install,pre-upgrade hooks.
+    """The Job is a post-install,post-upgrade hook; its Secret is a pre-install,pre-upgrade hook.
 
     The Secret's weight must sort strictly before the Job's — otherwise a fresh
     `helm install` dangles the Job's DATABASE_URL secretKeyRef (plain/non-hook
     resources like Secrets are only applied *after* all pre-install hooks finish).
     """
 
-    def test_job_has_pre_install_pre_upgrade_hook(self):
-        """The Job carries the pre-install,pre-upgrade hook with a delete policy."""
+    def test_job_has_post_install_post_upgrade_hook(self):
+        """The Job runs after Postgres exists (post-* hook) and is recreated on every upgrade."""
         docs = render("values-alpha.yaml")
         job = find(docs, "Job", "waddleai-migration")
         ann = job["metadata"]["annotations"]
-        assert ann["helm.sh/hook"] == "pre-install,pre-upgrade"
-        assert "hook-succeeded" in ann["helm.sh/hook-delete-policy"]
-        assert "before-hook-creation" in ann["helm.sh/hook-delete-policy"]
+        assert ann["helm.sh/hook"] == "post-install,post-upgrade"
+        # The last run's log must survive: before-hook-creation only, never hook-succeeded.
+        assert ann["helm.sh/hook-delete-policy"] == "before-hook-creation"
 
     def test_secret_is_also_a_hook_with_earlier_weight(self):
         """The Secret is a hook too, survives past hook cleanup, and sorts before the Job."""
