@@ -908,6 +908,8 @@ fleet:
         tag: "stable-bookworm"
         digest: "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
         pullPolicy: IfNotPresent
+  vllmRay:
+    enabled: false                      # gated; default OFF (full block lands in A2)
 
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)
@@ -1350,6 +1352,17 @@ intel-gpu-plugin:
   namespace: kube-system
   nodeSelector: {}
   sharedDevNum: 1
+
+# KubeRay operator (vLLM-on-Ray fleet) — installed only when fleet.vllmRay.enabled=true.
+# Its CRDs (ray.io/v1 RayCluster) ship in the subchart's crds/ directory.
+# Image pinned by digest (tag carries the immutable @sha256 reference).
+kuberay-operator:
+  image:
+    repository: quay.io/kuberay/operator
+    tag: "v1.6.2@sha256:f9eb07d0d3384554763d739f0eed27aa5d0c2ed4c727ceb075930c1f3f4b9f47"
+  singleNamespaceInstall: true
+  watchNamespace:
+    - waddleai
 
 # ---------------------------------------------------------------------------
 # Tetragon runtime-security TracingPolicies + Kubernetes admission policies
