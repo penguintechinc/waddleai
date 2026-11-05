@@ -1,0 +1,207 @@
+{{/*
+Ray cluster network policy (spec 6.3, decision D1: topology.fleetPorts is NOT touched, so Ray's
+ports never open on Ollama/llama.cpp pods). Same guard as the fleet policies in
+cilium-network-policy.yaml. The chart-wide default-deny covers ingress AND egress, so besides the
+ingress rules every flow needs its matching egress rule: Ray pods may reach DNS and their own
+cluster peers only (workers do not download from the internet, spec 4.5 step 2), and management
+and the AI proxy get head-only egress.
+*/}}
+{{- if and .Values.fleet.vllmRay.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
+{{- $v := .Values.fleet.vllmRay }}
+{{- $ns := .Values.namespace }}
+{{- $t := .Values.cilium.topology }}
+{{- $cluster := "waddleai-inference" }}
+{{- $mutual := .Values.fleet.security.mutualAuth }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-vllm-ray-head
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ray-head
+spec:
+  endpointSelector:
+    matchLabels:
+      ray.io/cluster: {{ $cluster }}
+      ray.io/node-type: head
+  ingress:
+    # Management drives Ray Serve REST (dashboard 8265), GCS, client and Serve HTTP.
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.management | nindent 12 }}
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.ports.gcs | quote }}, protocol: TCP}
+            - {port: {{ $v.dashboard.port | quote }}, protocol: TCP}
+            - {port: {{ $v.ports.client | quote }}, protocol: TCP}
+            - {port: {{ $v.serve.port | quote }}, protocol: TCP}
+    # The AI proxy only ever calls the OpenAI-compatible Serve endpoint.
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.aiproxy | nindent 12 }}
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.serve.port | quote }}, protocol: TCP}
+    - fromEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+            ray.io/node-type: worker
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.ports.gcs | quote }}, protocol: TCP}
+            - {port: {{ $v.ports.client | quote }}, protocol: TCP}
+            - {port: {{ $v.ports.workerMin | quote }}, endPort: {{ $v.ports.workerMax }}, protocol: TCP}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s-app": kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+    - toEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: "1", endPort: 65535, protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-vllm-ray-worker
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ray-worker
+spec:
+  endpointSelector:
+    matchLabels:
+      ray.io/cluster: {{ $cluster }}
+      ray.io/node-type: worker
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+            ray.io/node-type: head
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.ports.workerMin | quote }}, endPort: {{ $v.ports.workerMax }}, protocol: TCP}
+    - fromEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+            ray.io/node-type: worker
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.ports.workerMin | quote }}, endPort: {{ $v.ports.workerMax }}, protocol: TCP}
+    # Workers talk to each other over NCCL, which picks ephemeral ports, so worker-to-worker
+    # traffic inside this one cluster is all-TCP. Peers are still pinned to this RayCluster.
+    - fromEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+            ray.io/node-type: worker
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: "1", endPort: 65535, protocol: TCP}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": kube-system
+            "k8s-app": kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+    - toEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: "1", endPort: 65535, protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-vllm-ray-management-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ray-head
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $t.selectors.management | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+            ray.io/node-type: head
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.ports.gcs | quote }}, protocol: TCP}
+            - {port: {{ $v.dashboard.port | quote }}, protocol: TCP}
+            - {port: {{ $v.ports.client | quote }}, protocol: TCP}
+            - {port: {{ $v.serve.port | quote }}, protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-vllm-ray-proxy-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ray-head
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $t.selectors.aiproxy | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            ray.io/cluster: {{ $cluster }}
+            ray.io/node-type: head
+      {{- if $mutual }}
+      authentication:
+        mode: required
+      {{- end }}
+      toPorts:
+        - ports:
+            - {port: {{ $v.serve.port | quote }}, protocol: TCP}
+{{- end }}
