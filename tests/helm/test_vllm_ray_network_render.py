@@ -101,3 +101,22 @@ def test_management_and_proxy_egress_to_head_only():
     assert _ports(proxy["egress"][0]) == ["8000"]
     for spec in (mgmt, proxy):
         assert spec["egress"][0]["toEndpoints"][0]["matchLabels"]["ray.io/node-type"] == "head"
+
+
+def test_ray_ports_reachable_only_by_management_proxy_and_ray_pods():
+    """6379/8265/10001/8000 are admitted only from management, the proxy and Ray's own pods."""
+    docs = render(BASE, api_versions=CILIUM)
+    guarded = {"6379", "8265", "10001", "8000"}
+    allowed = {"management", "proxy"}
+    for d in docs:
+        if d["kind"] != "CiliumNetworkPolicy" or "vllm-ray" not in d["metadata"]["name"]:
+            continue
+        for rule in d["spec"].get("ingress", []):
+            if guarded & set(_ports(rule)):
+                for fe in rule["fromEndpoints"]:
+                    labels = fe["matchLabels"]
+                    ok = labels.get("app.kubernetes.io/component") in allowed
+                    assert ok or labels.get("ray.io/cluster") == "waddleai-inference", labels
+                assert not rule.get("fromEntities") and not rule.get("fromCIDR")
+    head = _cnp(HEAD)["spec"]["endpointSelector"]["matchLabels"]
+    assert head["ray.io/node-type"] == "head"

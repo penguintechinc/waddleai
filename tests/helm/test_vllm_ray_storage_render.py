@@ -58,54 +58,54 @@ def test_disabled_renders_no_model_store():
     assert find_optional(docs, "PersistentVolumeClaim", "waddleai-vllm-ray-models") is None
 
 
-def test_default_no_hostpath_no_policyexception_enforce_restricted():
-    """Hot cache off: no hostPath, no PolicyException, enforce stays restricted."""
-    docs = render(BASE)
-    assert "hostPath" not in str(_rc(docs))
-    assert find_optional(docs, "PolicyException", "waddleai-vllm-ray-hot-cache") is None
-    assert _ns_labels(docs)[f"{PSA}/enforce"] == "restricted"
-
-
-def test_hot_cache_hostpath_on_workers_only_and_baseline_label():
-    """Hot cache on: hostPath on workers only; namespace enforce relaxes to baseline (D5)."""
-    docs = render(BASE, HOT)
+def _cache_volumes(docs):
     rc = _rc(docs)["spec"]
-    hp = [
+    return [
         v
         for g in rc["workerGroupSpecs"]
         for v in g["template"]["spec"]["volumes"]
-        if "hostPath" in v
+        if v["name"] == "hot-cache"
     ]
-    assert hp and hp[0]["hostPath"]["path"] == "/var/lib/waddleai/models"
-    assert "hostPath" not in str(rc["headGroupSpec"])
-    mounts = [
-        m["mountPath"]
-        for g in rc["workerGroupSpecs"]
-        for m in g["template"]["spec"]["containers"][0]["volumeMounts"]
-    ]
-    assert "/models-cache" in mounts
-    labels = _ns_labels(docs)
-    assert labels[f"{PSA}/enforce"] == "baseline"
-    assert labels[f"{PSA}/warn"] == "restricted" and labels[f"{PSA}/audit"] == "restricted"
 
 
-def test_hot_cache_template_carries_stateful_exception_comment():
-    """The hostPath volume is tagged STATEFUL EXCEPTION (approved) in the template."""
-    assert "# STATEFUL EXCEPTION (approved)" in TEMPLATE.read_text()
-
-
-def test_hot_cache_kyverno_policyexception_scoped_to_ray_workers():
-    """Kyverno mode: PolicyException for ray-worker pods only; enforce stays restricted."""
-    docs = render(BASE, {**HOT, "fleet.vllmRay.hotCache.kyvernoPolicyException": "true"})
-    pe = find(docs, "PolicyException", "waddleai-vllm-ray-hot-cache")
-    res = pe["spec"]["match"]["any"][0]["resources"]
-    assert res["selector"]["matchLabels"]["app.kubernetes.io/component"] == "ray-worker"
-    assert res["namespaces"] == ["waddleai"]
-    assert pe["spec"]["exceptions"][0]["policyName"] == "disallow-host-path"
+def test_default_no_cache_volume_no_hostpath_enforce_restricted():
+    """Hot cache off: no cache volume, no hostPath, namespace stays restricted."""
+    docs = render(BASE)
+    assert not _cache_volumes(docs) and "hostPath" not in str(_rc(docs))
     assert _ns_labels(docs)[f"{PSA}/enforce"] == "restricted"
 
 
-def test_kyverno_exception_not_rendered_without_hot_cache():
-    """A kyvernoPolicyException alone (hot cache off) renders nothing extra."""
-    docs = render(BASE, {"fleet.vllmRay.hotCache.kyvernoPolicyException": "true"})
-    assert find_optional(docs, "PolicyException", "waddleai-vllm-ray-hot-cache") is None
+def test_hot_cache_is_ephemeral_volume_on_workers_only():
+    """AM24: hot cache is a generic ephemeral volume (never hostPath) on workers, not the head."""
+    docs = render(
+        BASE,
+        {
+            **HOT,
+            "fleet.vllmRay.hotCache.storageClass": "local-path",
+            "fleet.vllmRay.hotCache.size": "300Gi",
+        },
+    )
+    rc = _rc(docs)["spec"]
+    vols = _cache_volumes(docs)
+    assert len(vols) == len(rc["workerGroupSpecs"]) and "hostPath" not in str(rc)
+    spec = vols[0]["ephemeral"]["volumeClaimTemplate"]["spec"]
+    assert spec["storageClassName"] == "local-path"
+    assert spec["resources"]["requests"]["storage"] == "300Gi"
+    assert spec["accessModes"] == ["ReadWriteOnce"]
+    assert "hot-cache" not in str(rc["headGroupSpec"])
+    for g in rc["workerGroupSpecs"]:
+        mounts = {
+            m["name"]: m["mountPath"]
+            for m in g["template"]["spec"]["containers"][0]["volumeMounts"]
+        }
+        assert mounts["hot-cache"] == "/models-cache"
+
+
+def test_hot_cache_never_changes_namespace_psa_or_renders_exceptions():
+    """AM24: enabling the cache leaves PSA restricted and renders no PolicyException."""
+    docs = render(BASE, HOT)
+    labels = _ns_labels(docs)
+    for level in ("enforce", "warn", "audit"):
+        assert labels[f"{PSA}/{level}"] == "restricted"
+    assert not [d for d in docs if d["kind"] == "PolicyException"]
+    assert "STATEFUL EXCEPTION" not in TEMPLATE.read_text()

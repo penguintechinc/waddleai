@@ -2,9 +2,6 @@
 {{- if not (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
 {{- fail "fleet.vllmRay.rayInternalTls needs cert-manager: install cert-manager (cert-manager.io/v1 CRDs), supply fleet.security.rayTls.existingSecret, or set rayInternalTls=false (allowed only while fleet.security.mutualAuth is on)" }}
 {{- end }}
-{{- if and (not .Values.fleet.vllmRay.rayInternalTls) (not .Values.fleet.security.mutualAuth) }}
-{{- fail "fleet.vllmRay.rayInternalTls=false requires fleet.security.mutualAuth=true (AM11: links with no app-level auth need mutual auth or internal TLS)" }}
-{{- end }}
 # One CA per cluster (AM13). cert-manager is the default over SPIRE SVIDs because Ray reads certs
 # once at startup, so rotation needs a pod restart either way (AM12); the restart-generation
 # annotation on the RayCluster pod templates is that hook.

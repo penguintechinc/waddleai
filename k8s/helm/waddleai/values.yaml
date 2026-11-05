@@ -963,11 +963,11 @@ fleet:
     #   cardUsd and tdpWatts are optional: unset = reference fallback (B4d load_pricing_inputs).
     nvidiaClassMap: [] # [{pattern: "*RTX 4090*", name: rtx4090}]; empty = no renaming
     modelStore: { storageClass: "", size: 500Gi, accessMode: ReadWriteMany }
-    hotCache:
-      enabled: false # opt-in; owner approved (spec 8.1)
-      hostPath: /var/lib/waddleai/models
-      kyvernoPolicyException: false # true = PolicyException for ray-worker pods instead of enforce=baseline (D5)
-      kyvernoPolicyNames: ["disallow-host-path"] # Kyverno host-path policies the exception covers
+    hotCache: # opt-in node-local weight cache as a generic ephemeral volume on worker pods (AM24)
+      enabled: false
+      storageClass: "" # node-local NVMe class (e.g. local-path, topolvm); empty = cluster default
+      size: 200Gi
+      mountPath: /models-cache # cache lifetime = worker pod
     nccl:
       ifname: "" # empty = pod primary interface
     serve: { port: 8000 }

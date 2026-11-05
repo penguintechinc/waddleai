@@ -161,3 +161,38 @@ def test_management_unchanged_when_vllm_ray_disabled():
     names = {e["name"] for e in _mgmt_env(docs)}
     assert not {n for n in names if "FLEET_MUTUAL" in n or "TOKEN_ENCRYPTION" in n}
     assert find_optional(docs, "Secret", "waddleai-ray-auth") is None
+
+
+def test_tls_off_without_mutual_auth_fails_even_with_external_tls_secret():
+    """AM24: the link-auth invariant fires from the always-rendered RayCluster template."""
+    off = {"fleet.vllmRay.rayInternalTls": "false", "fleet.security.mutualAuth": "false"}
+    with pytest.raises(AssertionError, match="mutualAuth"):
+        render(BASE, off)
+    docs = render(BASE, {"fleet.vllmRay.rayInternalTls": "false"})
+    assert find(docs, "RayCluster", "waddleai-inference")
+
+
+def test_auth_and_tls_on_head_and_every_worker_group_from_secret():
+    """Head and EVERY worker group: token auth envs from the Secret file, TLS envs + mounts."""
+    groups = {
+        "fleet.vllmRay.workerGroups[1].name": "amd-mi300",
+        "fleet.vllmRay.workerGroups[1].vendor": "amd",
+        "fleet.vllmRay.workerGroups[1].gpuClass": "amd-mi300",
+        "fleet.vllmRay.workerGroups[1].resourceName": "amd.com/gpu",
+        "fleet.vllmRay.workerGroups[1].gpusPerWorker": "1",
+        "fleet.vllmRay.workerGroups[1].vramMbPerNode": "196608",
+        "fleet.vllmRay.workerGroups[1].maxReplicas": "1",
+        "fleet.vllmRay.workerGroups[1].image": "rocm",
+    }
+    pods = _pod_templates(render(BASE, groups))
+    assert len(pods) == 3
+    for pod in pods:
+        c = pod["spec"]["containers"][0]
+        env = {e["name"]: e.get("value") for e in c["env"]}
+        assert env["RAY_AUTH_MODE"] == "token" and env["RAY_USE_TLS"] == "1"
+        assert env["RAY_AUTH_TOKEN_PATH"] == "/etc/ray-auth/token"  # noqa: S105
+        mounts = {m["name"]: m for m in c["volumeMounts"]}
+        assert mounts["ray-auth"]["readOnly"] and mounts["ray-tls"]["readOnly"]
+        vols = {v["name"]: v for v in pod["spec"]["volumes"]}
+        assert vols["ray-auth"]["secret"]["secretName"] == "waddleai-ray-auth"
+        assert vols["ray-tls"]["secret"]["secretName"] == "fixture-ray-tls"

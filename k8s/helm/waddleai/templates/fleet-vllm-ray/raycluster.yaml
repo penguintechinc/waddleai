@@ -1,5 +1,10 @@
 {{- if .Values.fleet.vllmRay.enabled }}
 {{- include "waddleai.vllmRay.validate" . }}
+{{- /* Link-auth invariant (AM11/AM24): Ray has app-level token auth but its links need TLS or
+       mutual auth. Lives here, not in tls.yaml, so it fires even when TLS Secrets are external. */}}
+{{- if and (not .Values.fleet.vllmRay.rayInternalTls) (not .Values.fleet.security.mutualAuth) }}
+{{- fail "fleet.vllmRay.rayInternalTls=false requires fleet.security.mutualAuth=true: Ray links need internal TLS or Cilium mutual auth" }}
+{{- end }}
 {{- $v := .Values.fleet.vllmRay }}
 {{- $headImage := include "waddleai.vllmRay.image" (dict "ctx" . "key" "head") }}
 apiVersion: ray.io/v1
@@ -122,7 +127,7 @@ spec:
                 - {name: models, mountPath: /models}
                 - {name: deployment-keys, mountPath: /secrets/deployment-keys/, readOnly: true}
                 {{- if $v.hotCache.enabled }}
-                - {name: hot-cache, mountPath: /models-cache}
+                - {name: hot-cache, mountPath: {{ $v.hotCache.mountPath }}}
                 {{- end }}
                 {{- include "waddleai.vllmRay.authMounts" $ | nindent 16 }}
           volumes:
@@ -138,13 +143,19 @@ spec:
               persistentVolumeClaim:
                 claimName: waddleai-vllm-ray-models
             {{- if $v.hotCache.enabled }}
-            # STATEFUL EXCEPTION (approved)
-            # Opt-in node-local NVMe weight cache (spec 6.4): hostPath on WORKER pods only. Pod
-            # Security Admission must admit it: see namespace.yaml and hotCache.kyvernoPolicyException.
+            # Generic ephemeral volume (AM24): a PVC created and deleted with the worker pod, so no
+            # hostPath and no Pod Security Admission exception is ever needed.
             - name: hot-cache
-              hostPath:
-                path: {{ $v.hotCache.hostPath }}
-                type: DirectoryOrCreate
+              ephemeral:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    {{- with $v.hotCache.storageClass }}
+                    storageClassName: {{ . | quote }}
+                    {{- end }}
+                    resources:
+                      requests:
+                        storage: {{ $v.hotCache.size }}
             {{- end }}
             {{- include "waddleai.vllmRay.authVolumes" $ | nindent 12 }}
     {{- end }}
