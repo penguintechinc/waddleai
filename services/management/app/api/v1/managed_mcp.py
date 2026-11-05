@@ -9,7 +9,12 @@ from quart import current_app, g, jsonify, request
 
 from shared.auth.rbac import Permission
 from shared.mcp.kubernetes_driver import KubernetesManagedMcpDriver
-from shared.mcp.managed import ManagedMcpLifecycle, ManagedMcpSpec, ManagedMcpValidationError
+from shared.mcp.managed import (
+    ManagedMcpConflictError,
+    ManagedMcpLifecycle,
+    ManagedMcpSpec,
+    ManagedMcpValidationError,
+)
 from shared.utils.feature_flags import is_feature_enabled
 
 from ... import extensions
@@ -51,11 +56,14 @@ async def create_managed_mcp() -> tuple:
             image=str(body.get("image", "")),
             namespace=str(body.get("namespace", "")),
             transport=str(body.get("transport", "streamable_http")),
+            org_id=org_id,
         )
         lifecycle = ManagedMcpLifecycle(
             _driver(), allowed_namespaces=set(current_app.config.get("MANAGED_MCP_NAMESPACES", []))
         )
         endpoint = await lifecycle.provision(spec)
+    except ManagedMcpConflictError as exc:
+        return jsonify({"error": str(exc)}), 409
     except (ManagedMcpValidationError, RuntimeError, TimeoutError) as exc:
         return jsonify({"error": str(exc)}), 400
     except Exception as exc:
@@ -81,6 +89,7 @@ async def create_managed_mcp() -> tuple:
             endpoint_id=endpoint_id,
             name=spec.name,
             namespace=spec.namespace,
+            k8s_name=spec.object_name,
             image=spec.image,
             transport=spec.transport,
             status="active",
@@ -131,7 +140,11 @@ async def delete_managed_mcp(server_id: int) -> tuple:
     if row is None:
         return jsonify({"error": "managed MCP server not found"}), 404
     spec = ManagedMcpSpec(
-        name=row.name, image=row.image, namespace=row.namespace, transport=row.transport
+        name=row.name,
+        image=row.image,
+        namespace=row.namespace,
+        transport=row.transport,
+        org_id=org_id,
     )
     try:
         await ManagedMcpLifecycle(

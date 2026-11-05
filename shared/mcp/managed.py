@@ -8,6 +8,7 @@ turning an MCP registration request into arbitrary workload execution.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Protocol
@@ -18,6 +19,10 @@ _NAME = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 
 class ManagedMcpValidationError(ValueError):
     """Raised before an unsafe managed-MCP request reaches a deployment driver."""
+
+
+class ManagedMcpConflictError(RuntimeError):
+    """Raised when a workload object with the derived name already exists (HTTP 409)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,12 +38,36 @@ class ManagedMcpSpec:
     transport: str = "streamable_http"
     network_policy: str = "restricted-egress"
     service_account: str = "waddleai-managed-mcp"
+    org_id: int = 0
+
+    @property
+    def server_key(self) -> str:
+        """Return a stable, org-scoped server identity usable as a label value.
+
+        Derived from org, namespace and name so it is deterministic across calls.
+        """
+        raw = f"{self.org_id}/{self.namespace}/{self.name}".encode()
+        return hashlib.sha256(raw).hexdigest()[:32]
+
+    @property
+    def object_name(self) -> str:
+        """Return the org-scoped DNS-1123 Kubernetes object name (<=51 chars).
+
+        Kubernetes names are global per namespace, so the org id is embedded to
+        stop two orgs' same-named servers colliding; leaves room for suffixes.
+        """
+        base = f"mcp-{self.org_id}-{self.name}"
+        if len(base) <= 51:
+            return base
+        return f"{base[:42].rstrip('-')}-{self.server_key[:8]}"
 
     def validate(self, allowed_namespaces: set[str]) -> None:
         """Validate the spec against the allowed namespaces.
 
         Raises on any unsafe or disallowed value.
         """
+        if self.org_id < 0:
+            raise ManagedMcpValidationError("org_id must be non-negative")
         if not _NAME.fullmatch(self.name):
             raise ManagedMcpValidationError("name must be a DNS label")
         if not _IMAGE_DIGEST.fullmatch(self.image):

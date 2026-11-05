@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column("endpoint_id", sa.Integer(), nullable=True),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("namespace", sa.String(255), nullable=False),
+        sa.Column("k8s_name", sa.String(63), nullable=False),
         sa.Column("image", sa.String(1024), nullable=False),
         sa.Column("transport", sa.String(32), nullable=False),
         sa.Column("status", sa.String(32), nullable=False, server_default="pending"),
@@ -36,6 +37,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["org_id"], ["organizations.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["endpoint_id"], ["mcp_endpoints.id"], ondelete="SET NULL"),
         sa.UniqueConstraint("org_id", "name", name="uq_managed_mcp_servers_org_name"),
+        sa.UniqueConstraint("namespace", "k8s_name", name="uq_managed_mcp_servers_k8s_name"),
     )
     op.create_table(
         "configuration_revisions",

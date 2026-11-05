@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-from .managed import ManagedMcpSpec
+from .managed import ManagedMcpConflictError, ManagedMcpSpec
+
+logger = logging.getLogger(__name__)
+
+ORG_LABEL = "waddleai.penguintech.io/org-id"
+SERVER_LABEL = "waddleai.penguintech.io/server-id"
 
 
 class KubernetesManagedMcpDriver:
@@ -49,14 +55,24 @@ class KubernetesManagedMcpDriver:
 
     @staticmethod
     def _labels(spec: ManagedMcpSpec) -> dict[str, str]:
-        return {"app.kubernetes.io/name": spec.name, "app.kubernetes.io/managed-by": "waddleai"}
+        """Return the selector/ownership labels, including org and server identity."""
+        return {
+            "app.kubernetes.io/name": spec.object_name,
+            "app.kubernetes.io/managed-by": "waddleai",
+            ORG_LABEL: str(spec.org_id),
+            SERVER_LABEL: spec.server_key,
+        }
 
     def _deployment(self, spec: ManagedMcpSpec) -> dict[str, Any]:
         labels = self._labels(spec)
         return {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
-            "metadata": {"name": spec.name, "namespace": spec.namespace, "labels": labels},
+            "metadata": {
+                "name": spec.object_name,
+                "namespace": spec.namespace,
+                "labels": labels,
+            },
             "spec": {
                 "replicas": 1,
                 "selector": {"matchLabels": labels},
@@ -93,7 +109,11 @@ class KubernetesManagedMcpDriver:
         return {
             "apiVersion": "networking.k8s.io/v1",
             "kind": "NetworkPolicy",
-            "metadata": {"name": f"{spec.name}-restricted", "namespace": spec.namespace},
+            "metadata": {
+                "name": f"{spec.object_name}-restricted",
+                "namespace": spec.namespace,
+                "labels": labels,
+            },
             "spec": {
                 "podSelector": {"matchLabels": labels},
                 "policyTypes": ["Ingress", "Egress"],
@@ -124,40 +144,60 @@ class KubernetesManagedMcpDriver:
             },
         }
 
+    async def _post(
+        self, client: httpx.AsyncClient, path: str, body: dict[str, Any], created: list[str]
+    ) -> None:
+        """POST one object; record it as ours on success, raise a conflict on 409."""
+        response = await client.post(path, json=body)
+        if response.status_code == 409:
+            raise ManagedMcpConflictError(
+                f"{body['kind']} {body['metadata']['name']} already exists in "
+                f"{body['metadata']['namespace']}"
+            )
+        response.raise_for_status()
+        created.append(f"{path}/{body['metadata']['name']}")
+
     async def create(self, spec: ManagedMcpSpec) -> None:
         """Create the Kubernetes workload for a managed MCP server.
 
-        Applies the restricted security and network settings.
+        Applies the restricted security and network settings.  On failure only
+        objects created by this call are removed; a 409 never touches the
+        pre-existing (possibly another org's) object.
         """
-        try:
-            async with self._client() as client:
-                response = await client.post(
-                    f"/apis/apps/v1/namespaces/{spec.namespace}/deployments",
-                    json=self._deployment(spec),
+        ns = spec.namespace
+        labels = self._labels(spec)
+        service = {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": spec.object_name, "namespace": ns, "labels": labels},
+            "spec": {
+                "selector": labels,
+                "ports": [{"name": "mcp", "port": 8080, "targetPort": "mcp"}],
+            },
+        }
+        created: list[str] = []
+        async with self._client() as client:
+            try:
+                await self._post(
+                    client,
+                    f"/apis/apps/v1/namespaces/{ns}/deployments",
+                    self._deployment(spec),
+                    created,
                 )
-                response.raise_for_status()
-                labels = self._labels(spec)
-                service = {
-                    "apiVersion": "v1",
-                    "kind": "Service",
-                    "metadata": {"name": spec.name, "namespace": spec.namespace, "labels": labels},
-                    "spec": {
-                        "selector": labels,
-                        "ports": [{"name": "mcp", "port": 8080, "targetPort": "mcp"}],
-                    },
-                }
-                response = await client.post(
-                    f"/api/v1/namespaces/{spec.namespace}/services", json=service
+                await self._post(client, f"/api/v1/namespaces/{ns}/services", service, created)
+                await self._post(
+                    client,
+                    f"/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies",
+                    self._network_policy(spec),
+                    created,
                 )
-                response.raise_for_status()
-                response = await client.post(
-                    f"/apis/networking.k8s.io/v1/namespaces/{spec.namespace}/networkpolicies",
-                    json=self._network_policy(spec),
-                )
-                response.raise_for_status()
-        except Exception:
-            await self.delete(spec)
-            raise
+            except Exception:
+                for path in reversed(created):
+                    try:
+                        await client.delete(path)
+                    except Exception:
+                        logger.exception("managed MCP rollback failed for %s", path)
+                raise
 
     async def wait_ready(self, spec: ManagedMcpSpec) -> str:
         """Wait until the workload is ready and return its endpoint URL.
@@ -167,11 +207,11 @@ class KubernetesManagedMcpDriver:
         async with self._client() as client:
             for _ in range(30):
                 response = await client.get(
-                    f"/apis/apps/v1/namespaces/{spec.namespace}/deployments/{spec.name}"
+                    f"/apis/apps/v1/namespaces/{spec.namespace}/deployments/{spec.object_name}"
                 )
                 response.raise_for_status()
                 if response.json().get("status", {}).get("availableReplicas", 0) >= 1:
-                    return f"http://{spec.name}.{spec.namespace}.svc.cluster.local:8080/mcp"
+                    return f"http://{spec.object_name}.{spec.namespace}.svc.cluster.local:8080/mcp"
                 await asyncio.sleep(1)
         raise TimeoutError(f"managed MCP {spec.name} did not become ready")
 
@@ -187,14 +227,25 @@ class KubernetesManagedMcpDriver:
     async def delete(self, spec: ManagedMcpSpec) -> None:
         """Delete the workload created for a managed MCP server.
 
-        Used for cleanup on failure and on removal.
+        Reads each live object first and only deletes it when its org-id and
+        server-id labels match the spec; otherwise logs a warning and skips.
         """
+        ns = spec.namespace
+        expected = {ORG_LABEL: str(spec.org_id), SERVER_LABEL: spec.server_key}
         async with self._client() as client:
             for path in (
-                f"/apis/apps/v1/namespaces/{spec.namespace}/deployments/{spec.name}",
-                f"/api/v1/namespaces/{spec.namespace}/services/{spec.name}",
-                f"/apis/networking.k8s.io/v1/namespaces/{spec.namespace}/networkpolicies/{spec.name}-restricted",
+                f"/apis/apps/v1/namespaces/{ns}/deployments/{spec.object_name}",
+                f"/api/v1/namespaces/{ns}/services/{spec.object_name}",
+                f"/apis/networking.k8s.io/v1/namespaces/{ns}/networkpolicies/{spec.object_name}-restricted",
             ):
+                live = await client.get(path)
+                if live.status_code == 404:
+                    continue
+                live.raise_for_status()
+                labels = (live.json().get("metadata") or {}).get("labels") or {}
+                if any(labels.get(k) != v for k, v in expected.items()):
+                    logger.warning("refusing to delete %s: org/server labels do not match", path)
+                    continue
                 response = await client.delete(path)
                 if response.status_code not in {200, 202, 404}:
                     response.raise_for_status()

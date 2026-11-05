@@ -1464,6 +1464,7 @@ class ManagedMcpServer(Base):
     )
     name = Column(String(255), nullable=False)
     namespace = Column(String(255), nullable=False)
+    k8s_name = Column(String(63), nullable=False)  # org-scoped K8s object name; globally unique
     image = Column(String(1024), nullable=False)  # digest-pinned; validated before persistence
     transport = Column(String(32), nullable=False)
     status = Column(String(32), nullable=False, default="pending")
@@ -1471,7 +1472,10 @@ class ManagedMcpServer(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    __table_args__ = (UniqueConstraint("org_id", "name", name="uq_managed_mcp_servers_org_name"),)
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_managed_mcp_servers_org_name"),
+        UniqueConstraint("namespace", "k8s_name", name="uq_managed_mcp_servers_k8s_name"),
+    )
 
 
 class ConfigurationRevision(Base):
