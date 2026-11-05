@@ -1,10 +1,13 @@
 """Hosted Ollama fleet target; intentionally register-and-route only."""
 
-from ipaddress import ip_address
+import asyncio
+import socket
+from ipaddress import IPv4Address, IPv4Network, IPv6Address, ip_address
 from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
+from aiohttp.abc import AbstractResolver, ResolveResult
 
 from shared.fleet.base import (
     BackendType,
@@ -19,6 +22,80 @@ from shared.fleet.base import (
 from shared.fleet.registry import register
 
 _TIMEOUT = aiohttp.ClientTimeout(total=10)
+_CGNAT = IPv4Network("100.64.0.0/10")
+_FORBIDDEN_MSG = "Ollama Cloud endpoint_url must not target a private or local address"
+
+
+def _is_forbidden(address: IPv4Address | IPv6Address) -> bool:
+    """Return True for any address that is not a routable public unicast IP.
+
+    Covers private, loopback, link-local, reserved, multicast, unspecified,
+    CGNAT 100.64.0.0/10, and IPv4-mapped IPv6 forms of all of those.
+    """
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+        or (isinstance(address, IPv4Address) and address in _CGNAT)
+    )
+
+
+async def resolve_public_addresses(host: str, port: int) -> list[str]:
+    """Resolve a host (off the event loop) and return its addresses if all are public.
+
+    Raises ValueError when the name has no addresses or ANY address is
+    non-public, so a mixed public/private record set cannot be used for SSRF.
+    """
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError(f"Ollama Cloud endpoint_url host {host!r} did not resolve") from exc
+    addresses: list[str] = []
+    for info in infos:
+        text = str(info[4][0]).split("%", 1)[0]
+        if _is_forbidden(ip_address(text)):
+            raise ValueError(_FORBIDDEN_MSG)
+        if text not in addresses:
+            addresses.append(text)
+    if not addresses:
+        raise ValueError(f"Ollama Cloud endpoint_url host {host!r} did not resolve")
+    return addresses
+
+
+class _PinnedResolver(AbstractResolver):
+    """aiohttp resolver that re-vets DNS at connect time and pins the vetted IPs.
+
+    The connector dials exactly the addresses returned here, so a DNS rebind
+    after validation cannot swap in a private target. The original hostname is
+    kept so the Host header, TLS SNI and certificate validation still use it.
+    """
+
+    async def resolve(
+        self, host: str, port: int = 0, family: socket.AddressFamily = socket.AF_INET
+    ) -> list[ResolveResult]:
+        """Resolve and vet host, returning only vetted addresses for the connector."""
+        results: list[ResolveResult] = []
+        for text in await resolve_public_addresses(host, port):
+            address = ip_address(text)
+            results.append(
+                {
+                    "hostname": host,
+                    "host": text,
+                    "port": port,
+                    "family": socket.AF_INET6 if address.version == 6 else socket.AF_INET,
+                    "proto": 0,
+                    "flags": socket.AI_NUMERICHOST,
+                }
+            )
+        return results
+
+    async def close(self) -> None:
+        """Release resources; the resolver holds none."""
 
 
 @register(BackendType.OLLAMA_CLOUD)
@@ -50,22 +127,12 @@ class OllamaCloudFleetBackend(InferenceFleetBackend):
         try:
             address = ip_address(parsed.hostname)
         except ValueError:
-            # DNS names are permitted. Deployment egress policy must constrain
-            # them to the approved hosted provider, not private networks.
+            # DNS names are vetted at request time by resolve_public_addresses
+            # and pinned through _PinnedResolver (see _models).
             pass
         else:
-            if any(
-                (
-                    address.is_private,
-                    address.is_loopback,
-                    address.is_link_local,
-                    address.is_reserved,
-                    address.is_unspecified,
-                )
-            ):
-                raise ValueError(
-                    "Ollama Cloud endpoint_url must not target a private or local address"
-                )
+            if _is_forbidden(address):
+                raise ValueError(_FORBIDDEN_MSG)
         return url
 
     @property
@@ -78,8 +145,16 @@ class OllamaCloudFleetBackend(InferenceFleetBackend):
         return {"Authorization": f"Bearer {self.credentials}"}
 
     async def _models(self) -> list[str]:
-        async with aiohttp.ClientSession(headers=self._headers()) as session:
-            async with session.get(f"{self._base_url}/api/tags", timeout=_TIMEOUT) as response:
+        base = self._base_url
+        parsed = urlparse(base)
+        host = parsed.hostname or ""
+        # Validation-time resolution; the pinned resolver re-vets at connect.
+        await resolve_public_addresses(host, parsed.port or 443)
+        connector = aiohttp.TCPConnector(resolver=_PinnedResolver(), use_dns_cache=False)
+        async with aiohttp.ClientSession(headers=self._headers(), connector=connector) as session:
+            async with session.get(
+                f"{base}/api/tags", timeout=_TIMEOUT, allow_redirects=False
+            ) as response:
                 if response.status != 200:
                     raise RuntimeError(f"Ollama Cloud /api/tags returned HTTP {response.status}")
                 payload = await response.json()

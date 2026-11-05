@@ -1,11 +1,39 @@
 """Tests for the hosted Ollama register-and-route backend."""
 
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from shared.fleet.base import BackendType, ManagementScope, ProvisionSpec
-from shared.fleet.ollama_cloud import OllamaCloudFleetBackend
+from shared.fleet.ollama_cloud import (
+    OllamaCloudFleetBackend,
+    _PinnedResolver,
+    resolve_public_addresses,
+)
+
+PUBLIC = "104.18.7.1"
+
+
+def _gai(*addrs):
+    """Build a getaddrinfo-style result list for the given IP strings."""
+    return [
+        (
+            socket.AF_INET6 if ":" in a else socket.AF_INET,
+            socket.SOCK_STREAM,
+            6,
+            "",
+            (a, 443) if ":" not in a else (a, 443, 0, 0),
+        )
+        for a in addrs
+    ]
+
+
+@pytest.fixture(autouse=True)
+def _public_dns():
+    """Default every hostname lookup to a public address."""
+    with patch("shared.fleet.ollama_cloud.socket.getaddrinfo", return_value=_gai(PUBLIC)) as gai:
+        yield gai
 
 
 def _session(status=200, payload=None):
@@ -58,3 +86,53 @@ async def test_lifecycle_is_rejected(method):
             await backend.provision(ProvisionSpec("x", [], "cloud", {}))
         else:
             await backend.deprovision("x")
+
+
+@pytest.mark.parametrize(
+    "bad", ["10.1.2.3", "127.0.0.1", "169.254.169.254", "100.64.1.1", "::1", "::ffff:10.0.0.1"]
+)
+async def test_dns_name_resolving_to_forbidden_address_rejected(bad, _public_dns):
+    """Verify: a hostname resolving to a non-public address is rejected (SSRF)."""
+    _public_dns.return_value = _gai(bad)
+    with pytest.raises(ValueError, match="private or local"):
+        await resolve_public_addresses("evil.example", 443)
+    with patch("aiohttp.ClientSession", return_value=_session()):
+        assert await _backend().endpoints_for("gemma4:e4b") == []
+
+
+async def test_any_private_address_among_many_rejected(_public_dns):
+    """Verify: one private record among public ones rejects the whole name."""
+    _public_dns.return_value = _gai(PUBLIC, "10.0.0.5")
+    with pytest.raises(ValueError, match="private or local"):
+        await resolve_public_addresses("mixed.example", 443)
+
+
+async def test_public_address_accepted():
+    """Verify: a public resolution is accepted and returned."""
+    assert await resolve_public_addresses("ollama.com", 443) == [PUBLIC]
+
+
+async def test_rebind_between_validate_and_request_rejected(_public_dns):
+    """Verify: second resolution returning a private IP is rejected at connect time."""
+    _public_dns.return_value = _gai(PUBLIC)
+    assert await resolve_public_addresses("rebind.example", 443) == [PUBLIC]
+    _public_dns.return_value = _gai("169.254.169.254")
+    with pytest.raises(ValueError, match="private or local"):
+        await _PinnedResolver().resolve("rebind.example", 443)
+
+
+async def test_pinned_resolver_returns_vetted_ip_with_original_hostname():
+    """Verify: resolver yields the vetted IP while keeping the hostname for SNI/Host."""
+    result = await _PinnedResolver().resolve("ollama.com", 443)
+    assert result[0]["host"] == PUBLIC
+    assert result[0]["hostname"] == "ollama.com"
+    assert result[0]["port"] == 443
+
+
+async def test_models_uses_pinned_connector_and_no_redirects():
+    """Verify: the request session pins DNS via the vetted resolver and refuses redirects."""
+    session = _session()
+    with patch("aiohttp.ClientSession", return_value=session) as client:
+        await _backend().endpoints_for("gemma4:e4b")
+    assert isinstance(client.call_args.kwargs["connector"]._resolver, _PinnedResolver)
+    assert session.get.call_args.kwargs["allow_redirects"] is False
