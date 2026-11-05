@@ -47,17 +47,23 @@ class TestFleetServicesClusterIPOnly:
 
 
 class TestFleetIngressAiproxyOnly:
-    """CiliumNetworkPolicy must admit only the AIProxy component into fleet Services."""
+    """Fleet ingress is least-privilege: AIProxy plus optional Ollama-only PenguinCode."""
 
     def test_fleet_ingress_cnp_admits_only_aiproxy(self):
-        """The fleet ingress CNP has exactly one rule, sourced from the proxy component label."""
+        """AIProxy reaches fleet ports; PenguinCode is separately limited to Ollama."""
         docs = render("values-alpha.yaml", api_versions=[CILIUM_CRD])
         cnp = find(docs, "CiliumNetworkPolicy", "waddleai-allow-fleet-ingress")
         ingress = cnp["spec"]["ingress"]
-        assert len(ingress) == 1
+        assert len(ingress) == 2
         sources = ingress[0]["fromEndpoints"]
         assert len(sources) == 1
         assert sources[0]["matchLabels"]["app.kubernetes.io/component"] == "proxy"
+        penguincode = ingress[1]
+        assert (
+            penguincode["fromEndpoints"][0]["matchLabels"]["app.kubernetes.io/component"]
+            == "server"
+        )
+        assert penguincode["toPorts"][0]["ports"] == [{"port": "11434", "protocol": "TCP"}]
 
 
 class TestExternalAuthMtls:

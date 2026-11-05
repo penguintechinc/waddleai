@@ -84,7 +84,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("name", sa.String(255), nullable=False),
-        sa.Column("type", sa.String(20), nullable=False),  # ollama|llamacpp|exo|vertex_ai|bedrock
+        sa.Column("type", sa.String(20), nullable=False),  # shared.fleet.base.BackendType
         sa.Column("mode", sa.String(50), nullable=True),
         sa.Column(
             "management_scope",

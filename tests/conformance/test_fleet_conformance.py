@@ -1,8 +1,8 @@
 """Cross-backend conformance suite for ``InferenceFleetBackend`` (spec §10.5).
 
 Parametrized over every backend that implements the interface: Ollama
-(Task 4), llama.cpp (Task 5), EXO (Task 8), Vertex AI (Task 10), and
-Bedrock (Task 11) — all five spec-mandated backend types. Runs against the
+(Task 4), llama.cpp (Task 5), EXO (Task 8), Vertex AI (Task 10), Bedrock,
+Azure AI, and Ollama Cloud (Task 11). Runs against the
 in-memory ``FakeDAL`` (see ``_fake_dal.py``) or mocked HTTP/boto3 transports
 rather than a live kind cluster, EXO cluster, or cloud account — this is the
 unit-level conformance pass; the real-infra acceptance pass lives in
@@ -21,9 +21,11 @@ from services.management.app.services.ollama_manager import (
     OllamaDeploymentManager,
     PullStatus,
 )
+from shared.fleet.azure_ai import AzureAIFleetBackend
 from shared.fleet.base import BackendType, ManagementScope, ProvisionSpec
 from shared.fleet.bedrock import BedrockFleetBackend
 from shared.fleet.exo import ExoFleetBackend
+from shared.fleet.ollama_cloud import OllamaCloudFleetBackend
 from shared.fleet.vertex_ai import VertexAIFleetBackend
 from tests.conformance._fake_dal import FakeDAL
 
@@ -84,14 +86,38 @@ def bedrock_backend() -> BedrockFleetBackend:
     )
 
 
-# BACKENDS: (fixture_name, expected BackendType) — all five spec-mandated
-# backend types (§10.1) are represented.
+@pytest.fixture
+def azure_ai_backend() -> AzureAIFleetBackend:
+    """Azure deployment control plane target, exercised with mocked ARM calls."""
+    return AzureAIFleetBackend(
+        db=None,
+        config={"subscription_id": "sub", "resource_group": "rg", "account_name": "acct"},
+        credentials=json.dumps(
+            {"tenant_id": "tenant", "client_id": "client", "client_secret": "secret"}
+        ),
+    )
+
+
+@pytest.fixture
+def ollama_cloud_backend() -> OllamaCloudFleetBackend:
+    """Hosted Ollama target, exercised with mocked HTTPS API calls."""
+    return OllamaCloudFleetBackend(
+        db=None,
+        config={"endpoint_url": "https://ollama.example", "name": "hosted"},
+        credentials="test-token",
+    )
+
+
+# BACKENDS: (fixture_name, expected BackendType) — every public registry type
+# (§10.1) is represented, including the professional cloud targets.
 BACKENDS = [
     ("ollama_backend", BackendType.OLLAMA),
     ("llamacpp_backend", BackendType.LLAMACPP),
     ("exo_backend", BackendType.EXO),
     ("vertex_backend", BackendType.VERTEX_AI),
     ("bedrock_backend", BackendType.BEDROCK),
+    ("azure_ai_backend", BackendType.AZURE_AI),
+    ("ollama_cloud_backend", BackendType.OLLAMA_CLOUD),
 ]
 
 
