@@ -1,0 +1,13 @@
+# Build-only tooling for the vLLM XPU wheel (stage `build`); never installed in the runtime image.
+# Mirrors vLLM v0.29.0 docker/Dockerfile.xpu vllm-build ("grpcio-tools protobuf nanobind" + xpu.txt build bits)
+# plus requirements/build/rust.txt. Regenerate build-requirements.txt: see the Dockerfile header.
+cmake>=3.26.1
+wheel
+jinja2>=3.1.6
+packaging>=24.2
+setuptools>=77.0.3,<81.0.0
+setuptools-scm>=9.2.0
+setuptools-rust>=1.9.0
+grpcio-tools
+protobuf
+nanobind
