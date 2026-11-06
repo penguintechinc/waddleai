@@ -60,6 +60,7 @@ def _db() -> DB:
 
 
 FLEET_V2_FLAG = "waddleai.fleet_v2"
+FLEET_VLLM_RAY_FLAG = "waddleai.fleet-vllm-ray"
 _HYBRID_TARGETS_FEATURE = "hybrid_targets"
 
 # Backend types requiring the two-layer Pro gate (flag AND check_feature) at
@@ -87,6 +88,7 @@ _VALID_TYPES = frozenset(
         BackendType.BEDROCK.value,
         BackendType.AZURE_AI.value,
         BackendType.OLLAMA_CLOUD.value,
+        BackendType.VLLM_RAY.value,
     }
 )
 _VALID_SCOPES = frozenset(s.value for s in ManagementScope)
@@ -254,6 +256,13 @@ def _fleet_v2_enabled(org_id: int) -> bool:
     return is_feature_enabled(FLEET_V2_FLAG, distinct_id=str(org_id), default=False)
 
 
+def _vllm_ray_enabled(org_id: int) -> bool:
+    """True only when both ``waddleai.fleet_v2`` and ``waddleai.fleet-vllm-ray`` are on."""
+    return _fleet_v2_enabled(org_id) and is_feature_enabled(
+        FLEET_VLLM_RAY_FLAG, distinct_id=str(org_id), default=False
+    )
+
+
 async def _hybrid_targets_entitled() -> bool:
     """Two-layer gate's entitlement half -- fail-closed on any license-client error."""
 
@@ -361,6 +370,9 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
     if not _fleet_v2_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
 
+    if data.type == BackendType.VLLM_RAY.value and not _vllm_ray_enabled(org_id):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+
     name = (data.name or "").strip()
     backend_type = data.type
     mode = data.mode
@@ -390,6 +402,14 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
             _validate_azure_endpoint(str(config["endpoint_url"]))
         except ValueError as exc:
             return _validation_error(str(exc))
+
+    if backend_type == BackendType.VLLM_RAY.value:
+        urls = [config.get("head_url"), config.get("serve_base_url")]
+        if not all(isinstance(u, str) and u.startswith(("http://", "https://")) for u in urls):
+            return _validation_error(
+                "config.head_url and config.serve_base_url are required for vllm_ray "
+                "(http or https URLs)"
+            )
 
     if backend_type in _PRO_GATED_TYPES and not await _hybrid_targets_entitled():
         return (
