@@ -1482,12 +1482,25 @@ def test_create_deployment_refuses_plain_gpu_on_ai_node_when_flag_on(manager, db
     assert not db._tables.get("ollama_deployments")
 
 
-def test_create_deployment_ai_node_allowed_when_flag_off(manager, db, monkeypatch):
-    """Flag off: legacy behavior is unchanged."""
+def test_create_deployment_ai_node_refused_regardless_of_flag(manager, db, monkeypatch):
+    """The refusal is NOT flag-gated: flag off still refuses on an AI node."""
     monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
     config = OllamaDeploymentConfig(name="ai", gpu_count=1, node_selector=dict(_AI_SELECTOR))
 
-    assert manager.create_deployment(config)["success"] is True
+    result = manager.create_deployment(config)
+
+    assert result["success"] is False
+    assert not db._tables.get("ollama_deployments")
+
+
+def test_create_deployment_refused_on_per_class_resource_label(manager, db, monkeypatch):
+    """A selector naming an nvidia.com/<class> label is a renamed node even without the AI label."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
+    config = OllamaDeploymentConfig(
+        name="cls", gpu_count=1, node_selector={"nvidia.com/rtx4090": "1"}
+    )
+
+    assert manager.create_deployment(config)["success"] is False
 
 
 def test_create_deployment_default_selector_unaffected_when_flag_on(manager, monkeypatch):

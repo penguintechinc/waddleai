@@ -26,7 +26,6 @@ from shared.fleet.base import (
 )
 from shared.fleet.registry import register
 from shared.fleet.vllm_ray.coexistence import refuse_plain_gpu_request_on_renamed_node
-from shared.utils.feature_flags import is_feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -362,15 +361,12 @@ class LlamaCppManager(InferenceFleetBackend):
     # routes so InferenceFleetBackend.provision/deprovision have one path)
 
     def _refuse_plain_gpu_on_ai_node(self, config: LlamaCppDeploymentConfig) -> str | None:
-        """Refuse a plain ``nvidia.com/gpu`` request aimed at a vLLM-on-Ray AI node.
+        """Refuse a plain ``nvidia.com/gpu`` request aimed at a renamed-resource AI node.
 
-        Gated by ``waddleai.fleet-vllm-ray`` so behavior is unchanged while it is off.
+        Deliberately NOT feature-flag gated: a node advertising per-class GPU resources
+        can never schedule a plain request, so the refusal applies whenever the
+        selector shows one.
         """
-        distinct_id = str(self.config.get("org_id", "global"))
-        if not is_feature_enabled(
-            "waddleai.fleet-vllm-ray", distinct_id=distinct_id, default=False
-        ):
-            return None
         if config.gpu_count <= 0:
             return None
         return refuse_plain_gpu_request_on_renamed_node(

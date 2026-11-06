@@ -17,11 +17,32 @@ _MESSAGE = (
 )
 
 
+def node_has_renamed_gpu_resources(
+    node_labels: dict[str, str], allocatable: dict[str, str] | None = None
+) -> bool:
+    """True when the node is an AI node or advertises per-class ``nvidia.com/<class>`` GPUs.
+
+    Looks at the AI-node label plus any node label / allocatable key of the form
+    ``nvidia.com/<class>`` (the plain ``nvidia.com/gpu`` and ``nvidia.com/gpu.*``
+    feature labels do not count). Never consults a feature flag: a renamed node can
+    never schedule a plain request, whatever the rollout state.
+    """
+    if node_labels.get(AI_NODE_LABEL) == "true":
+        return True
+    keys = list(node_labels) + list(allocatable or {})
+    return any(
+        k.startswith("nvidia.com/") and k != _PLAIN_GPU and not k.startswith("nvidia.com/gpu.")
+        for k in keys
+    )
+
+
 def refuse_plain_gpu_request_on_renamed_node(
-    node_labels: dict[str, str], resource_requests: dict[str, str]
+    node_labels: dict[str, str],
+    resource_requests: dict[str, str],
+    allocatable: dict[str, str] | None = None,
 ) -> str | None:
-    """Return a refusal message for a plain GPU request on an AI node, else ``None``."""
-    if node_labels.get(AI_NODE_LABEL) != "true":
+    """Return a refusal for a plain GPU request on a renamed-resource node, else ``None``."""
+    if not node_has_renamed_gpu_resources(node_labels, allocatable):
         return None
     raw = resource_requests.get(_PLAIN_GPU)
     if raw is None:

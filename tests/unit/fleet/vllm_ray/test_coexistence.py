@@ -29,3 +29,12 @@ def test_plain_gpu_on_non_ai_node_allowed() -> None:
 def test_zero_plain_gpu_allowed() -> None:
     """A zero request is not a GPU request."""
     assert refuse_plain_gpu_request_on_renamed_node(_AI, {"nvidia.com/gpu": "0"}) is None
+
+
+def test_per_class_label_or_allocatable_marks_renamed_node() -> None:
+    """nvidia.com/<class> in labels or allocatable counts; plain gpu and gpu.* labels do not."""
+    plain = {"nvidia.com/gpu": "1"}
+    assert refuse_plain_gpu_request_on_renamed_node({"nvidia.com/rtx4090": "1"}, plain)
+    assert refuse_plain_gpu_request_on_renamed_node({}, plain, {"nvidia.com/a100": "4"})
+    assert refuse_plain_gpu_request_on_renamed_node({"nvidia.com/gpu.product": "x"}, plain) is None
+    assert refuse_plain_gpu_request_on_renamed_node({}, plain, {"nvidia.com/gpu": "8"}) is None
