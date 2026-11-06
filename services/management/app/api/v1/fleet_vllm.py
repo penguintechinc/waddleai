@@ -48,6 +48,8 @@ from shared.fleet.vllm_ray.gpu_price_reference import GPU_PRICE_REFERENCE
 from shared.fleet.vllm_ray.model_size import parse_params_b
 from shared.fleet.vllm_ray.slug import derive_slug
 from shared.fleet.vllm_ray.tco import TcoResult
+from shared.observability.vllm_metrics import record_placement
+from shared.routing.prefer_local import validate_prefer_local
 from shared.security.credential_encryption import decrypt_credential
 from shared.utils.feature_flags import is_feature_enabled
 
@@ -1068,6 +1070,8 @@ def _parse_create(body: dict[str, Any]) -> _CreateSpec:
         and isinstance(prefer.get("match", {}), dict)
     ):
         raise ValueError("prefer_local must be {fallback_model: str, match: object}")
+    if prefer is not None:
+        validate_prefer_local(prefer.get("match", {}), prefer["fallback_model"])
     return _CreateSpec(
         name, model_ref, served, backend_id, vendor, gpu_class,
         bool(body.get("allow_mixed_class", False)), quantization, dtype, tp, pp, rmin, rmax,
@@ -1090,9 +1094,11 @@ async def _create_refusal(
     """Run the ordered admission checks; returns (error, params_b, layout)."""
     origin = await asyncio.to_thread(_model_origin, database, spec.model_ref)
     if is_denied_origin(origin) or is_denied_origin(spec.model_ref.split("/", 1)[0]):
+        record_placement("denied_origin")
         return _err(_DENIED_TEXT, 403), None, None
     problem = _quantization_error(spec.vendor, spec.quantization)
     if problem:
+        record_placement("denied_quantization")
         return _err(problem, 422), None, None
     rates = await asyncio.to_thread(comparison_rates, database, spec.comparison_model)
     if rates is None:
@@ -1110,6 +1116,7 @@ async def _create_refusal(
             spec.served_model_name
         )
     except CapExceededError as exc:
+        record_placement("denied_cap")
         return _err(f"{exc} Upgrade your license to deploy more models.", 403), None, None
     params_b = spec.params_b or parse_params_b(spec.model_ref)
     if params_b is None:
@@ -1135,11 +1142,14 @@ async def _create_refusal(
         _kv_headroom(backend_row),
     )
     if not fit.fits:
+        record_placement("no_fit")
         return _err(fit.refusal or _FIT_FALLBACK, 422), None, None
     layout = _pick_layout(fit, spec.tp, spec.pp, spec.gpu_class)
     if layout is None:
+        record_placement("no_fit")
         recommended = next((x.explanation for x in fit.layouts if x.recommended), "")
         return _err(f"The requested layout does not fit. {recommended}".strip(), 422), None, None
+    record_placement("placed")
     return None, params_b, layout
 
 

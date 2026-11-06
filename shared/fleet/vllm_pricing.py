@@ -18,9 +18,9 @@ from shared.fleet.enums import LocalDeploymentKind, PriceMode
 from shared.fleet.pricing import apply_pricing, load_pricing_inputs
 from shared.fleet.vllm_ray.fit import Layout
 from shared.fleet.vllm_ray.model_size import parse_params_b
-from shared.fleet.vllm_ray.tco import TcoResult, compute_tco
+from shared.fleet.vllm_ray.tco import _REFERENCE_PARAMS_B, TcoResult, compute_tco
+from shared.routing.providers import LOCAL_PROVIDERS
 
-LOCAL_PROVIDERS = frozenset({"vllm", "ollama", "llamacpp"})
 OBSERVED_WINDOW_S = 86400
 NO_PARAMS_B = "Can't infer model size from the name; enter the parameter count in billions."
 
@@ -181,3 +181,32 @@ async def price_deployment(
         observed_tokens_per_s if result is not None else None,
         result,
     )
+
+
+def estimate_tokens_per_s(
+    db: Any, kind: int, row: Any, costs: dict[str, Any], inputs: Any = None
+) -> float | None:
+    """Per-replica GPU-class throughput estimate for ``row`` (sanity bound for observed rates).
+
+    Same scaling ``compute_tco`` uses (class estimate, capped by model size); ``None`` when the
+    GPU class or parameter count cannot be resolved, in which case absolute bounds apply.
+    """
+    from shared.fleet.pricing import _model_lookup_name, _params_b, gpu_set_for
+
+    try:
+        if kind == int(LocalDeploymentKind.VLLM):
+            cls = str(row.gpu_class)
+            params_b = resolve_params_b(db, row)
+        else:
+            gpu_set, _ = gpu_set_for(kind, row)
+            classes = {c for c, _n in gpu_set}
+            if len(classes) != 1:
+                return None
+            cls = next(iter(classes))
+            params_b = _params_b(db, _model_lookup_name(kind, row))
+    except Exception:  # noqa: BLE001 -- an unresolvable estimate just loosens the sanity bound
+        return None
+    cost = costs.get(cls)
+    if cost is None or not params_b or params_b <= 0:
+        return None
+    return float(cost.est_tokens_per_s * min(1.0, _REFERENCE_PARAMS_B / params_b))

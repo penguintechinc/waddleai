@@ -9,6 +9,7 @@ weights once they land. Exactly one management replica runs it, chosen by a Post
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -23,8 +24,12 @@ from shared.fleet.pricing import (
     load_pricing_inputs,
 )
 from shared.fleet.registry import build_backend
-from shared.fleet.vllm_pricing import LOCAL_PROVIDERS, resolve_params_b
+from shared.fleet.throughput import observed_tokens_per_s, prune_generation_samples
+from shared.fleet.vllm_pricing import estimate_tokens_per_s, resolve_params_b
 from shared.fleet.vllm_ray.tco import TcoResult
+from shared.observability.vllm_metrics import record_deployment_counts, record_inventory
+from shared.routing.prefer_local import create_prefer_local_rule
+from shared.routing.providers import LOCAL_PROVIDERS
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +45,12 @@ _COUNTER_KEYS = (
     "links_removed",
     "reconcile_errors",
     "prices_recalculated",
+    "samples_pruned",
 )
+SAMPLE_RETENTION_HOURS = 72
+OBSERVED_WINDOW_HOURS = 24
 
-PreferLocalFn = Callable[..., Awaitable[Any]]
+PreferLocalFn = Callable[..., Any]  # async or sync (the real factory is sync)
 
 
 class LeaderGuard(Protocol):
@@ -103,22 +111,42 @@ class PgAdvisoryLeaderGuard:
 class UsageSource(Protocol):
     """Observed-throughput source for AUTO price recomputation."""
 
-    def p50_output_tps(self, db: Any, kind: int, deployment_id: int, window_s: int) -> float | None:
+    def p50_output_tps(
+        self,
+        db: Any,
+        kind: int,
+        deployment_id: int,
+        window_s: int,
+        estimate_tokens_per_s: float | None = None,
+    ) -> float | None:
         """Rolling-window p50 output tokens/s of a deployment, or None when unmeasurable."""
         ...
 
 
-class RollupUsageSource:
-    """Default source: ``token_usage`` is a daily rollup without per-request latency.
+class SampleUsageSource:
+    """Default source: p50 over the per-request ``local_generation_samples`` table.
 
-    A p50 tokens/s cannot be derived from daily totals, so this reports ``None`` (the price
-    keeps its ``estimate`` source and the breakdown says so) rather than inventing a figure.
-    A metering source that records per-request latency replaces it.
+    Delegates to ``shared.fleet.throughput.observed_tokens_per_s``, which enforces the
+    min-principal/min-sample thresholds and drops absurd rates against the per-replica
+    estimate; ``None`` means "keep the estimate".
     """
 
-    def p50_output_tps(self, db: Any, kind: int, deployment_id: int, window_s: int) -> float | None:
-        """Always None: no per-request latency is recorded in the rollup."""
-        return None
+    def p50_output_tps(
+        self,
+        db: Any,
+        kind: int,
+        deployment_id: int,
+        window_s: int,
+        estimate_tokens_per_s: float | None = None,
+    ) -> float | None:
+        """Observed p50 tokens/s for the window, or None when not trustworthy."""
+        return observed_tokens_per_s(
+            db,
+            kind,
+            deployment_id,
+            window_hours=max(1, window_s // 3600),
+            estimate_tokens_per_s=estimate_tokens_per_s,
+        )
 
 
 def _now() -> datetime:
@@ -290,18 +318,18 @@ class VllmReconciler:
         self.db = db
         self.guard = guard
         self.backend_factory = backend_factory
-        self.prefer_local_fn = prefer_local_fn
+        self.prefer_local_fn: PreferLocalFn = prefer_local_fn or create_prefer_local_rule
         self.deployment_interval_s = deployment_interval_s
         self.inventory_interval_s = inventory_interval_s
         self.clock = clock
         self.sleep = sleep
-        self.usage_source: UsageSource = usage_source or RollupUsageSource()
+        self.usage_source: UsageSource = usage_source or SampleUsageSource()
         self.price_interval_s = price_interval_s
         self.pull_poller = pull_poller
         self._last_reconciled: dict[int, float] = {}
         self._last_inventory: dict[int, float] = {}
         self._last_priced: dict[tuple[int, int], float] = {}
-        self._warned_no_rule_fn: set[int] = set()
+        self._last_pruned: float | None = None
 
     def _select(self, build: Callable[[Any], Any]) -> list[Any]:
         """Blocking DAL select (run via ``asyncio.to_thread``)."""
@@ -336,7 +364,33 @@ class VllmReconciler:
             for dep in deps:
                 await self._one(backend, brow, dep, counts)
             await self._recompute_local_kinds(brow, counts)
+        await self._record_counts()
+        await self._prune_samples(counts)
         return counts
+
+    async def _record_counts(self) -> None:
+        """Publish the per-status deployment gauge from one pass over every deployment row."""
+        rows = await asyncio.to_thread(
+            lambda: list(self.db(self.db.vllm_deployments.id > 0).select())
+        )
+        by_status: dict[int, int] = {}
+        for row in rows:
+            by_status[int(row.status)] = by_status.get(int(row.status), 0) + 1
+        record_deployment_counts(by_status)
+
+    async def _prune_samples(self, counts: dict[str, int]) -> None:
+        """Delete generation samples older than 72h, at most once per price interval (daily)."""
+        now = self.clock()
+        if self._last_pruned is not None and now - self._last_pruned < self.price_interval_s:
+            return
+        self._last_pruned = now
+        try:
+            counts["samples_pruned"] += int(
+                await asyncio.to_thread(prune_generation_samples, self.db, SAMPLE_RETENTION_HOURS)
+            )
+        except Exception:
+            logger.warning("generation sample prune failed", exc_info=True)
+            counts["reconcile_errors"] += 1
 
     async def _recompute_local_kinds(self, brow: Any, counts: dict[str, int]) -> None:
         """Daily AUTO recompute for THIS org's running Ollama and llama.cpp deployments.
@@ -401,9 +455,21 @@ class VllmReconciler:
             return
         self._last_priced[key] = now
         view = SimpleNamespace(**{k: row[k] for k in row.keys()})
-        observed = await asyncio.to_thread(
-            self.usage_source.p50_output_tps, self.db, kind, int(row.id), 86400
-        )
+        try:
+            estimate = await asyncio.to_thread(
+                estimate_tokens_per_s, self.db, kind, view, costs, inputs
+            )
+            observed = await asyncio.to_thread(
+                self.usage_source.p50_output_tps,
+                self.db,
+                kind,
+                int(row.id),
+                OBSERVED_WINDOW_HOURS * 3600,
+                estimate,
+            )
+        except Exception:
+            logger.warning("throughput lookup failed for %s %s", table, row.id, exc_info=True)
+            observed = None
         try:
             await apply_pricing(self.db, kind, view, inputs, costs, observed)
         except (ValueError, PricingInputsUnavailable):
@@ -436,7 +502,7 @@ class VllmReconciler:
             return
         self._last_inventory[brow.id] = now
         try:
-            await backend.collect_inventory()
+            record_inventory(list(await backend.collect_inventory() or []))
             counts["inventory_refreshes"] += 1
         except Exception:
             logger.warning("vllm inventory refresh failed for backend %s", brow.id, exc_info=True)
@@ -488,16 +554,11 @@ class VllmReconciler:
         prefer = dep.prefer_local
         if not isinstance(prefer, dict) or prefer.get("rule_id") is not None:
             return
-        if self.prefer_local_fn is None:
-            if dep.id not in self._warned_no_rule_fn:
-                self._warned_no_rule_fn.add(dep.id)
-                logger.warning(
-                    "deployment %s requests prefer_local but no rule factory is configured", dep.id
-                )
-            return
-        rule_id = await self.prefer_local_fn(
-            self.db, dep.org_id, dep, prefer.get("fallback_model"), prefer.get("match") or {}
-        )
+        args = (self.db, dep.org_id, dep, prefer.get("fallback_model"), prefer.get("match") or {})
+        if inspect.iscoroutinefunction(self.prefer_local_fn):
+            rule_id = await self.prefer_local_fn(*args)
+        else:
+            rule_id = await asyncio.to_thread(self.prefer_local_fn, *args)
         merged = {**prefer, "rule_id": rule_id}
 
         def _persist() -> None:
@@ -547,17 +608,20 @@ async def _recompute_auto_prices(
     db: Any, backend_row: Any, dep: Any, usage_source: UsageSource | None = None
 ) -> TcoResult | None:
     """Recompute and persist one AUTO deployment's price; None (price unchanged) on error."""
-    source = usage_source or RollupUsageSource()
-    observed = await asyncio.to_thread(
-        source.p50_output_tps,
-        db,
-        int(LocalDeploymentKind.VLLM),
-        int(dep.id),
-        86400,
-    )
+    source = usage_source or SampleUsageSource()
     config = backend_row.config or {}
     try:
         params_b = await asyncio.to_thread(resolve_params_b, db, dep)
+        _inputs, costs = load_pricing_inputs(config)
+        estimate = estimate_tokens_per_s(db, int(LocalDeploymentKind.VLLM), dep, costs, _inputs)
+        observed = await asyncio.to_thread(
+            source.p50_output_tps,
+            db,
+            int(LocalDeploymentKind.VLLM),
+            int(dep.id),
+            OBSERVED_WINDOW_HOURS * 3600,
+            estimate,
+        )
         result = await _price_row(db, dep, config, observed, params_b)
     except (ValueError, PricingInputsUnavailable):
         logger.warning("AUTO price recompute rejected for deployment %s", dep.id, exc_info=True)

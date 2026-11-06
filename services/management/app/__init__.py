@@ -97,9 +97,8 @@ def build_vllm_reconciler(app):
     """Build the vLLM lifecycle reconciler, or None when it is disabled or has no engine.
 
     ``WADDLEAI_VLLM_RECONCILER=0`` disables it. The prefer-local rule factory is looked up from
-    ``shared.routing.prefer_local`` (owned by the routing stream); until it exists, deployments
-    that request ``prefer_local`` are still created and served, but no rule is generated, and
-    that is logged at WARNING when it matters (never silently).
+    ``shared.routing.prefer_local``; the reconciler defaults to its real
+    ``create_prefer_local_rule``, so a deployment requesting ``prefer_local`` gets its rule.
     """
     import os
 
@@ -115,17 +114,9 @@ def build_vllm_reconciler(app):
     from .services.model_store import PullPoller
     from .services.vllm_reconciler import PgAdvisoryLeaderGuard, VllmReconciler
 
-    prefer_local_fn = None
-    try:
-        from shared.routing.prefer_local import create_prefer_local_rule
-
-        prefer_local_fn = create_prefer_local_rule
-    except ImportError:
-        app.logger.info("prefer-local rule factory not available; rules will not be generated")
     return VllmReconciler(
         _db,
         guard=PgAdvisoryLeaderGuard(engine),
-        prefer_local_fn=prefer_local_fn,
         pull_poller=PullPoller(),
     )
 

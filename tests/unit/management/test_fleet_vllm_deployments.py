@@ -192,7 +192,7 @@ async def test_create_expose_and_prefer_local_persisted(client, ready, auth_head
         await (
             await _create(
                 client, auth_headers, ready, name="b", expose_via_proxy=False,
-                prefer_local={"fallback_model": "gpt-4o", "match": {"team": "x"}},
+                prefer_local={"fallback_model": "gpt-4o", "match": {"model_prefix": "x"}},
             )
         ).get_json()
     )["data"]  # fmt: skip
@@ -618,3 +618,48 @@ async def test_create_allows_served_name_with_no_offer_even_if_it_matches_a_comm
     assert (
         await _create(client, auth_headers, ready, served_model_name="gpt-4o")
     ).status_code == 201
+
+
+@pytest.mark.parametrize(
+    "prefer",
+    [
+        {"fallback_model": "gpt-4o", "match": {}},
+        {"fallback_model": "gpt-4o", "match": {"team": "x"}},
+        {"fallback_model": "  ", "match": {"model_prefix": "a"}},
+    ],
+)
+async def test_create_invalid_prefer_local_400_before_anything_is_written(
+    client, ready, auth_headers, fake_backend, vllm_db, prefer
+):
+    """A bad prefer_local body is 400 and nothing is deployed, minted, priced or inserted."""
+    resp = await _create(client, auth_headers, ready, prefer_local=prefer)
+    assert resp.status_code == 400
+    assert fake_backend.calls == []
+    assert vllm_db(vllm_db.vllm_deployments.id > 0).count() == 0
+    assert vllm_db(vllm_db.token_conversion_rates.provider == "vllm").count() == 0
+
+
+async def test_create_records_placement_outcomes(client, ready, auth_headers, monkeypatch, vllm_db):
+    """Admission outcomes feed waddleai_vllm_placement_decisions_total."""
+    seen: list[str] = []
+    monkeypatch.setattr("services.management.app.api.v1.fleet_vllm.record_placement", seen.append)
+    await _create(client, auth_headers, ready, model_ref="deepseek-ai/DeepSeek-7B")
+    await _create(client, auth_headers, ready, vendor=3, quantization=1)
+    await _create(client, auth_headers, ready, model_ref="org/Huge-900B")
+    await _create(client, auth_headers, ready, name="ok")
+    assert seen == ["denied_origin", "denied_quantization", "no_fit", "placed"]
+
+
+async def test_vllm_price_patch_upserts_rate_row(client, ready, auth_headers, vllm_db):
+    """A MANUAL price PATCH re-upserts the per-deployment rate row (apply_pricing wired)."""
+    data = (await (await _create(client, auth_headers, ready)).get_json())["data"]
+    rate = vllm_db(vllm_db.token_conversion_rates.provider == "vllm").select().first()
+    before = (rate.input_rate, rate.output_rate)
+    resp = await client.patch(
+        f"{DEPS}/{data['public_id']}",
+        headers=auth_headers,
+        json={"price_mode": 2, "price_input_per_1m": "0.05", "price_output_per_1m": "0.07"},
+    )
+    assert resp.status_code == 200
+    rate = vllm_db(vllm_db.token_conversion_rates.provider == "vllm").select().first()
+    assert (rate.input_rate, rate.output_rate) != before

@@ -12,8 +12,8 @@ from sqlalchemy import create_engine
 from services.management.app import build_vllm_reconciler
 from services.management.app.services.model_store import PullPoller
 from services.management.app.services.vllm_reconciler import PgAdvisoryLeaderGuard
-from tests.unit.management.test_vllm_reconciler import _reconciler, _tick
-from tests.unit.management.vllm_harness import seed_backend, seed_deployment
+from shared.routing.prefer_local import create_prefer_local_rule
+from tests.unit.management.test_vllm_reconciler import _reconciler
 
 
 def _app() -> SimpleNamespace:
@@ -47,19 +47,7 @@ def test_built_with_leader_guard_and_pull_poller(monkeypatch, tmp_path) -> None:
     assert reconciler is not None
     assert isinstance(reconciler.guard, PgAdvisoryLeaderGuard)
     assert isinstance(reconciler.pull_poller, PullPoller)
-    assert reconciler.prefer_local_fn is None
-
-
-def test_prefer_local_without_factory_warns_once(vllm_db, both_flags, caplog) -> None:
-    """A prefer_local request with no rule factory is logged (once), never silent."""
-    backend = seed_backend(vllm_db)
-    seed_deployment(vllm_db, backend, status=5, prefer_local={"fallback_model": "g", "match": {}})
-    rec, _, clock = _reconciler(vllm_db)
-    with caplog.at_level(logging.WARNING):
-        _tick(rec)
-        clock.now = 100
-        _tick(rec)
-    assert caplog.text.count("no rule factory") == 1
+    assert reconciler.prefer_local_fn is create_prefer_local_rule
 
 
 def test_run_forever_is_cancellable_as_a_task(vllm_db, both_flags) -> None:
