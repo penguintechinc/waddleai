@@ -25,6 +25,8 @@ from shared.fleet.base import (
     ProvisionSpec,
 )
 from shared.fleet.registry import register
+from shared.fleet.vllm_ray.coexistence import refuse_plain_gpu_request_on_renamed_node
+from shared.utils.feature_flags import is_feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -359,9 +361,29 @@ class LlamaCppManager(InferenceFleetBackend):
     # Deployment CRUD (factored out of api/v1/llamacpp.py's create/delete
     # routes so InferenceFleetBackend.provision/deprovision have one path)
 
+    def _refuse_plain_gpu_on_ai_node(self, config: LlamaCppDeploymentConfig) -> str | None:
+        """Refuse a plain ``nvidia.com/gpu`` request aimed at a vLLM-on-Ray AI node.
+
+        Gated by ``waddleai.fleet-vllm-ray`` so behavior is unchanged while it is off.
+        """
+        distinct_id = str(self.config.get("org_id", "global"))
+        if not is_feature_enabled(
+            "waddleai.fleet-vllm-ray", distinct_id=distinct_id, default=False
+        ):
+            return None
+        if config.gpu_count <= 0:
+            return None
+        return refuse_plain_gpu_request_on_renamed_node(
+            dict(config.node_selector or {}), {"nvidia.com/gpu": str(config.gpu_count)}
+        )
+
     def create_deployment(self, config: LlamaCppDeploymentConfig) -> dict[str, Any]:
         """Insert a new ``llamacpp_deployments`` row. Does not deploy it — see provision()."""
         db = self.db
+
+        refusal = self._refuse_plain_gpu_on_ai_node(config)
+        if refusal:
+            return {"success": False, "error": refusal}
         existing = db(db.llamacpp_deployments.name == config.name).select().first()
         if existing:
             return {"success": False, "error": "Deployment with this name already exists"}
