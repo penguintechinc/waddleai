@@ -924,3 +924,36 @@ async def test_endpoints_for_empty_when_model_nowhere_served(fleet_manager, db):
     endpoints = await fleet_manager.endpoints_for("llama-3.2-3b-instruct")
 
     assert endpoints == []
+
+
+_AI_SELECTOR = {"waddleai.penguintech.io/ai-node": "true"}
+
+
+def test_create_deployment_refuses_plain_gpu_on_ai_node_when_flag_on(
+    fleet_manager, db, monkeypatch
+):
+    """Flag on: a plain-GPU deployment aimed at an AI node is refused, nothing inserted."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = LlamaCppDeploymentConfig(name="ai", model_name="m", node_selector=dict(_AI_SELECTOR))
+
+    result = fleet_manager.create_deployment(config)
+
+    assert result["success"] is False
+    assert "instead of nvidia.com/gpu" in result["error"]
+    assert not db._tables.get("llamacpp_deployments")
+
+
+def test_create_deployment_ai_node_allowed_when_flag_off(fleet_manager, monkeypatch):
+    """Flag off: legacy behavior is unchanged."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
+    config = LlamaCppDeploymentConfig(name="ai", model_name="m", node_selector=dict(_AI_SELECTOR))
+
+    assert fleet_manager.create_deployment(config)["success"] is True
+
+
+def test_create_deployment_no_selector_unaffected_when_flag_on(fleet_manager, monkeypatch):
+    """Flag on, no node_selector: not refused."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = LlamaCppDeploymentConfig(name="plain", model_name="m")
+
+    assert fleet_manager.create_deployment(config)["success"] is True

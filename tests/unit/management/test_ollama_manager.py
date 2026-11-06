@@ -1465,3 +1465,34 @@ def test_docker_client_returns_none_and_logs_warning_on_failure(manager, monkeyp
 
     assert result is None
     assert any("Failed to initialize Docker client" in r.message for r in caplog.records)
+
+
+_AI_SELECTOR = {"waddleai.penguintech.io/ai-node": "true"}
+
+
+def test_create_deployment_refuses_plain_gpu_on_ai_node_when_flag_on(manager, db, monkeypatch):
+    """Flag on: a plain-GPU deployment aimed at an AI node is refused, nothing inserted."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = OllamaDeploymentConfig(name="ai", gpu_count=1, node_selector=dict(_AI_SELECTOR))
+
+    result = manager.create_deployment(config)
+
+    assert result["success"] is False
+    assert "instead of nvidia.com/gpu" in result["error"]
+    assert not db._tables.get("ollama_deployments")
+
+
+def test_create_deployment_ai_node_allowed_when_flag_off(manager, db, monkeypatch):
+    """Flag off: legacy behavior is unchanged."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
+    config = OllamaDeploymentConfig(name="ai", gpu_count=1, node_selector=dict(_AI_SELECTOR))
+
+    assert manager.create_deployment(config)["success"] is True
+
+
+def test_create_deployment_default_selector_unaffected_when_flag_on(manager, monkeypatch):
+    """Flag on, ordinary GPU node selector: not refused."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = OllamaDeploymentConfig(name="plain", gpu_count=1)
+
+    assert manager.create_deployment(config)["success"] is True

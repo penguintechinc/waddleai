@@ -26,6 +26,8 @@ from shared.fleet.base import (
     ProvisionSpec,
 )
 from shared.fleet.registry import register
+from shared.fleet.vllm_ray.coexistence import refuse_plain_gpu_request_on_renamed_node
+from shared.utils.feature_flags import is_feature_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +164,29 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Deployment CRUD Operations
 
+    def _refuse_plain_gpu_on_ai_node(self, config: OllamaDeploymentConfig) -> str | None:
+        """Refuse a plain ``nvidia.com/gpu`` request aimed at a vLLM-on-Ray AI node.
+
+        Gated by ``waddleai.fleet-vllm-ray`` so behavior is unchanged while it is off.
+        """
+        distinct_id = str(self.config.get("org_id", "global"))
+        if not is_feature_enabled(
+            "waddleai.fleet-vllm-ray", distinct_id=distinct_id, default=False
+        ):
+            return None
+        if config.gpu_count <= 0:
+            return None
+        return refuse_plain_gpu_request_on_renamed_node(
+            dict(config.node_selector), {"nvidia.com/gpu": str(config.gpu_count)}
+        )
+
     def create_deployment(self, config: OllamaDeploymentConfig) -> dict[str, Any]:
         """Create a new Ollama deployment."""
         db = self.db
+
+        refusal = self._refuse_plain_gpu_on_ai_node(config)
+        if refusal:
+            return {"success": False, "error": refusal}
 
         # Check for duplicate name
         existing = db(db.ollama_deployments.name == config.name).select().first()

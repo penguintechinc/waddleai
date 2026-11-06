@@ -515,3 +515,53 @@ class TestEndpointsForAggregation:
         endpoints = await engine.endpoints_for("m1", [_backend(backend_a), _backend(backend_b)])
 
         assert [e.node_id for e in endpoints] == ["b1"]
+
+
+class TestPlaceModelGpuClassFilter:
+    """B8: place_model honours gpu_class / gpu_vendor constraints."""
+
+    async def test_place_model_passes_gpu_class_filter_to_backend(self) -> None:
+        """The class-matching node is the one threaded to the backend."""
+        engine = _engine()
+        backend = _FakeBackend()
+        backend.list_nodes = AsyncMock(
+            return_value=[
+                NodeInfo(
+                    "n1/nvidia-rtx4090",
+                    "u1",
+                    "k8s",
+                    [],
+                    48000,
+                    40000,
+                    True,
+                    gpu_class="nvidia-rtx4090",
+                ),
+                NodeInfo(
+                    "n1/nvidia-rtx4070",
+                    "u1",
+                    "k8s",
+                    [],
+                    12000,
+                    10000,
+                    True,
+                    gpu_class="nvidia-rtx4070",
+                ),
+            ]
+        )
+        await engine.place_model(_ORG_ID, "m", {"gpu_class": "nvidia-rtx4070"}, _backend(backend))
+        backend.place_model.assert_awaited_once_with(
+            "m", {"gpu_class": "nvidia-rtx4070", "node_id": "n1/nvidia-rtx4070"}
+        )
+
+    async def test_place_model_gpu_class_without_capable_node_raises_insufficient(self) -> None:
+        """No node of the class: InsufficientCapacityError, backend untouched."""
+        engine = _engine()
+        backend = _FakeBackend()
+        backend.list_nodes = AsyncMock(
+            return_value=[
+                NodeInfo("n1", "u1", "k8s", [], 48000, 40000, True, gpu_class="nvidia-rtx4090")
+            ]
+        )
+        with pytest.raises(InsufficientCapacityError):
+            await engine.place_model(_ORG_ID, "m", {"gpu_class": "nvidia-l4"}, _backend(backend))
+        backend.place_model.assert_not_awaited()

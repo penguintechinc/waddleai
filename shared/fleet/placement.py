@@ -375,12 +375,17 @@ class PlacementEngine:
 
         min_vram_gb = registry_entry.min_vram if registry_entry is not None else None
         resolved_constraints = constraints
-        if min_vram_gb is not None and "node_id" not in constraints:
+        gpu_class = constraints.get("gpu_class")
+        gpu_vendor = constraints.get("gpu_vendor")
+        if (min_vram_gb is not None or gpu_class or gpu_vendor) and "node_id" not in constraints:
             nodes: list[NodeInfo] = await backend.list_nodes()
-            capable = select_capable_node(nodes, min_vram_gb)
+            capable = select_capable_node(
+                nodes, min_vram_gb, gpu_class=gpu_class or None, gpu_vendor=gpu_vendor or None
+            )
             if capable is None:
                 raise InsufficientCapacityError(
-                    f"No fleet node has >= {min_vram_gb}GB free VRAM for model {model!r}"
+                    f"No fleet node has >= {min_vram_gb or 0}GB free VRAM"
+                    f"{f' of class {gpu_class}' if gpu_class else ''} for model {model!r}"
                 )
             resolved_constraints = {**constraints, "node_id": capable.node_id}
 
