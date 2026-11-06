@@ -43,6 +43,25 @@ pub enum CliError {
 
     #[error("invalid input: {0}")]
     InvalidInput(String),
+
+    /// The fit check refused the model; carries the server's refusal text verbatim.
+    #[error("{0}")]
+    FitRefused(String),
+
+    /// A secret supplied from outside WaddleAI (env var or existingSecret); it cannot be rotated here.
+    #[error("{0}")]
+    ManagedExternally(String),
+}
+
+impl CliError {
+    /// Process exit code for this error: 2 for "managed externally" (a distinct,
+    /// scriptable outcome), 1 for everything else.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            CliError::ManagedExternally(_) => 2,
+            _ => 1,
+        }
+    }
 }
 
 impl From<keyring::Error> for CliError {
@@ -93,6 +112,18 @@ mod tests {
             CliError::Keyring("backend unavailable".into()).to_string(),
             "OS credential store error: backend unavailable"
         );
+    }
+
+    #[test]
+    fn fit_refusal_and_managed_externally_display_verbatim_and_exit_codes() {
+        assert_eq!(
+            CliError::FitRefused("Does not fit in any pool.".into()).to_string(),
+            "Does not fit in any pool."
+        );
+        let ext = CliError::ManagedExternally("managed externally".into());
+        assert_eq!(ext.to_string(), "managed externally");
+        assert_eq!(ext.exit_code(), 2);
+        assert_eq!(CliError::NotLoggedIn.exit_code(), 1);
     }
 
     #[test]

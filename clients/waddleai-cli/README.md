@@ -31,6 +31,16 @@ cargo build --release
 | `waddleai models` | List models available to your key. |
 | `waddleai knowledge upload <path>` | Upload a PDF/Markdown document. |
 | `waddleai fleet status` | Show inference fleet backend status. |
+| `waddleai fleet vllm inventory [--vendor nvidia\|amd\|intel] [--schedulable true\|false] [--json]` | List discovered GPUs (GPU Fleet; needs the `waddleai.fleet_v2` and `waddleai.fleet-vllm-ray` flags). Example: `waddleai fleet vllm inventory --vendor amd`. |
+| `waddleai fleet vllm fit --params-b N [--quantization Q] [--dtype D] [--max-model-len L] [--allow-mixed-class] [--json]` | Check whether a model fits the warm GPU pools; a refusal prints the server's text and exits 1. Example: `waddleai fleet vllm fit --params-b 12`. |
+| `waddleai fleet vllm deploy -f <request.json> [--json]` | Create a deployment from a JSON request file (the `POST /api/v1/fleet/vllm/deployments` body). Example: `waddleai fleet vllm deploy -f qwen.json`. |
+| `waddleai fleet vllm list [--status N] [--json]` | List deployments. Example: `waddleai fleet vllm list --status 5`. |
+| `waddleai fleet vllm scale <id> --min N --max M` | Set the replica range. Example: `waddleai fleet vllm scale 0b0f1f3e-... --min 1 --max 3`. |
+| `waddleai fleet vllm stop <id>` / `resume <id>` | Stop or resume a deployment. Example: `waddleai fleet vllm stop 0b0f1f3e-...`. |
+| `waddleai fleet vllm delete <id> [--yes]` | Delete a deployment; without `--yes` a terminal asks first and a script is refused. Example: `waddleai fleet vllm delete 0b0f1f3e-... --yes`. |
+| `waddleai fleet vllm rotate-token <id> [--yes]` | Rotate a deployment's bearer token (prints the new fingerprint, never the token). Example: `waddleai fleet vllm rotate-token 0b0f1f3e-... --yes`. |
+| `waddleai fleet secrets list [--json]` | List cluster keys: name, source, fingerprint, last rotation (never values; platform operator only). Example: `waddleai fleet secrets list`. |
+| `waddleai fleet secrets rotate <name> [--yes]` | Rotate a generated cluster key and restart Ray; a key supplied by env var or `existingSecret` exits **2** (`managed externally`). Example: `waddleai fleet secrets rotate ray-auth --yes`. |
 | `waddleai harness sync` | Preview a default-disabled MCP configuration fragment; `--output <path>` creates a new explicit fragment file. |
 | `waddleai apply -f <manifest>` | Validate and dry-run a DAC v1alpha1 manifest; use `--confirm <plan-id>` to apply the reviewed plan. |
 | `waddleai mcp` | Stdio MCP shim -- forwards stdin/stdout JSON-RPC to `/mcp`. |

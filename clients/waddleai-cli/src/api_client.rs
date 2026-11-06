@@ -81,6 +81,47 @@ impl ApiClient {
         Self::handle_response(resp).await
     }
 
+    /// `GET` with URL-encoded query parameters (a value is never spliced into the path).
+    pub async fn get_json_query<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        let mut url = url::Url::parse(&self.url(path))?;
+        if !query.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
+        }
+        let req = self.authed(self.http.get(url));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
+    /// `PATCH` a JSON body.
+    pub async fn patch_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let req = self.authed(self.http.patch(self.url(path)).json(body));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
+    /// `DELETE`, returning the JSON body the GPU fleet API answers with.
+    pub async fn delete_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let req = self.authed(self.http.delete(self.url(path)));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
+    /// `POST` with no request body, returning JSON.
+    pub async fn post_json_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let req = self.authed(self.http.post(self.url(path)));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
     pub async fn post_json<B: Serialize, T: DeserializeOwned>(
         &self,
         path: &str,
@@ -197,6 +238,69 @@ impl ApiClient {
     /// separately). Until then this returns a 404 `CliError::Api`.
     pub async fn fleet_status(&self) -> Result<serde_json::Value> {
         self.get_json("/api/v1/fleet/status").await
+    }
+
+    /// `GET /api/v1/fleet/gpu-inventory` -- GPU inventory; `query` holds optional filters.
+    pub async fn gpu_inventory(&self, query: &[(&str, String)]) -> Result<serde_json::Value> {
+        self.get_json_query("/api/v1/fleet/gpu-inventory", query)
+            .await
+    }
+
+    /// `POST /api/v1/fleet/vllm/fit-check` -- whether a model fits the warm GPU pools.
+    pub async fn vllm_fit_check(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.post_json("/api/v1/fleet/vllm/fit-check", body).await
+    }
+
+    /// `GET /api/v1/fleet/vllm/deployments` -- list deployments; `query` holds optional filters.
+    pub async fn vllm_list_deployments(
+        &self,
+        query: &[(&str, String)],
+    ) -> Result<serde_json::Value> {
+        self.get_json_query("/api/v1/fleet/vllm/deployments", query)
+            .await
+    }
+
+    /// `POST /api/v1/fleet/vllm/deployments` -- create a deployment.
+    pub async fn vllm_create_deployment(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json("/api/v1/fleet/vllm/deployments", body).await
+    }
+
+    /// `PATCH /api/v1/fleet/vllm/deployments/{id}` -- scale, stop or resume.
+    pub async fn vllm_patch_deployment(
+        &self,
+        public_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.patch_json(&format!("/api/v1/fleet/vllm/deployments/{public_id}"), body)
+            .await
+    }
+
+    /// `DELETE /api/v1/fleet/vllm/deployments/{id}`.
+    pub async fn vllm_delete_deployment(&self, public_id: &str) -> Result<serde_json::Value> {
+        self.delete_json(&format!("/api/v1/fleet/vllm/deployments/{public_id}"))
+            .await
+    }
+
+    /// `POST /api/v1/fleet/vllm/deployments/{id}/rotate-token` -- new token fingerprint only.
+    pub async fn vllm_rotate_token(&self, public_id: &str) -> Result<serde_json::Value> {
+        self.post_json_empty(&format!(
+            "/api/v1/fleet/vllm/deployments/{public_id}/rotate-token"
+        ))
+        .await
+    }
+
+    /// `GET /api/v1/fleet/secrets` -- cluster secret names, sources and fingerprints.
+    pub async fn list_fleet_secrets(&self) -> Result<serde_json::Value> {
+        self.get_json("/api/v1/fleet/secrets").await
+    }
+
+    /// `POST /api/v1/fleet/secrets/{name}/rotate` -- rotate a generated cluster secret.
+    pub async fn rotate_fleet_secret(&self, name: &str) -> Result<serde_json::Value> {
+        self.post_json_empty(&format!("/api/v1/fleet/secrets/{name}/rotate"))
+            .await
     }
 
     /// `POST /api/v1/knowledge` (multipart) -- **planned**: lands with
