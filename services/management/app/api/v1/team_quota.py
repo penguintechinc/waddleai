@@ -119,7 +119,7 @@ async def get_team_quota(team_id: int):
                     used_resv += entry.credits
                 elif entry.scope_type == SCOPE_BUFFER and entry.scope_id == team_id:
                     used_buf += entry.credits
-        start, stop = page.limitby
+        start, stop = page.bounds
         return {
             "team_id": team_id, "configured": pool is not None, "pool_credits": pool_credits,
             "shared_buffer_credits": buffer, "reserved_credits": reserved,

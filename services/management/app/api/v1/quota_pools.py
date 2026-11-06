@@ -307,7 +307,7 @@ async def list_override_caps():
     org_id = g.user.get("organization_id")
     page = PageRequest.from_request()
     rows = await asyncio.to_thread(qp.list_overrides, _db(), org_id)
-    start, stop = page.limitby
+    start, stop = page.bounds
     return {
         "overrides": [_override_item(r) for r in rows[start:stop]],
         "total": len(rows),
@@ -550,7 +550,7 @@ async def get_usage():
     def _load() -> dict[str, Any]:
         cycle = requested if requested is not None else current_cycle_for(database, org_id)
         rows = QuotaLedger(database).usage(org_id, cycle) if cycle is not None else []
-        start, stop = page.limitby
+        start, stop = page.bounds
         entries = [
             {"scope_type": e.scope_type, "scope_id": e.scope_id, "credits_used": e.credits}
             for e in rows[start:stop]

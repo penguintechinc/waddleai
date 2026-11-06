@@ -75,7 +75,16 @@ class PageRequest:
 
     @property
     def limitby(self) -> tuple[int, int]:
-        """The ``(start, stop)`` tuple for PyDAL/penguin-dal ``select(limitby=...)``."""
+        """The ``(offset, limit)`` tuple for penguin-dal ``select(limitby=...)``.
+
+        penguin-dal takes ``(offset, limit)`` (``stmt.offset(o).limit(l)``), NOT
+        PyDAL's ``(start, stop)``; use :attr:`bounds` for Python list slicing.
+        """
+        return ((self.page - 1) * self.limit, self.limit)
+
+    @property
+    def bounds(self) -> tuple[int, int]:
+        """The ``(start, stop)`` indices for slicing an in-memory list."""
         start = (self.page - 1) * self.limit
         return (start, start + self.limit)
 
