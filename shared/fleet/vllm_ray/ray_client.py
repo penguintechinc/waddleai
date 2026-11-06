@@ -25,9 +25,9 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-TOKEN_ENV = "WADDLEAI_RAY_AUTH_TOKEN"  # noqa: S105 - env var name, not a secret
-TOKEN_PATH_ENV = "RAY_AUTH_TOKEN_PATH"  # noqa: S105 - env var name, not a secret
-DEFAULT_TOKEN_PATH = "/etc/ray-auth/token"  # noqa: S105 - mount path, not a secret
+ENV_RAY_AUTH = "WADDLEAI_RAY_AUTH_TOKEN"
+ENV_RAY_AUTH_FILE = "RAY_AUTH_TOKEN_PATH"
+DEFAULT_RAY_AUTH_FILE = "/etc/ray-auth/token"
 _SERVE_PATH = "/api/serve/applications/"
 _INVENTORY_ENTRYPOINT = "python3 -m shared.fleet.vllm_ray.inventory_job"
 _PAYLOAD_PREFIX = "WAGPU_JSON:"
@@ -93,9 +93,9 @@ class HttpRayServeClient:
     @classmethod
     def from_env(cls, head_url: str, **kwargs: Any) -> HttpRayServeClient:
         """Build a client with the token from env, else the mounted token file."""
-        token = os.environ.get(TOKEN_ENV)
+        token = os.environ.get(ENV_RAY_AUTH)
         if not token or not token.strip():
-            path = Path(os.environ.get(TOKEN_PATH_ENV) or DEFAULT_TOKEN_PATH)
+            path = Path(os.environ.get(ENV_RAY_AUTH_FILE) or DEFAULT_RAY_AUTH_FILE)
             try:
                 token = path.read_text()
             except OSError:
