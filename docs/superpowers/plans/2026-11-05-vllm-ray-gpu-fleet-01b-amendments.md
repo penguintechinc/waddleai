@@ -66,6 +66,8 @@ Continuation of 01-amendments; entries here are equally authoritative.
 #       e.g. a node-local NVMe class such as local-path/topolvm; size hotCache.size) on Ray worker pods. NO hostPath, NO namespace PSA downgrade, NO Kyverno PolicyException
 #       (PSA baseline forbids hostPath; Kyverno cannot override built-in PSA). Namespace stays enforce=restricted always. Cache lifetime = worker pod. Supersedes the AM15/D5 hostPath text.
 #       TLS/mutual-auth invariant fail() lives in an always-rendered template when fleet.vllmRay.enabled (+ render test). Shared deployment-keys Secret accepted (Ray token already grants cluster control).
+#   AM25 (Plan A review) Plan C must teach services/management cilium_policy.py's reconciler about the four Ray CNPs (waddleai-vllm-ray-*) so it neither overwrites nor deletes them; test that a reconcile pass leaves them intact.
+#       Chart fails render when Ray CNPs can't render or mutualAuth=false, unless fleet.vllmRay.unsafeNoNetworkPolicy=true. Generated Secrets come from a create-if-absent hook Job, not lookup.
 #   AM26 (security review, B4d) Rate rows for local deployments are keyed per DEPLOYMENT, never by served model name: token_conversion_rates
 #       (provider=<"vllm"|"ollama"|"llamacpp">, model=f"deployment/{public_id}"). upsert_virtual_rate never forces enabled=True on an existing row and
 #       refuses to touch a row whose model key isn't the deployment/<uuid> form. Plan C C4/C4b: local connectors meter usage with that key (they know
