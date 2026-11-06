@@ -332,13 +332,7 @@ class VllmReconciler:
                 counts["reconcile_errors"] += 1
                 continue
             await self._inventory(backend, brow, counts)
-            deps = await asyncio.to_thread(
-                self._select,
-                lambda db, b=brow: (
-                    (db.vllm_deployments.fleet_backend_id == b.id)
-                    & (db.vllm_deployments.org_id == b.org_id)
-                ),
-            )
+            deps = await asyncio.to_thread(self._backend_deployments, brow)
             for dep in deps:
                 await self._one(backend, brow, dep, counts)
             await self._recompute_local_kinds(brow, counts)
@@ -378,13 +372,7 @@ class VllmReconciler:
             (int(LocalDeploymentKind.OLLAMA), "ollama_deployments"),
             (int(LocalDeploymentKind.LLAMACPP), "llamacpp_deployments"),
         ):
-            rows = await asyncio.to_thread(
-                self._select,
-                lambda db, t=table: (
-                    (getattr(db, t).status == "running")
-                    & (getattr(db, t).price_mode == int(PriceMode.AUTO_TCO))
-                ),
-            )
+            rows = await asyncio.to_thread(self._running_auto_rows, table)
             for row in rows:
                 owner = row.fleet_backend_id
                 if owner is None:
@@ -395,6 +383,12 @@ class VllmReconciler:
                 if int(owner) not in owned_ids:
                     continue  # another org's deployment: never priced with this org's config
                 await self._recompute_local(kind, table, row, inputs, costs, counts)
+
+    def _running_auto_rows(self, table_name: str) -> list[Any]:
+        """Running AUTO-priced rows of a local-deployment table."""
+        table = getattr(self.db, table_name)
+        query = (table.status == "running") & (table.price_mode == int(PriceMode.AUTO_TCO))
+        return list(self.db(query).select())
 
     async def _recompute_local(
         self, kind: int, table: str, row: Any, inputs: Any, costs: Any, counts: dict[str, int]
@@ -427,6 +421,12 @@ class VllmReconciler:
 
         await asyncio.to_thread(_persist)
         counts["prices_recalculated"] += 1
+
+    def _backend_deployments(self, brow: Any) -> list[Any]:
+        """This backend's deployments, restricted to the backend's own org."""
+        table = self.db.vllm_deployments
+        query = (table.fleet_backend_id == brow.id) & (table.org_id == brow.org_id)
+        return list(self.db(query).select())
 
     async def _inventory(self, backend: Any, brow: Any, counts: dict[str, int]) -> None:
         """Collect GPU inventory when the interval has elapsed (first tick always)."""

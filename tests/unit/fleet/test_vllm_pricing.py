@@ -104,7 +104,8 @@ def test_layout_from_row_prices_at_least_one_replica() -> None:
 def test_price_deployment_auto_and_manual_upsert_rate_rows(db) -> None:
     """AUTO computes via TCO (params_b from the caller); MANUAL validates; both upsert a rate."""
     auto = asyncio.run(price_deployment(db, _row(), BACKEND_CONFIG, None, 7.0))
-    assert auto.result is not None and auto.price_breakdown["params_b"] == 7.0
+    assert auto.result is not None and auto.price_breakdown is not None
+    assert auto.price_breakdown["params_b"] == 7.0
     rate = db(db.token_conversion_rates.provider == "vllm").select().first()
     assert rate.model == "deployment/11111111-1111-1111-1111-111111111111"
     manual_row = _row(

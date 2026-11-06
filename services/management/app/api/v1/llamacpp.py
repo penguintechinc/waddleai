@@ -375,7 +375,7 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
         return new_id
 
     dep_id = await asyncio.to_thread(_create)
-    row = await asyncio.to_thread(lambda: db(db.llamacpp_deployments.id == dep_id).select().first())
+    row = await asyncio.to_thread(_llamacpp_row, dep_id)
 
     if price_fields is not None:
         try:
@@ -391,11 +391,7 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
             await asyncio.to_thread(_discard_llamacpp, dep_id)
             return jsonify({"error": str(exc)}), 422
 
-        def _persist():
-            db(db.llamacpp_deployments.id == dep_id).update(**price_extra)
-            db.commit()
-
-        await asyncio.to_thread(_persist)
+        await asyncio.to_thread(_llamacpp_update, dep_id, price_extra)
 
     fingerprint: str | None = None
     if _fleet_keys_enabled(g.user.get("organization_id")):
@@ -414,7 +410,7 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
         fingerprint = fleet_secrets.fingerprint(token)
         del link_id
 
-    row = await asyncio.to_thread(lambda: db(db.llamacpp_deployments.id == dep_id).select().first())
+    row = await asyncio.to_thread(_llamacpp_row, dep_id)
     return {
         "deployment_id": dep_id,
         "message": "Deployment created",
@@ -430,10 +426,52 @@ def _fleet_keys_enabled(org_id: Any) -> bool:
     return _vllm_ray_enabled(org_id)
 
 
+def _database() -> Any:
+    """The process-wide penguin-dal handle (narrowed away from ``None``)."""
+    if db is None:
+        raise RuntimeError("database not initialized")
+    return db
+
+
+def _llamacpp_row(deployment_id: int) -> Any:
+    """Fetch one ``llamacpp_deployments`` row (None when absent)."""
+    database = _database()
+    return database(database.llamacpp_deployments.id == deployment_id).select().first()
+
+
+def _llamacpp_row_by_public_id(public_id: str) -> Any:
+    """Fetch one ``llamacpp_deployments`` row by its public UUID (None when absent)."""
+    database = _database()
+    return database(database.llamacpp_deployments.public_id == public_id).select().first()
+
+
+def _llamacpp_update(deployment_id: int, values: dict[str, Any]) -> None:
+    """Persist column values on one ``llamacpp_deployments`` row."""
+    database = _database()
+    database(database.llamacpp_deployments.id == deployment_id).update(**values)
+    database.commit()
+
+
+def _llamacpp_link(link_name: str) -> Any:
+    """Fetch one ``connection_links`` row by name (None when absent)."""
+    database = _database()
+    return database(database.connection_links.name == link_name).select().first()
+
+
+def _store_link_key(link_id: int, token: str) -> None:
+    """Re-encrypt a rotated token into its connection link and commit."""
+    from shared.database.models import update_connection_link_api_key
+
+    database = _database()
+    update_connection_link_api_key(database, link_id, token)
+    database.commit()
+
+
 def _discard_llamacpp(deployment_id: int) -> None:
     """Remove a just-created deployment whose pricing or key provisioning failed."""
-    db(db.llamacpp_deployments.id == deployment_id).delete()
-    db.commit()
+    database = _database()
+    database(database.llamacpp_deployments.id == deployment_id).delete()
+    database.commit()
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["GET"])
@@ -728,19 +766,14 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
     """
     if not _fleet_keys_enabled(g.user.get("organization_id")):
         return jsonify({"status": "error", "error": "not_found"}), 404
-    from shared.database.models import update_connection_link_api_key
 
     from ...services import fleet_secrets as secrets_svc
 
-    dep = await asyncio.to_thread(
-        lambda: db(db.llamacpp_deployments.public_id == str(public_id)).select().first()
-    )
+    dep = await asyncio.to_thread(_llamacpp_row_by_public_id, str(public_id))
     if dep is None:
         return jsonify({"error": "Deployment not found"}), 404
     slug = derive_slug(dep.name, public_id)
-    link = await asyncio.to_thread(
-        lambda: db(db.connection_links.name == f"llamacpp-{public_id}").select().first()
-    )
+    link = await asyncio.to_thread(_llamacpp_link, f"llamacpp-{public_id}")
     token = secrets_svc.mint_token()
     try:
         await secrets_svc.write_deployment_key(slug, token)
@@ -748,8 +781,7 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
     except secrets_svc.SecretWriteFailed:
         return jsonify({"error": "secret write failed", "reason": "secret write failed"}), 502
     if link is not None:
-        await asyncio.to_thread(update_connection_link_api_key, db, link.id, token)
-        await asyncio.to_thread(db.commit)
+        await asyncio.to_thread(_store_link_key, link.id, token)
     fingerprint = secrets_svc.fingerprint(token)
     logger.info(
         "fleet.deployment.token_rotated deployment=%s fingerprint_new=%s", public_id, fingerprint

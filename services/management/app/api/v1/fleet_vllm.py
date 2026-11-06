@@ -1285,7 +1285,7 @@ async def create_vllm_deployment() -> Any:
 
     dep = await asyncio.to_thread(_reload)
     if int(dep.status) == int(S.PENDING):
-        backend = build_backend(database, backend_row)
+        backend: Any = build_backend(database, backend_row)
         try:
             await backend.deploy(dep)
         except RuntimeError as exc:
@@ -1368,7 +1368,7 @@ async def update_vllm_deployment(public_id: uuid.UUID) -> Any:
     )
     if backend_row is None:
         return _err("the deployment's fleet backend no longer exists", 409)
-    backend = build_backend(database, backend_row)
+    backend: Any = build_backend(database, backend_row)
     try:
         if rmin is not None or rmax is not None:
             await backend.scale(dep, new_min, new_max)
@@ -1449,7 +1449,7 @@ async def delete_vllm_deployment(public_id: uuid.UUID) -> Any:
         lambda: database(database.fleet_backends.id == dep.fleet_backend_id).select().first()
     )
     if backend_row is not None:
-        backend = build_backend(database, backend_row)
+        backend: Any = build_backend(database, backend_row)
         try:
             await backend.delete(dep)
         except RuntimeError as exc:

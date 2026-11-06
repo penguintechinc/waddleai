@@ -56,7 +56,9 @@ def _write_progress(dest: Path, done: int, total: int) -> None:
 def pull(repo_id: str, dest: Path, hub: Any | None = None) -> str:
     """Download ``repo_id`` into ``dest`` and return the published digest."""
     if hub is None:
-        import huggingface_hub as hub  # noqa: PLC0415 -- only the Job image needs it
+        import huggingface_hub  # noqa: PLC0415 -- only the Job image needs it
+
+        hub = huggingface_hub
     token = os.environ.get("HF_TOKEN") or None
     dest.mkdir(parents=True, exist_ok=True)
     info = hub.HfApi().model_info(repo_id, files_metadata=True, token=token)

@@ -17,6 +17,7 @@ Revises: 028_vllm_ray_fleet
 
 import json
 from collections.abc import Sequence
+from typing import Literal
 
 import sqlalchemy as sa
 from alembic import op
@@ -95,7 +96,9 @@ def upgrade() -> None:
     drop_old = _has_old_unique()
     # SQLite cannot drop a constraint in place and its inspector cannot see an inline
     # ``model_name ... UNIQUE``; a full table recreate (built from reflection) drops it.
-    recreate = "always" if op.get_bind().dialect.name == "sqlite" else "auto"
+    recreate: Literal["auto", "always"] = (
+        "always" if op.get_bind().dialect.name == "sqlite" else "auto"
+    )
     with op.batch_alter_table(
         "model_configs", naming_convention=_CONVENTION, recreate=recreate
     ) as batch:

@@ -416,9 +416,7 @@ async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
     if result == "name_conflict":
         return jsonify({"error": "Deployment name already exists"}), 409
 
-    row = await asyncio.to_thread(
-        lambda: db(db.ollama_deployments.id == deployment_id).select().first()
-    )
+    row = await asyncio.to_thread(_ollama_row, deployment_id)
     price_extra: dict[str, Any] = {}
     if price_fields is not None:
         try:
@@ -434,14 +432,8 @@ async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
             await asyncio.to_thread(_discard_ollama, deployment_id)
             return jsonify({"error": str(exc)}), 422
 
-        def _persist() -> None:
-            db(db.ollama_deployments.id == deployment_id).update(**price_extra)
-            db.commit()
-
-        await asyncio.to_thread(_persist)
-        row = await asyncio.to_thread(
-            lambda: db(db.ollama_deployments.id == deployment_id).select().first()
-        )
+        await asyncio.to_thread(_ollama_update, deployment_id, price_extra)
+        row = await asyncio.to_thread(_ollama_row, deployment_id)
 
     return {
         "id": deployment_id,
@@ -453,10 +445,31 @@ async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
     }, 201
 
 
+def _database() -> Any:
+    """The process-wide penguin-dal handle (narrowed away from ``None``)."""
+    if db is None:
+        raise RuntimeError("database not initialized")
+    return db
+
+
+def _ollama_row(deployment_id: int) -> Any:
+    """Fetch one ``ollama_deployments`` row (None when absent)."""
+    database = _database()
+    return database(database.ollama_deployments.id == deployment_id).select().first()
+
+
+def _ollama_update(deployment_id: int, values: dict[str, Any]) -> None:
+    """Persist column values on one ``ollama_deployments`` row."""
+    database = _database()
+    database(database.ollama_deployments.id == deployment_id).update(**values)
+    database.commit()
+
+
 def _discard_ollama(deployment_id: int) -> None:
     """Remove a just-created deployment whose pricing was refused (no half-priced rows)."""
-    db(db.ollama_deployments.id == deployment_id).delete()
-    db.commit()
+    database = _database()
+    database(database.ollama_deployments.id == deployment_id).delete()
+    database.commit()
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["PUT"])
@@ -479,9 +492,7 @@ async def update_ollama_deployment(deployment_id, data: UpdateOllamaDeploymentRe
     }
     price_update: dict[str, Any] = {}
     if pricing_requested(price_body):
-        current = await asyncio.to_thread(
-            lambda: db(db.ollama_deployments.id == deployment_id).select().first()
-        )
+        current = await asyncio.to_thread(_ollama_row, deployment_id)
         if not current:
             return jsonify({"error": "Deployment not found"}), 404
         try:

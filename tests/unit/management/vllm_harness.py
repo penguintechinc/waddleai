@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from penguin_dal import DAL, Field
 from sqlalchemy import BigInteger, DefaultClause, Integer, create_engine, text
@@ -38,7 +38,7 @@ def _mirror_python_defaults() -> None:
                 and column.server_default is None
                 and not column.nullable
             ):
-                value = default.arg
+                value = cast(Any, default).arg
                 literal = (
                     str(int(value))
                     if isinstance(value, bool)
@@ -295,12 +295,12 @@ class RunningEngine:
         from shared.fleet.vllm_ray.serve_app import BearerKeyMiddleware
 
         if kind == "vllm":
-            app = BearerKeyMiddleware(_ok_app, self.SLUG, str(self._dirs["vllm"]))
+            app = BearerKeyMiddleware(cast(Any, _ok_app), self.SLUG, str(self._dirs["vllm"]))
         else:
             snapshot = self._dirs["llamacpp"] / "loaded"
             snapshot.mkdir(exist_ok=True)
             (snapshot / self.SLUG).write_text(self._llama_loaded)
-            app = BearerKeyMiddleware(_ok_app, self.SLUG, str(snapshot))
+            app = BearerKeyMiddleware(cast(Any, _ok_app), self.SLUG, str(snapshot))
         return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://engine")
 
 
