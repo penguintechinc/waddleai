@@ -29,7 +29,7 @@ def test_revision_chain_031_follows_030_and_precedes_032() -> None:
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision(REV).down_revision == PREV
     assert script.get_revision("032_llamacpp_rpc_head").down_revision == REV
-    assert script.get_heads() == ["032_llamacpp_rpc_head"]
+    assert script.get_heads() == ["034_llamacpp_rotation_lease"]
 
 
 def test_upgrade_backfills_from_link_leaves_orphan_null_downgrade_drops(tmp_path, monkeypatch):

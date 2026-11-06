@@ -40,10 +40,10 @@ def _cols(engine) -> set[str]:
 
 
 def test_chain_032_follows_031_and_is_head() -> None:
-    """032 revises 031 and is the single head."""
+    """032 revises 031 and sits on the chain below the current head."""
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision(REV).down_revision == PREV
-    assert script.get_heads() == [REV]
+    assert script.get_heads() == ["034_llamacpp_rotation_lease"]
 
 
 def test_upgrade_adds_nullable_column_and_downgrade_drops_it(tmp_path, monkeypatch) -> None:

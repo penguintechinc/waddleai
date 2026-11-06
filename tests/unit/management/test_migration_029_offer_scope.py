@@ -81,7 +81,7 @@ def test_revision_chain_head_is_030():
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision(REV).down_revision == PREV
     # 030 (local_generation_samples) now sits on top of 029 in this branch.
-    assert script.get_heads() == ["032_llamacpp_rpc_head"]
+    assert script.get_heads() == ["034_llamacpp_rotation_lease"]
 
 
 def test_upgrade_adds_nullable_scope_columns_keeping_existing_rows(scratch):
