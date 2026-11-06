@@ -9,3 +9,13 @@
 - Migration 028 verified on real Postgres using the repo's pinned pgvector/pgvector:pg17 image (postgres:16 lacks the `vector` extension required by the 023 chain), not postgres:16.
 - `make lint` needs VENV=<primary venv> in a worktree without its own .venv (else system python, no google-genai); stale .mypy_cache gave a false new-error.
 - Makefile `venv` already installed classification requirements-ci.txt (31b28ade); no change needed.
+
+## Plan A follow-up: inventory_job must be importable in the Ray worker images
+
+`HttpRayServeClient.run_inventory` submits `python3 -m shared.fleet.vllm_ray.inventory_job`
+(now implemented). The vLLM/Ray image definitions are not in this repo and were not edited:
+Plan A must ensure `shared/` (at least `shared/__init__.py`, `shared/fleet/__init__.py`,
+`shared/fleet/vllm_ray/__init__.py`, `inventory_job.py`) is on the head and worker
+`PYTHONPATH`, or ship the job via `runtime_env.working_dir`. Optionally export
+`WADDLEAI_GPU_CLASS` (from the node's `waddleai.penguintech.io/gpu-classes` label via the
+downward API) so the job can report `node_class` for cold nodes.
