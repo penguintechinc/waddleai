@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import itertools
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -159,7 +159,7 @@ def _per_gpu_mb(total_mb: int, tp: int, pp: int) -> int:
     return -(-total_mb // (tp * pp)) + CONTEXT_MB
 
 
-def build_pools(records: list[GpuRecordLike]) -> list[Pool]:
+def build_pools(records: Sequence[GpuRecordLike]) -> list[Pool]:
     """Group schedulable WARM GPUs by (vendor, class) into pools of per-node free VRAM."""
     grouped: dict[tuple[int, str], dict[str, list[int]]] = {}
     for rec in records:
