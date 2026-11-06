@@ -2,8 +2,9 @@
 
 Covers gaps documented in docs/deployment/kubernetes.md's "Env vars the chart does
 not template at all": the migration Job renders only when migrations.enabled,
-carries the pre-install,pre-upgrade hook + weight ordering that must sort after the
-(also-hook) Secret, uses the management image via python3 -m alembic (never the bare
+carries the post-install,post-upgrade hook (so plain Postgres exists first; the
+Secret stays a pre-install,pre-upgrade hook that sorts earlier), uses the
+management image via python3 -m alembic (never the bare
 alembic console-script binary, so it stays inside the Tetragon exec-allowlist), and
 only ever needs DATABASE_URL — not the full app env; each of the six env vars lands
 in exactly the container(s) whose Python code reads it; management.image.digest and
@@ -38,21 +39,22 @@ class TestMigrationJobGating:
 
 
 class TestMigrationJobHookOrdering:
-    """The Job and the Secret it depends on are both pre-install,pre-upgrade hooks.
+    """The Job is a post-install,post-upgrade hook; its Secret is a pre-* hook.
 
-    The Secret's weight must sort strictly before the Job's — otherwise a fresh
-    `helm install` dangles the Job's DATABASE_URL secretKeyRef (plain/non-hook
-    resources like Secrets are only applied *after* all pre-install hooks finish).
+    The Job must be post-*: Postgres is a plain resource, applied only after all
+    pre-* hooks finish, so a pre-install Job on an empty namespace waited forever
+    for a database that did not exist yet (see templates/migration-job.yaml, gh-215
+    fresh-install fix). The Secret stays a pre-* hook with a weight sorting before
+    the Job's, so DATABASE_URL's secretKeyRef never dangles in any hook phase.
     """
 
-    def test_job_has_pre_install_pre_upgrade_hook(self):
-        """The Job carries the pre-install,pre-upgrade hook with a delete policy."""
+    def test_job_has_post_install_post_upgrade_hook(self):
+        """The Job is a post-* hook; only before-hook-creation, so its last log survives."""
         docs = render("values-alpha.yaml")
         job = find(docs, "Job", "waddleai-migration")
         ann = job["metadata"]["annotations"]
-        assert ann["helm.sh/hook"] == "pre-install,pre-upgrade"
-        assert "hook-succeeded" in ann["helm.sh/hook-delete-policy"]
-        assert "before-hook-creation" in ann["helm.sh/hook-delete-policy"]
+        assert ann["helm.sh/hook"] == "post-install,post-upgrade"
+        assert ann["helm.sh/hook-delete-policy"] == "before-hook-creation"
 
     def test_secret_is_also_a_hook_with_earlier_weight(self):
         """The Secret is a hook too, survives past hook cleanup, and sorts before the Job."""
