@@ -183,20 +183,23 @@ async def price_deployment(
     )
 
 
-def estimate_tokens_per_s(
+def estimate_aggregate_tokens_per_s(
     db: Any, kind: int, row: Any, costs: dict[str, Any], inputs: Any = None
 ) -> float | None:
-    """Per-replica GPU-class throughput estimate for ``row`` (sanity bound for observed rates).
+    """Deployment-TOTAL GPU-class throughput estimate (per-replica estimate x priced replicas).
 
-    Same scaling ``compute_tco`` uses (class estimate, capped by model size); ``None`` when the
-    GPU class or parameter count cannot be resolved, in which case absolute bounds apply.
+    Same scaling ``compute_tco`` uses for its estimate path; the sanity bound for the observed
+    AGGREGATE rate. ``None`` when the GPU class or parameter count cannot be resolved, in which
+    case only the absolute bounds apply. Ollama/llama.cpp deployments are one replica.
     """
     from shared.fleet.pricing import _model_lookup_name, _params_b, gpu_set_for
 
+    replicas = 1
     try:
         if kind == int(LocalDeploymentKind.VLLM):
             cls = str(row.gpu_class)
             params_b = resolve_params_b(db, row)
+            replicas = max(1, int(row.replicas_min))
         else:
             gpu_set, _ = gpu_set_for(kind, row)
             classes = {c for c, _n in gpu_set}
@@ -209,4 +212,4 @@ def estimate_tokens_per_s(
     cost = costs.get(cls)
     if cost is None or not params_b or params_b <= 0:
         return None
-    return float(cost.est_tokens_per_s * min(1.0, _REFERENCE_PARAMS_B / params_b))
+    return float(cost.est_tokens_per_s * min(1.0, _REFERENCE_PARAMS_B / params_b) * replicas)

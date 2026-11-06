@@ -45,17 +45,17 @@ class FakeUsage:
         self.calls: list[tuple[int, int]] = []
         self.estimates: list[float | None] = []
 
-    def p50_output_tps(
+    def observed_aggregate_tps(
         self,
         db: Any,
         kind: int,
         deployment_id: int,
         window_s: int,
-        estimate_tokens_per_s: float | None = None,
+        estimate_aggregate_tokens_per_s: float | None = None,
     ) -> float | None:
         """Record the call and return the scripted value."""
         self.calls.append((kind, deployment_id))
-        self.estimates.append(estimate_tokens_per_s)
+        self.estimates.append(estimate_aggregate_tokens_per_s)
         return self.tps
 
 

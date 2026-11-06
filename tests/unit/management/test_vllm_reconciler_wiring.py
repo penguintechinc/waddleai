@@ -50,12 +50,12 @@ def test_default_usage_source_reads_real_samples(env, monkeypatch) -> None:  # n
     """With no injected source the daily recompute calls observed_tokens_per_s over 24h."""
     calls: list[dict[str, Any]] = []
 
-    def fake(db, kind, dep_id, window_hours=24, estimate_tokens_per_s=None):
-        calls.append({"window": window_hours, "estimate": estimate_tokens_per_s})
+    def fake(db, kind, dep_id, window_hours=24, estimate_aggregate_tokens_per_s=None):
+        calls.append({"window": window_hours, "estimate": estimate_aggregate_tokens_per_s})
         return None
 
     monkeypatch.setattr(
-        "services.management.app.services.vllm_reconciler.observed_tokens_per_s", fake
+        "services.management.app.services.vllm_reconciler.observed_aggregate_tokens_per_s", fake
     )
     b = seed_backend(env)
     dep = seed_deployment(env, b, status=5, price_mode=1)
@@ -70,7 +70,7 @@ def test_default_usage_source_reads_real_samples(env, monkeypatch) -> None:  # n
 def test_observed_value_overrides_estimate(env, monkeypatch) -> None:  # noqa: F811
     """A trustworthy observation becomes the price's throughput source."""
     monkeypatch.setattr(
-        "services.management.app.services.vllm_reconciler.observed_tokens_per_s",
+        "services.management.app.services.vllm_reconciler.observed_aggregate_tokens_per_s",
         lambda *a, **k: 33.0,
     )
     b = seed_backend(env)

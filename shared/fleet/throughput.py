@@ -1,39 +1,42 @@
-"""Observed generation throughput per locally hosted deployment (spec §4.7, AM6 daily recompute).
+"""Observed AGGREGATE generation throughput per locally hosted deployment (spec 4.7, AM6).
 
-Each timed local request records one ``local_generation_samples`` row. The AUTO price recompute
-reads the p50 tokens/s over a rolling window, so the sample set is attacker-reachable input and
-is hardened accordingly:
+Each timed local request records one ``local_generation_samples`` row. A request's own decode
+rate (tokens/s of ONE stream) is NOT the deployment's throughput: vLLM batches many concurrent
+requests, so pricing off a per-request rate would overstate cost per token by roughly the batch
+factor. ``observed_aggregate_tokens_per_s`` therefore measures the sustained AGGREGATE output
+rate the deployment delivered (compute_tco treats it as the deployment TOTAL):
 
-* timing prefers the ENGINE's own decode timer (``TIMING_ENGINE``); wall-clock samples
-  (``TIMING_PROXY``) are measured from upstream chunk receipt with consumer stalls excluded, and
-  are used only when no engine-timed sample exists;
-* implausible rates (absurdly high/low versus the GPU-class estimate) are dropped and counted;
-* the per-user cap is applied INSIDE the read (a window function keeps each user's newest 50),
-  so a flood from one key cannot fill the read window and crowd out everyone else; no user may
-  then exceed 20% of the result; and at least ``MIN_PRINCIPALS`` (= 1 / max share) distinct users
-  and ``MIN_SAMPLES`` samples are required, else the answer is None (keep the estimate).
+* completed requests are bucketed into 5-minute buckets by completion time; a bucket's rate is
+  ``sum(output tokens) / 300 s``; the answer is the p90 of the buckets that served traffic
+  ("busy" buckets) so idle time does not dilute it;
+* anti-manipulation: engine-timed samples are preferred (proxy-timed only when engine-timed ones
+  alone do not qualify); each principal's tokens are capped at 20% of a bucket's tokens (a bucket
+  dominated by fewer than 5 principals contributes nothing); at least ``MIN_PRINCIPALS`` distinct
+  principals and ``MIN_BUSY_BUCKETS`` busy buckets are required, else None (keep the estimate);
+* individually absurd per-request samples are dropped, and an aggregate outside 0.01x..10x the
+  supplied aggregate estimate is rejected (both counted).
 """
 
 from __future__ import annotations
 
 import logging
-import statistics
+import math
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
 
 __all__ = [
     "MAX_GENERATION_MS",
-    "MAX_SAMPLES_PER_PRINCIPAL",
+    "BUCKET_S",
+    "MIN_BUSY_BUCKETS",
     "MIN_GENERATION_MS",
     "MIN_OUTPUT_TOKENS",
     "MIN_PRINCIPALS",
-    "MIN_SAMPLES",
     "TIMING_ENGINE",
     "TIMING_PROXY",
-    "observed_tokens_per_s",
+    "observed_aggregate_tokens_per_s",
     "prune_generation_samples",
     "record_generation_sample",
 ]
@@ -45,14 +48,14 @@ TIMING_PROXY = 2
 MIN_OUTPUT_TOKENS = 8  # a 1-token reply measures latency, not decode speed
 MIN_GENERATION_MS = 50  # a single buffered chunk (first == last token) is not a measurement
 MAX_GENERATION_MS = 3_600_000
-MAX_SAMPLES_PER_PRINCIPAL = 50
+BUCKET_S = 300
+MIN_BUSY_BUCKETS = 6  # >= 30 minutes of sustained traffic inside the window
 MAX_SHARE_PER_PRINCIPAL = 0.2
 MIN_PRINCIPALS = 5  # = 1 / MAX_SHARE_PER_PRINCIPAL: fewer users cannot satisfy the share cap
-MIN_SAMPLES = 20  # after the per-user cap; fewer is noise, not a throughput measurement
 ABSOLUTE_MAX_TOKENS_PER_S = 100_000.0
 ABSOLUTE_MIN_TOKENS_PER_S = 0.01
 _ESTIMATE_HIGH, _ESTIMATE_LOW = 10.0, 0.01
-MAX_SAMPLES_READ = 20_000  # global bound AFTER the per-user cap inside the query
+MAX_SAMPLES_READ = 200_000  # bound on rows read (newest first)
 
 
 def _valid_int(value: Any) -> bool:
@@ -104,31 +107,6 @@ def record_generation_sample(
     return True
 
 
-def _cap_per_principal(samples: list[tuple[int | None, float]]) -> list[float] | None:
-    """Rates after capping each principal at <= 20% of the result; None if not trustworthy.
-
-    ``samples`` are newest-first ``(user_id, rate)`` already limited to 50 per user by the read.
-    Samples with no user are one anonymous principal. The cap is the largest c <= 50 such that
-    c <= 20% of ``sum(min(n_user, c))``; if no c satisfies that, or fewer than
-    ``MIN_PRINCIPALS`` users / ``MIN_SAMPLES`` samples remain, the result is None (there is no
-    weaker fallback that would let one principal dominate).
-    """
-    by_user: dict[int | None, list[float]] = defaultdict(list)
-    for user, rate in samples:
-        by_user[user].append(rate)
-    if len(by_user) < MIN_PRINCIPALS:
-        return None
-    for cap in range(MAX_SAMPLES_PER_PRINCIPAL, 0, -1):
-        total = sum(min(len(v), cap) for v in by_user.values())
-        if cap <= MAX_SHARE_PER_PRINCIPAL * total:
-            kept = [rate for rates in by_user.values() for rate in rates[:cap]]
-            if len(kept) < MIN_SAMPLES:
-                return None
-            _count_dropped("principal_cap", len(samples) - len(kept))
-            return kept
-    return None
-
-
 _SAMPLES = sa.table(
     "local_generation_samples",
     sa.column("id", sa.BigInteger),
@@ -141,84 +119,103 @@ _SAMPLES = sa.table(
     sa.column("created_at", sa.DateTime),
 )
 
+_Row = tuple[
+    datetime, int, float, int | None
+]  # (completed_at, output_tokens, per-request rate, user)
 
-def _read_capped(
-    db: Any, kind: int, deployment_id: int, since: datetime
-) -> list[tuple[int | None, float, int]]:
-    """``(user_id, tokens/s, timing_source)`` newest-first, <= 50 newest rows PER USER.
 
-    The per-user limit is a window function inside the query, so one user's flood can neither
-    fill the read nor evict another user's samples. Implausible rows are filtered by the caller.
-    """
+def _read_samples(db: Any, kind: int, deployment_id: int, since: datetime) -> dict[int, list[_Row]]:
+    """Window samples grouped by timing source; newest ``MAX_SAMPLES_READ`` rows only."""
     t = _SAMPLES.c
-    rank = (
-        sa.func.row_number()
-        .over(partition_by=sa.func.coalesce(t.user_id, -1), order_by=t.id.desc())
-        .label("rn")
-    )
-    inner = (
-        sa.select(t.id, t.output_tokens, t.generation_ms, t.timing_source, t.user_id, rank)
+    stmt = (
+        sa.select(t.created_at, t.output_tokens, t.generation_ms, t.timing_source, t.user_id)
         .where(
             (t.local_deployment_kind == kind)
             & (t.local_deployment_id == deployment_id)
             & (t.created_at >= since)
         )
-        .subquery()
-    )
-    stmt = (
-        sa.select(
-            inner.c.output_tokens, inner.c.generation_ms, inner.c.timing_source, inner.c.user_id
-        )
-        .where(inner.c.rn <= MAX_SAMPLES_PER_PRINCIPAL)
-        .order_by(inner.c.id.desc())
+        .order_by(t.id.desc())
         .limit(MAX_SAMPLES_READ)
     )
     with db.engine.connect() as conn:
         rows = conn.execute(stmt).all()
-    return [
-        (user, tokens * 1000.0 / ms, int(source))
-        for tokens, ms, source, user in rows
-        if tokens and ms and ms > 0
-    ]
+    out: dict[int, list[_Row]] = {TIMING_ENGINE: [], TIMING_PROXY: []}
+    for created, tokens, ms, source, user in rows:
+        if tokens and ms and ms > 0 and int(source) in out:
+            out[int(source)].append((created, int(tokens), tokens * 1000.0 / ms, user))
+    return out
 
 
-def observed_tokens_per_s(
+def _cap_bucket(by_user: dict[int | None, int]) -> float:
+    """Total tokens of one bucket after capping each principal at 20% of the capped total.
+
+    Solves ``c = 0.2 * sum(min(t_u, c))`` by monotone fixed-point iteration from the largest
+    contribution. With fewer than 5 principals no cap can satisfy the share rule and the
+    iteration collapses to 0 -- such a bucket is not counted as a sustained-throughput witness.
+    """
+    cap = float(max(by_user.values()))
+    for _ in range(200):
+        nxt = MAX_SHARE_PER_PRINCIPAL * sum(min(v, cap) for v in by_user.values())
+        if abs(nxt - cap) < 1e-9:
+            break
+        cap = nxt
+    if cap < 1e-6:
+        return 0.0
+    return float(sum(min(v, cap) for v in by_user.values()))
+
+
+def _aggregate_rate(rows: list[_Row]) -> float | None:
+    """p90 over busy 5-minute buckets of capped tokens / 300 s; None when under-evidenced."""
+    buckets: dict[int, dict[int | None, int]] = defaultdict(lambda: defaultdict(int))
+    principals: set[int | None] = set()
+    for created, tokens, _rate, user in rows:
+        buckets[int(created.replace(tzinfo=UTC).timestamp()) // BUCKET_S][user] += tokens
+        principals.add(user)
+    if len(principals) < MIN_PRINCIPALS:
+        return None
+    rates = sorted(
+        total / BUCKET_S for total in (_cap_bucket(users) for users in buckets.values()) if total
+    )
+    if len(rates) < MIN_BUSY_BUCKETS:
+        return None
+    return float(rates[min(len(rates) - 1, math.ceil(0.9 * len(rates)) - 1)])
+
+
+def observed_aggregate_tokens_per_s(
     db: Any,
     kind: int,
     deployment_id: int,
     window_hours: int = 24,
-    estimate_tokens_per_s: float | None = None,
+    estimate_aggregate_tokens_per_s: float | None = None,
 ) -> float | None:
-    """p50 output tokens/s over the last ``window_hours``; ``None`` when not trustworthy.
+    """Sustained AGGREGATE output tokens/s of the whole deployment; None when not trustworthy.
 
-    Each user's newest 50 samples are read (cap applied in SQL). Rates more than 10x or less
-    than 0.01x ``estimate_tokens_per_s`` (the GPU-class estimate; absolute bounds apply when it
-    is None) are dropped and counted. Engine-timed samples answer only if THEY alone meet the
-    min-principal/min-sample thresholds; otherwise proxy-timed ones are tried under the same
-    thresholds; if neither qualifies the result is None and the reconciler keeps the estimate.
+    This is a deployment TOTAL across all concurrent requests (NOT a per-request decode rate),
+    the quantity ``compute_tco`` expects. See the module docstring for the bucketing, the p90 of
+    busy buckets, and the anti-manipulation rules; ``estimate_aggregate_tokens_per_s`` is the
+    deployment-total GPU-class estimate used to reject an aggregate outside 0.01x..10x of it.
     """
     if window_hours <= 0:
         raise ValueError("window_hours must be positive")
     if not hasattr(db, "local_generation_samples") or not hasattr(db, "engine"):
         return None
     since = datetime.utcnow() - timedelta(hours=window_hours)
-    low, high = ABSOLUTE_MIN_TOKENS_PER_S, ABSOLUTE_MAX_TOKENS_PER_S
-    if estimate_tokens_per_s is not None and estimate_tokens_per_s > 0:
-        low = max(low, estimate_tokens_per_s * _ESTIMATE_LOW)
-        high = min(high, estimate_tokens_per_s * _ESTIMATE_HIGH)
-    engine: list[tuple[int | None, float]] = []
-    proxy: list[tuple[int | None, float]] = []
-    absurd = 0
-    for user, rate, source in _read_capped(db, kind, deployment_id, since):
-        if not (low <= rate <= high):
-            absurd += 1
-            continue
-        (engine if source == TIMING_ENGINE else proxy).append((user, rate))
-    _count_dropped("implausible_rate", absurd)
-    kept = _cap_per_principal(engine)
-    if kept is None:
-        kept = _cap_per_principal(proxy)
-    return float(statistics.median(kept)) if kept else None
+    by_source = _read_samples(db, kind, deployment_id, since)
+    result: float | None = None
+    for source in (TIMING_ENGINE, TIMING_PROXY):
+        rows = by_source[source]
+        sane = [r for r in rows if ABSOLUTE_MIN_TOKENS_PER_S <= r[2] <= ABSOLUTE_MAX_TOKENS_PER_S]
+        _count_dropped("implausible_rate", len(rows) - len(sane))
+        result = _aggregate_rate(sane)
+        if result is not None:
+            break
+    if result is None:
+        return None
+    est = estimate_aggregate_tokens_per_s
+    if est is not None and est > 0 and not (est * _ESTIMATE_LOW <= result <= est * _ESTIMATE_HIGH):
+        _count_dropped("implausible_aggregate", 1)
+        return None
+    return result
 
 
 def prune_generation_samples(db: Any, older_than_hours: int = 72) -> int:

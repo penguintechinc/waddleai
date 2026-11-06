@@ -24,8 +24,8 @@ from shared.fleet.pricing import (
     load_pricing_inputs,
 )
 from shared.fleet.registry import build_backend
-from shared.fleet.throughput import observed_tokens_per_s, prune_generation_samples
-from shared.fleet.vllm_pricing import estimate_tokens_per_s, resolve_params_b
+from shared.fleet.throughput import observed_aggregate_tokens_per_s, prune_generation_samples
+from shared.fleet.vllm_pricing import estimate_aggregate_tokens_per_s, resolve_params_b
 from shared.fleet.vllm_ray.tco import TcoResult
 from shared.observability.vllm_metrics import record_deployment_counts, record_inventory
 from shared.routing.prefer_local import create_prefer_local_rule
@@ -109,43 +109,43 @@ class PgAdvisoryLeaderGuard:
 
 
 class UsageSource(Protocol):
-    """Observed-throughput source for AUTO price recomputation."""
+    """Observed AGGREGATE (deployment-total) throughput source for AUTO price recomputation."""
 
-    def p50_output_tps(
+    def observed_aggregate_tps(
         self,
         db: Any,
         kind: int,
         deployment_id: int,
         window_s: int,
-        estimate_tokens_per_s: float | None = None,
+        estimate_aggregate_tokens_per_s: float | None = None,
     ) -> float | None:
-        """Rolling-window p50 output tokens/s of a deployment, or None when unmeasurable."""
+        """Sustained aggregate output tokens/s of the deployment, or None when unmeasurable."""
         ...
 
 
 class SampleUsageSource:
-    """Default source: p50 over the per-request ``local_generation_samples`` table.
+    """Default source: sustained aggregate rate (p90 of busy 5-minute buckets of samples).
 
-    Delegates to ``shared.fleet.throughput.observed_tokens_per_s``, which enforces the
-    min-principal/min-sample thresholds and drops absurd rates against the per-replica
-    estimate; ``None`` means "keep the estimate".
+    Delegates to ``shared.fleet.throughput.observed_aggregate_tokens_per_s`` (a deployment
+    TOTAL, never a per-request rate), which enforces the principal/busy-bucket thresholds and
+    rejects a rate outside 0.01x..10x the deployment-total estimate; ``None`` keeps the estimate.
     """
 
-    def p50_output_tps(
+    def observed_aggregate_tps(
         self,
         db: Any,
         kind: int,
         deployment_id: int,
         window_s: int,
-        estimate_tokens_per_s: float | None = None,
+        estimate_aggregate_tokens_per_s: float | None = None,
     ) -> float | None:
-        """Observed p50 tokens/s for the window, or None when not trustworthy."""
-        return observed_tokens_per_s(
+        """Observed aggregate tokens/s for the window, or None when not trustworthy."""
+        return observed_aggregate_tokens_per_s(
             db,
             kind,
             deployment_id,
             window_hours=max(1, window_s // 3600),
-            estimate_tokens_per_s=estimate_tokens_per_s,
+            estimate_aggregate_tokens_per_s=estimate_aggregate_tokens_per_s,
         )
 
 
@@ -457,10 +457,10 @@ class VllmReconciler:
         view = SimpleNamespace(**{k: row[k] for k in row.keys()})
         try:
             estimate = await asyncio.to_thread(
-                estimate_tokens_per_s, self.db, kind, view, costs, inputs
+                estimate_aggregate_tokens_per_s, self.db, kind, view, costs, inputs
             )
             observed = await asyncio.to_thread(
-                self.usage_source.p50_output_tps,
+                self.usage_source.observed_aggregate_tps,
                 self.db,
                 kind,
                 int(row.id),
@@ -613,9 +613,11 @@ async def _recompute_auto_prices(
     try:
         params_b = await asyncio.to_thread(resolve_params_b, db, dep)
         _inputs, costs = load_pricing_inputs(config)
-        estimate = estimate_tokens_per_s(db, int(LocalDeploymentKind.VLLM), dep, costs, _inputs)
+        estimate = estimate_aggregate_tokens_per_s(
+            db, int(LocalDeploymentKind.VLLM), dep, costs, _inputs
+        )
         observed = await asyncio.to_thread(
-            source.p50_output_tps,
+            source.observed_aggregate_tps,
             db,
             int(LocalDeploymentKind.VLLM),
             int(dep.id),
