@@ -432,7 +432,7 @@ class VllmDeployment(Base):
 
     __table_args__ = (
         UniqueConstraint("org_id", "name", name="uq_vllm_deployments_org_name"),
-        UniqueConstraint("org_id", "slug", name="uq_vllm_deployments_org_slug"),
+        UniqueConstraint("slug", name="uq_vllm_deployments_slug"),
     )
 
 

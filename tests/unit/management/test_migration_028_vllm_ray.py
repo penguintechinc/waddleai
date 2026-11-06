@@ -159,7 +159,19 @@ def test_unique_constraints_named_and_enforced(scratch):
     engine = _up(scratch)
     with engine.begin() as conn:
         _insert(conn, "vllm_deployments", _dep())
-        _insert(conn, "vllm_deployments", _dep(org_id=2, fleet_backend_id=2))  # other org: ok
+        # other org, same name, DIFFERENT slug: ok
+        _insert(
+            conn,
+            "vllm_deployments",
+            _dep(org_id=2, fleet_backend_id=2, public_id=uuid.uuid4().hex, slug="d1-org2"),
+        )
+    # same slug in ANOTHER org is rejected (slug is globally unique)
+    with pytest.raises(IntegrityError), engine.begin() as conn:
+        _insert(
+            conn,
+            "vllm_deployments",
+            _dep(org_id=2, fleet_backend_id=2, public_id=uuid.uuid4().hex, name="zzz"),
+        )
     for over in ({"slug": "other"}, {"name": "other"}):
         with pytest.raises(IntegrityError), engine.begin() as conn:
             _insert(conn, "vllm_deployments", _dep(public_id=uuid.uuid4().hex, **over))
@@ -173,7 +185,8 @@ def test_unique_constraints_named_and_enforced(scratch):
     with pytest.raises(IntegrityError), engine.begin() as conn:
         _insert(conn, "gpu_inventory", gpu)
     names = {u["name"] for u in _insp(engine).get_unique_constraints("vllm_deployments")}
-    assert {"uq_vllm_deployments_org_name", "uq_vllm_deployments_org_slug"} <= names
+    assert {"uq_vllm_deployments_org_name", "uq_vllm_deployments_slug"} <= names
+    assert "uq_vllm_deployments_org_slug" not in names  # slug is globally unique
     gpu_uq = {u["name"] for u in _insp(engine).get_unique_constraints("gpu_inventory")}
     assert "uq_gpu_inventory_backend_node_gpu" in gpu_uq
 

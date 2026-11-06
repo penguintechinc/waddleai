@@ -137,7 +137,7 @@ def upgrade() -> None:
         _fk("fleet_backend_id", "fleet_backends.id"),
         *([_fk("connection_link_id", "connection_links.id", "SET NULL")] if links else []),
         sa.UniqueConstraint("org_id", "name", name="uq_vllm_deployments_org_name"),
-        sa.UniqueConstraint("org_id", "slug", name="uq_vllm_deployments_org_slug"),
+        sa.UniqueConstraint("slug", name="uq_vllm_deployments_slug"),
     )
     op.create_table(
         "vllm_deployment_events",

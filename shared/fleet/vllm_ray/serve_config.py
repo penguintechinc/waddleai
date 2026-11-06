@@ -8,9 +8,11 @@ backend assembles into the ``{"applications": [...]}`` body of
 
 from __future__ import annotations
 
+import posixpath
 from typing import Any
 
 from shared.fleet.enums import DeploymentStatus, LayoutStrategy, Quantization
+from shared.fleet.vllm_ray.slug import validate_slug
 
 _QUANT_MAP: dict[int, str] = {
     Quantization.AWQ: "awq",
@@ -59,6 +61,10 @@ def build_serve_app(dep: Any, image_model_path: str, nccl_env: dict[str, str]) -
     The auth key is resolved at request time from the mounted key file by
     ``serve_app``; only the slug travels in the config.
     """
+    validate_slug(dep.slug)
+    if ".." in image_model_path.split("/"):
+        raise ValueError("model_source must not contain '..'")
+    image_model_path = posixpath.normpath(image_model_path)
     if not image_model_path.startswith("/models/"):
         raise ValueError("model_source must start with /models/")
     unknown = sorted(set(nccl_env) - _ALLOWED_NCCL)

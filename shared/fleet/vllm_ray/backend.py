@@ -34,6 +34,7 @@ from shared.fleet.registry import register
 from shared.fleet.vllm_ray.inventory import GpuRecord, InventoryCollector, upsert_inventory
 from shared.fleet.vllm_ray.ray_client import HttpRayServeClient, RayClientError, RayServeClient
 from shared.fleet.vllm_ray.serve_config import _ALLOWED_NCCL, build_serve_app
+from shared.fleet.vllm_ray.slug import validate_slug
 from shared.security.credential_encryption import decrypt_credential
 
 logger = logging.getLogger(__name__)
@@ -288,6 +289,7 @@ class VllmRayBackend(InferenceFleetBackend):
         except LinkAuthRefused:
             await self._transition(dep, S.FAILED, LINK_AUTH_REFUSAL)
             raise
+        validate_slug(dep.slug)  # slug forms the weights path and the route
         path = f"{self.config['model_store_path']}/{dep.slug}"
         if not await asyncio.to_thread(self._weights_present, path):
             await self._transition(dep, S.FAILED, "weights not in model store")
