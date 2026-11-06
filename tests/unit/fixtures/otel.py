@@ -15,6 +15,21 @@ from shared.observability import metrics as obs_metrics
 from shared.observability import vllm_metrics
 
 
+@pytest.fixture(autouse=True)
+def _leave_meter_cache_as_found() -> Iterator[None]:
+    """Undo a meter the test itself initialized on the process default provider.
+
+    Code under test lazily caches a meter (and instruments) on first use; left behind, a later
+    test that installs its own MeterProvider records into the stale cache and sees nothing.
+    Only acts when the test started with no cached meter, so a deliberately preset one stays.
+    """
+    started_clean = obs_metrics._meter is None
+    yield
+    if started_clean and obs_metrics._meter is not None:
+        obs_metrics.reset_for_testing()
+        vllm_metrics.reset_for_testing()
+
+
 @pytest.fixture
 def metric_reader() -> Iterator[InMemoryMetricReader]:
     """Install a real MeterProvider whose data points a test can read back.
