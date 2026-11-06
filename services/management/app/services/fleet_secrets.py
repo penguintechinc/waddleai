@@ -21,9 +21,10 @@ from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
-DEPLOYMENT_KEYS_SECRET = "waddleai-vllm-deployment-keys"  # noqa: S105 -- Secret object name
-RAY_AUTH_SECRET = "waddleai-ray-auth"  # noqa: S105 -- Secret object name
-RAY_TLS_SECRET = "waddleai-ray-tls"  # noqa: S105 -- Secret object name
+# Kubernetes Secret OBJECT NAMES (not secret values); bandit B105 flags the word "auth"/"keys".
+DEPLOYMENT_KEYS_SECRET = "waddleai-vllm-deployment-keys"  # noqa: S105  # nosec B105
+RAY_AUTH_SECRET = "waddleai-ray-auth"  # noqa: S105  # nosec B105
+RAY_TLS_SECRET = "waddleai-ray-tls"  # noqa: S105  # nosec B105
 RESTART_ANNOTATION = "waddleai.penguintech.io/restart-generation"
 _RAY_TOKEN_ALPHABET = string.ascii_letters + string.digits  # Helm randAlphaNum alphabet
 _RAY_TOKEN_LENGTH = 48
