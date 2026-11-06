@@ -33,7 +33,7 @@ def _collect() -> list[tuple[str, str]]:
         (re.sub(r"<[^>]+>", "1", rule.rule), method)
         for rule in probe.url_map.iter_rules()
         if rule.rule.startswith(NEW_PREFIXES)
-        for method in rule.methods - {"HEAD", "OPTIONS"}
+        for method in (rule.methods or set()) - {"HEAD", "OPTIONS"}
     )
 
 

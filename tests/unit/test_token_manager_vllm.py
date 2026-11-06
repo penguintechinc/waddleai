@@ -236,8 +236,8 @@ async def test_apply_pricing_route_to_exact_virtual_price_charge(
     charged = tm.process_usage(
         "in",
         ctx.response_text,
-        ctx.provider,
-        ctx.model,
+        str(ctx.provider),
+        str(ctx.model),
         1,
         1,
         1,

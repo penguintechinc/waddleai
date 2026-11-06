@@ -113,12 +113,14 @@ def test_create_rule_rejects_non_commercial_or_missing_fallback(fake_db, rows) -
 def test_resolve_picks_local_when_available() -> None:
     """Matching rule + available local offer -> local model and its destination."""
     d = resolve_prefer_local([_rule()], RequestSignals(model="auto-x"), _offers())
+    assert d is not None
     assert (d.model, d.destination, d.fell_back) == ("local-m", "vllm-1-qwen", False)
 
 
 def test_resolve_fails_over_when_local_unavailable() -> None:
     """Local offline -> the commercial fallback, no destination, fell_back (review focus 2)."""
     d = resolve_prefer_local([_rule()], RequestSignals(model="auto-x"), _offers(local=False))
+    assert d is not None
     assert (d.model, d.destination, d.fell_back) == ("gpt-x", None, True)
 
 
@@ -306,8 +308,8 @@ async def test_prefer_local_rule_selects_vllm_destination_end_to_end(
     tm.process_usage(
         "in",
         ctx.response_text,
-        ctx.provider,
-        ctx.model,
+        str(ctx.provider),
+        str(ctx.model),
         1,
         1,
         1,

@@ -155,7 +155,7 @@ class RoutingEngine:
         reqs = derive_requirements(request.body, complexity=complexity)
 
         assigned_model = assignment.default_model if assignment else None
-        alias_routed_from = None
+        alias_routed_from: dict[str, Any] | None = None
         # Stage 0 (spec §7.2): admin-controlled model aliasing. Only a
         # concrete client-requested model is eligible -- a "waddleai/<tool
         # type>" pseudo-model is a routing directive, not a real model name,

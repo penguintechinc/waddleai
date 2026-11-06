@@ -104,3 +104,64 @@ async def test_foreign_org_vllm_link_never_offered(fake_db) -> None:
     # a shared (unowned) link makes the model visible to everyone
     fake_db.seed("connection_links", [{"name": "c", "enabled": True, "model_list": ["m1"]}])
     assert {o.model_name for o in await _offers(fake_db, org_id=1)} == {"m1", "m2"}
+
+
+async def test_model_configs_owner_org_filters_other_orgs_offers(fake_db) -> None:
+    """Only shared rows and the requesting org's own rows are offered (owner_org_id read)."""
+    fake_db.seed(
+        "model_configs",
+        [
+            {**_config("shared-m", ["openai"]), "owner_org_id": None},
+            {**_config("a-local", ["vllm"]), "owner_org_id": 1, "deployment_public_id": "x"},
+            {**_config("b-local", ["vllm"]), "owner_org_id": 2, "deployment_public_id": "y"},
+        ],
+    )
+    assert {o.model_name for o in await _offers(fake_db, org_id=1)} == {"shared-m", "a-local"}
+    assert {o.model_name for o in await _offers(fake_db, org_id=2)} == {"shared-m", "b-local"}
+    assert {o.model_name for o in await _offers(fake_db, org_id=3)} == {"shared-m"}
+    # no org (e.g. the gRPC adapter): owned rows are never offered
+    assert {o.model_name for o in await _offers(fake_db)} == {"shared-m"}
+
+
+async def test_org_owned_local_offer_never_shadows_commercial_for_other_orgs(fake_db) -> None:
+    """Same model name: org 1's local row is invisible to org 2, whose offer stays commercial."""
+    fake_db.seed(
+        "model_configs",
+        [
+            {**_config("m", ["openai"]), "owner_org_id": None},
+            {**_config("m", ["vllm"]), "owner_org_id": 1},
+        ],
+    )
+    other = await _offers(fake_db, org_id=2)
+    assert [(o.model_name, o.location) for o in other] == [("m", "commercial")]
+    owner = await _offers(fake_db, org_id=1)
+    assert [(o.model_name, o.location) for o in owner] == [("m", "local")]  # owner's row wins
+
+
+async def test_stage_load_offers_applies_the_same_owner_filter(fake_db) -> None:
+    """RoutingStage._load_offers (the proxy reader) filters model_configs by owner too."""
+    from proxy.apps.proxy_server.pipeline.stages import RoutingStage
+
+    fake_db.seed(
+        "model_configs",
+        [
+            {**_config("shared-m", ["openai"])},
+            {**_config("a-local", ["vllm"]), "owner_org_id": 1},
+            {**_config("b-local", ["vllm"]), "owner_org_id": 2},
+        ],
+    )
+    stage = RoutingStage("routing", engine=None, db=fake_db, flag=None)  # type: ignore[arg-type]
+    assert {o.model_name for o in await stage._load_offers(1)} == {"shared-m", "a-local"}
+    assert {o.model_name for o in await stage._load_offers(0)} == {"shared-m"}
+
+
+def test_prefer_local_fallback_ignores_other_orgs_owned_commercial_rows(fake_db) -> None:
+    """A fallback model visible only as another org's row does not satisfy the rule factory."""
+    from types import SimpleNamespace
+
+    from shared.routing.prefer_local import create_prefer_local_rule
+
+    fake_db.seed("model_configs", [{**_config("gpt-x", ["openai"]), "owner_org_id": 2}])
+    dep = SimpleNamespace(slug="s", served_model_name="m", public_id="p")
+    with pytest.raises(ValueError, match="commercial model"):
+        create_prefer_local_rule(fake_db, 1, dep, "gpt-x", {"model_prefix": "a"})

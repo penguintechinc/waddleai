@@ -14,7 +14,7 @@ from typing import Any
 
 from shared.routing.capability import ModelOffer
 from shared.routing.heuristics import HeuristicRule, RequestSignals, rule_matches
-from shared.routing.providers import LOCAL_PROVIDERS
+from shared.routing.providers import LOCAL_PROVIDERS, visible_model_configs
 
 __all__ = [
     "PREFER_LOCAL_PRIORITY",
@@ -51,12 +51,12 @@ def validate_prefer_local(match: Any, fallback_model: str) -> None:
         raise ValueError("prefer_local needs a fallback model")
 
 
-def _commercial_fallback_exists(db: Any, fallback_model: str) -> bool:
-    """True when an enabled model_configs row serves ``fallback_model`` from commercial only."""
-    rows = db(
-        (db.model_configs.model_name == fallback_model) & (db.model_configs.enabled == True)  # noqa: E712
-    ).select()
-    for row in rows:
+def _commercial_fallback_exists(db: Any, fallback_model: str, org_id: int) -> bool:
+    """True when an enabled row visible to ``org_id`` serves the model from commercial only."""
+    table = db.model_configs
+    query = (table.model_name == fallback_model) & (table.enabled == True)  # noqa: E712
+    rows = db(query).select()
+    for row in visible_model_configs(list(rows), org_id):
         providers = row.preferred_providers or []
         if providers and not any(p in LOCAL_PROVIDERS for p in providers):
             return True
@@ -71,7 +71,7 @@ def create_prefer_local_rule(
     Synchronous (penguin-dal); async callers wrap it in ``asyncio.to_thread``.
     """
     validate_prefer_local(match, fallback_model)
-    if not _commercial_fallback_exists(db, fallback_model):
+    if not _commercial_fallback_exists(db, fallback_model, org_id):
         raise ValueError("The fallback must be a commercial model.")
     slug = deployment.slug
     row_id = db.routing_rules_v2.insert(

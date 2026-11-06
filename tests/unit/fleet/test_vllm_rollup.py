@@ -187,7 +187,8 @@ def test_savings_negative_and_missing_commercial_price_reported(db) -> None:
     _usage(db, dep=unknown)
     result = savings(db, 1, TODAY - timedelta(days=1))
     by = {d.deployment_id: d for d in result.by_deployment}
-    assert by[dear].savings is not None and by[dear].savings < 0
+    dear_savings = by[dear].savings
+    assert dear_savings is not None and dear_savings < 0
     assert by[unknown].savings is None and by[unknown].commercial_equivalent_cost is None
     assert result.missing_commercial_models == ["nobody/none"]
     assert result.savings == by[dear].savings  # unknown deployment is not counted as savings

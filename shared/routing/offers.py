@@ -27,7 +27,7 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from shared.routing.capability import ModelOffer
-from shared.routing.providers import LOCAL_PROVIDERS, foreign_only_models
+from shared.routing.providers import LOCAL_PROVIDERS, foreign_only_models, visible_model_configs
 
 if TYPE_CHECKING:
     from shared.fleet.base import InferenceFleetBackend
@@ -64,7 +64,7 @@ async def load_offers_from_model_configs(
     )
     hidden = await foreign_only_models(db, org_id) if org_id is not None else set()
     offers: list[ModelOffer] = []
-    for row in rows:
+    for row in visible_model_configs(list(rows), org_id):
         if row.model_name in hidden:
             continue
         providers = row.preferred_providers or []

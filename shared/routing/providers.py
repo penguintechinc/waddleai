@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Any
 
-__all__ = ["LOCAL_PROVIDERS", "foreign_only_models"]
+__all__ = ["LOCAL_PROVIDERS", "foreign_only_models", "visible_model_configs"]
 
 logger = logging.getLogger(__name__)
 
@@ -45,3 +45,32 @@ async def foreign_only_models(db: Any, org_id: int | None) -> set[str]:
         logger.warning("foreign-owner offer filter unavailable, offers unfiltered: %s", exc)
         return set()
     return _foreign_only(links, org_id)
+
+
+def _owner(row: Any) -> int | None:
+    """``owner_org_id`` of a model_configs row; absent/non-int (shared) reads as None."""
+    owner = getattr(row, "owner_org_id", None)
+    return owner if isinstance(owner, int) and not isinstance(owner, bool) else None
+
+
+def visible_model_configs(rows: list[Any], org_id: int | None) -> list[Any]:
+    """The ``model_configs`` rows ``org_id`` may see: shared rows plus its own (AM3).
+
+    A row owned by another org is never visible, so an org-owned local offer cannot reach, or
+    shadow a commercial offer of the same name for, any OTHER org. For the owner itself, its own
+    row wins over a shared row of the same model name. The columns are read defensively
+    (``owner_org_id`` may not exist on an older schema: every row is then shared).
+    """
+    chosen: dict[str, Any] = {}
+    order: list[str] = []
+    for row in rows:
+        owner = _owner(row)
+        if owner is not None and (not org_id or owner != org_id):
+            continue
+        name = row.model_name
+        if name not in chosen:
+            order.append(name)
+            chosen[name] = row
+        elif owner is not None and _owner(chosen[name]) is None:
+            chosen[name] = row  # the owner's own row beats the shared one
+    return [chosen[name] for name in order]

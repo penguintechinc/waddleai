@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import openai
@@ -26,11 +26,11 @@ class FakeOpenAIServer:
 
     def sdk_client(self, api_key: str = "test-key") -> openai.AsyncOpenAI:
         """An AsyncOpenAI client whose transport is this app (in-process)."""
-        transport = httpx.ASGITransport(app=self.app)
+        transport = httpx.ASGITransport(app=cast(Any, self.app))
         return openai.AsyncOpenAI(
             api_key=api_key,
             base_url="http://fake/v1",
-            http_client=httpx.AsyncClient(transport=transport),
+            http_client=cast(Any, httpx.AsyncClient(transport=transport)),
         )
 
 

@@ -70,7 +70,11 @@ from shared.routing.aliases import explicit_tool_type
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
 from shared.routing.heuristics import HeuristicRule, RequestSignals
-from shared.routing.providers import LOCAL_PROVIDERS, foreign_only_models
+from shared.routing.providers import (
+    LOCAL_PROVIDERS,
+    foreign_only_models,
+    visible_model_configs,
+)
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
 from shared.utils.llm_connectors import (
@@ -968,7 +972,7 @@ class RoutingStage(Stage):
         )
         hidden = await foreign_only_models(self.db, org_id) if org_id is not None else set()
         offers: list[ModelOffer] = []
-        for row in rows:
+        for row in visible_model_configs(list(rows), org_id):
             if row.model_name in hidden:
                 continue
             providers = row.preferred_providers or []
