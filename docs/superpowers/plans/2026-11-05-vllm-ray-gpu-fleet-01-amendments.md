@@ -147,6 +147,10 @@ Companion to `2026-11-05-vllm-ray-gpu-fleet-00-master.md`. Entries here override
 #       e.g. a node-local NVMe class such as local-path/topolvm; size hotCache.size) on Ray worker pods. NO hostPath, NO namespace PSA downgrade, NO Kyverno PolicyException
 #       (PSA baseline forbids hostPath; Kyverno cannot override built-in PSA). Namespace stays enforce=restricted always. Cache lifetime = worker pod. Supersedes the AM15/D5 hostPath text.
 #       TLS/mutual-auth invariant fail() lives in an always-rendered template when fleet.vllmRay.enabled (+ render test). Shared deployment-keys Secret accepted (Ray token already grants cluster control).
+#   AM26 (security review, B4d) Rate rows for local deployments are keyed per DEPLOYMENT, never by served model name: token_conversion_rates
+#       (provider=<"vllm"|"ollama"|"llamacpp">, model=f"deployment/{public_id}"). upsert_virtual_rate never forces enabled=True on an existing row and
+#       refuses to touch a row whose model key isn't the deployment/<uuid> form. Plan C C4/C4b: local connectors meter usage with that key (they know
+#       local_deployment_id via their connection link), so the quota engine's existing lookup charges the right deployment. Test: two orgs, same served name → independent rates.
 #   AM14 llama.cpp deployments are created through the GPU Fleet wizard's "Engine" choice (Plan F F7), so the shared ChargebackStep covers llama.cpp pricing in the UI;
 #       the legacy API-only llama.cpp create path (C2b) keeps accepting the price fields. Ollama pricing UI lives in pages/OllamaDeployments.jsx (D4b).
 ```
