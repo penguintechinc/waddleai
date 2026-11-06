@@ -1044,16 +1044,13 @@ class LlamaCppManager(InferenceFleetBackend):
             ),
             {"kind": "Deployment", "metadata": {"name": base}},
         ]
-        # fail closed: workers go first; if any StatefulSet survives, keep the policies (and
-        # everything else) so the leftovers stay isolated, and report for a retry
-        workers = [d for d in docs if d["kind"] == "StatefulSet"]
-        failed = self._rpc_delete_objects(apps, core, custom, namespace, workers)
-        if failed:
-            raise RuntimeError(f"could not delete {', '.join(failed)}; policies kept")
-        rest = [d for d in docs if d["kind"] != "StatefulSet"]
-        failed = self._rpc_delete_objects(apps, core, custom, namespace, rest)
-        if failed:
-            raise RuntimeError(f"could not delete {', '.join(failed)}")
+        # fail closed, strictly ordered: workers -> head -> Services -> policies. Stop at the first
+        # failing batch so the CNPs are only ever deleted once nothing they protect is left.
+        for kinds in (("StatefulSet",), ("Deployment",), ("Service",), ("CiliumNetworkPolicy",)):
+            batch = [d for d in docs if d["kind"] in kinds]
+            failed = self._rpc_delete_objects(apps, core, custom, namespace, batch)
+            if failed:
+                raise RuntimeError(f"could not delete {', '.join(failed)}; later objects kept")
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(status="stopped")
         logger.info("Removed llama.cpp RPC deployment %s", base)

@@ -468,7 +468,7 @@ def test_remove_rpc_keeps_policies_and_everything_else_when_a_statefulset_delete
         patch(f"{MGR}.get_k8s_core_client", return_value=core),
         patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
     ):
-        with pytest.raises(RuntimeError, match="policies kept"):
+        with pytest.raises(RuntimeError, match="later objects kept"):
             mgr.remove_rpc(dep)
     crd.delete_namespaced_custom_object.assert_not_called()
     core.delete_namespaced_service.assert_not_called()
@@ -492,3 +492,40 @@ def test_remove_rpc_deletes_workers_before_policies(mgr, dep):
     ):
         mgr.remove_rpc(dep)
     assert order.mock_calls[0][0] == "sts"
+
+
+def test_remove_rpc_head_delete_failure_keeps_services_and_policies(mgr, dep):
+    """Regression: a head Deployment that cannot be deleted keeps the Services and the CNPs."""
+    apps, core, crd = _clients()
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(items=[])
+    apps.delete_namespaced_deployment.side_effect = RuntimeError("api down")
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
+    ):
+        with pytest.raises(RuntimeError, match="later objects kept"):
+            mgr.remove_rpc(dep)
+    core.delete_namespaced_service.assert_not_called()
+    crd.delete_namespaced_custom_object.assert_not_called()
+    mgr.db.return_value.update.assert_not_called()
+
+
+def test_remove_rpc_order_is_workers_head_services_policies(mgr, dep):
+    """Successful teardown deletes in the fixed order, CNPs last."""
+    apps, core, crd = _clients()
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(
+        items=[SimpleNamespace(metadata=SimpleNamespace(name="b-rpc-0"))]
+    )
+    order = MagicMock()
+    order.attach_mock(apps.delete_namespaced_stateful_set, "sts")
+    order.attach_mock(apps.delete_namespaced_deployment, "head")
+    order.attach_mock(core.delete_namespaced_service, "svc")
+    order.attach_mock(crd.delete_namespaced_custom_object, "cnp")
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
+    ):
+        mgr.remove_rpc(dep)
+    assert [c[0] for c in order.mock_calls] == ["sts", "head", "svc", "svc", "cnp", "cnp"]
