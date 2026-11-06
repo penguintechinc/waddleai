@@ -64,6 +64,8 @@ def _insert_dep(db: FakeDAL, **over: Any) -> Any:
         "created_at": _naive_now() - timedelta(seconds=30),
     }
     vals.update(over)
+    if "connection_link_id" not in vals:
+        vals["connection_link_id"] = db.connection_links.insert(api_key="dep-key-1")
     row_id = db.vllm_deployments.insert(**vals)
     return db(db.vllm_deployments.id == row_id).select().first()
 
@@ -364,7 +366,9 @@ async def test_reconcile_running_warms_then_canary_serves(
     _script(client, "RUNNING")
     assert await backend.reconcile(d) == int(S.SERVING)
     assert _row(db, d).status == int(S.SERVING)
-    canary.assert_awaited_once_with("http://serve:8000/d/devstral-small/v1", "devstral-small")
+    canary.assert_awaited_once_with(
+        "http://serve:8000/d/devstral-small/v1", "devstral-small", "dep-key-1"
+    )
     states = [e.state for e in _events(db, d)]
     assert states == [int(S.WARMING), int(S.SERVING)]
 
@@ -1012,7 +1016,7 @@ async def test_default_canary_pass(monkeypatch: pytest.MonkeyPatch) -> None:
     """Check: default canary pass."""
     fake = _FakeHttp(_Resp(200, {"data": [{"id": "m"}]}), _Resp(200))
     _patch_http(monkeypatch, fake)
-    assert await backend_mod._default_canary("http://u/v1", "m") is True
+    assert await backend_mod._default_canary("http://u/v1", "m", "k") is True
     assert fake.calls[0][1] == "http://u/v1/models"
     assert fake.calls[1][1] == "http://u/v1/chat/completions"
     assert fake.calls[1][2]["json"]["max_tokens"] == 4
@@ -1032,7 +1036,7 @@ async def test_default_canary_failures(
 ) -> None:
     """Check: default canary failures."""
     _patch_http(monkeypatch, _FakeHttp(models, chat))
-    assert await backend_mod._default_canary("http://u/v1", "m") is False
+    assert await backend_mod._default_canary("http://u/v1", "m", "k") is False
 
 
 async def test_default_canary_used_when_none_injected(
@@ -1063,3 +1067,14 @@ async def test_run_canary_programming_error_propagates(
     d = _insert_dep(db, status=int(S.WARMING), endpoint_url="http://u/v1")
     with pytest.raises(KeyError):
         await backend._run_canary(d)
+
+
+async def test_run_canary_without_key_fails_loudly_without_probing(
+    backend: VllmRayBackend, canary: AsyncMock, db: FakeDAL, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No connection link: canary fails, logs an error, never probes unauthenticated."""
+    d = _insert_dep(db, status=int(S.WARMING), endpoint_url="http://u/v1", connection_link_id=0)
+    with caplog.at_level(logging.ERROR):
+        assert await backend._run_canary(d) is False
+    canary.assert_not_awaited()
+    assert "cannot authenticate" in caplog.text

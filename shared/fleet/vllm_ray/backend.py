@@ -34,6 +34,7 @@ from shared.fleet.registry import register
 from shared.fleet.vllm_ray.inventory import GpuRecord, InventoryCollector, upsert_inventory
 from shared.fleet.vllm_ray.ray_client import HttpRayServeClient, RayClientError, RayServeClient
 from shared.fleet.vllm_ray.serve_config import _ALLOWED_NCCL, build_serve_app
+from shared.security.credential_encryption import decrypt_credential
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,26 @@ def _observe_model_load_seconds(seconds: float) -> None:
         logger.warning("could not record model load histogram", exc_info=True)
 
 
-async def _default_canary(url: str, served_model: str) -> bool:
-    """Probe ``/models`` for the served id, then a 4-token chat completion; True on both 200."""
+class CanaryKeyUnavailable(RuntimeError):  # noqa: N818 - internal marker
+    """The deployment's bearer key could not be read, so the canary cannot authenticate."""
+
+
+async def _default_canary(
+    url: str,
+    served_model: str,
+    api_key: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> bool:
+    """Probe ``/models`` for the served id, then a 4-token chat completion; True on both 200.
+
+    Sends the per-deployment bearer key: Serve ingress 401s every unauthenticated request.
+    """
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as http:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0),
+            headers={"Authorization": f"Bearer {api_key}"},
+            transport=transport,
+        ) as http:
             models = await http.get(f"{url}/models")
             if models.status_code != 200:
                 return False
@@ -315,11 +332,32 @@ class VllmRayBackend(InferenceFleetBackend):
             logger.warning("ray delete failed for %s: %s", dep.serve_app_name, exc)
             raise RuntimeError(_REJECTED_OP) from None
 
+    async def _canary_key(self, dep: Any) -> str:
+        """The per-deployment bearer key: the decrypted ``connection_links.api_key`` (C2c)."""
+        link_id = dep.connection_link_id
+        if not link_id:
+            raise CanaryKeyUnavailable("deployment has no connection link")
+        rows = await self._select(lambda db: db.connection_links.id == link_id)
+        if not rows:
+            raise CanaryKeyUnavailable("connection link not found")
+        try:
+            key = decrypt_credential(rows[0].api_key or "")
+        except ValueError as exc:
+            raise CanaryKeyUnavailable(f"key undecryptable: {exc}") from exc
+        if not key:
+            raise CanaryKeyUnavailable("connection link has no api key")
+        return key
+
     async def _run_canary(self, dep: Any) -> bool:
         """Run the readiness canary; transport errors count as failure, bugs propagate."""
         url = dep.endpoint_url or self._endpoint_url(dep)
         try:
-            return bool(await self._canary(url, dep.served_model_name))
+            api_key = await self._canary_key(dep)
+        except CanaryKeyUnavailable as exc:
+            logger.error("canary cannot authenticate for %s: %s", dep.serve_app_name, exc)
+            return False
+        try:
+            return bool(await self._canary(url, dep.served_model_name, api_key))
         except (RayClientError, httpx.HTTPError, TimeoutError, OSError):
             logger.warning("canary raised for %s", dep.serve_app_name, exc_info=True)
             return False
