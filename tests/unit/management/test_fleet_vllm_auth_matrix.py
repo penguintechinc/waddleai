@@ -25,12 +25,18 @@ NEW_PREFIXES = (
 )
 
 
+def _concrete(rule: str) -> str:
+    """Fill URL converters with values that route: a real UUID for ``<uuid:...>``, else ``1``."""
+    rule = re.sub(r"<uuid:[^>]+>", "00000000-0000-0000-0000-000000000001", rule)
+    return re.sub(r"<[^>]+>", "1", rule)
+
+
 def _collect() -> list[tuple[str, str]]:
     """(concrete path, method) for every route under a new fleet prefix."""
     probe = Quart("auth-matrix-probe")
     probe.register_blueprint(api_v1_bp, url_prefix="/api/v1")
     return sorted(
-        (re.sub(r"<[^>]+>", "1", rule.rule), method)
+        (_concrete(rule.rule), method)
         for rule in probe.url_map.iter_rules()
         if rule.rule.startswith(NEW_PREFIXES)
         for method in (rule.methods or set()) - {"HEAD", "OPTIONS"}
