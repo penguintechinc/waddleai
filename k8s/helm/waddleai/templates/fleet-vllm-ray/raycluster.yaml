@@ -1,0 +1,162 @@
+{{- if .Values.fleet.vllmRay.enabled }}
+{{- include "waddleai.vllmRay.validate" . }}
+{{- /* Link-auth invariant (AM11/AM24): Ray has app-level token auth but its links need TLS or
+       mutual auth. Lives here, not in tls.yaml, so it fires even when TLS Secrets are external. */}}
+{{- if and (not .Values.fleet.vllmRay.rayInternalTls) (not .Values.fleet.security.mutualAuth) }}
+{{- fail "fleet.vllmRay.rayInternalTls=false requires fleet.security.mutualAuth=true: Ray links need internal TLS or Cilium mutual auth" }}
+{{- end }}
+{{- $v := .Values.fleet.vllmRay }}
+{{- $headImage := include "waddleai.vllmRay.image" (dict "ctx" . "key" "head") }}
+apiVersion: ray.io/v1
+kind: RayCluster
+metadata:
+  name: waddleai-inference
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: ray-cluster
+spec:
+  rayVersion: {{ $v.ray.version | quote }}
+  enableInTreeAutoscaling: true
+  autoscalerOptions:
+    idleTimeoutSeconds: {{ $v.autoscaler.idleTimeoutSeconds }}
+  headGroupSpec:
+    serviceType: ClusterIP
+    rayStartParams:
+      dashboard-host: "0.0.0.0"
+      dashboard-port: {{ $v.dashboard.port | quote }}
+      port: {{ $v.ports.gcs | quote }}
+      ray-client-server-port: {{ $v.ports.client | quote }}
+      num-cpus: "0"
+      num-gpus: "0"
+      include-dashboard: "true"
+    template:
+      metadata:
+        labels:
+          {{- include "waddleai.selectorLabels" . | nindent 10 }}
+          app.kubernetes.io/component: ray-head
+        annotations:
+          waddleai.penguintech.io/restart-generation: {{ $v.restartGeneration | quote }}
+      spec:
+        securityContext:
+          {{- include "waddleai.vllmRay.podSecurityContext" . | nindent 10 }}
+        {{- with $v.head.nodeSelector }}
+        nodeSelector:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        {{- with $v.head.affinity }}
+        affinity:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+        containers:
+          - name: ray-head
+            image: {{ $headImage | quote }}
+            imagePullPolicy: IfNotPresent
+            securityContext:
+              {{- include "waddleai.vllmRay.containerSecurityContext" . | nindent 14 }}
+            ports:
+              - {name: gcs, containerPort: {{ $v.ports.gcs }}}
+              - {name: dashboard, containerPort: {{ $v.dashboard.port }}}
+              - {name: client, containerPort: {{ $v.ports.client }}}
+              - {name: serve, containerPort: {{ $v.serve.port }}}
+            env:
+              {{- include "waddleai.vllmRay.authEnv" . | nindent 14 }}
+            resources:
+              {{- toYaml $v.head.resources | nindent 14 }}
+            volumeMounts:
+              - {name: tmp, mountPath: /tmp}
+              - {name: dshm, mountPath: /dev/shm}
+              {{- include "waddleai.vllmRay.authMounts" . | nindent 14 }}
+        volumes:
+          - name: tmp
+            emptyDir: {}
+          - name: dshm
+            emptyDir: {medium: Memory}
+          {{- include "waddleai.vllmRay.authVolumes" . | nindent 10 }}
+  workerGroupSpecs:
+    {{- range $g := $v.workerGroups }}
+    {{- $image := include "waddleai.vllmRay.image" (dict "ctx" $ "key" $g.image) }}
+    {{- $res := dict (printf "gpu_vendor:%s" $g.vendor) 1 (printf "gpu_class:%s" $g.gpuClass) 1 "vram_mb" (int $g.vramMbPerNode) }}
+    - groupName: {{ $g.name }}
+      minReplicas: {{ default 0 $g.minReplicas }}
+      maxReplicas: {{ $g.maxReplicas }}
+      rayStartParams:
+        # KubeRay inserts this value unquoted into a shell command, so the JSON needs literal quotes.
+        resources: {{ printf "\"%s\"" (toJson $res | replace "\"" "\\\"") | squote }}
+        min-worker-port: {{ $v.ports.workerMin | quote }}
+        max-worker-port: {{ $v.ports.workerMax | quote }}
+      template:
+        metadata:
+          labels:
+            {{- include "waddleai.selectorLabels" $ | nindent 12 }}
+            app.kubernetes.io/component: ray-worker
+            ray.io/group: {{ $g.name }}
+          annotations:
+            waddleai.penguintech.io/restart-generation: {{ $v.restartGeneration | quote }}
+        spec:
+          securityContext:
+            {{- include "waddleai.vllmRay.podSecurityContext" $ | nindent 12 }}
+          nodeSelector:
+            {{- $sel := merge (deepCopy (default dict $g.nodeSelector)) (dict "waddleai.penguintech.io/gpu-vendor" $g.vendor "waddleai.penguintech.io/ai-node" "true") }}
+            {{- toYaml $sel | nindent 12 }}
+          {{- with $g.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: ray-worker
+              image: {{ $image | quote }}
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                {{- include "waddleai.vllmRay.containerSecurityContext" $ | nindent 16 }}
+              env:
+                - {name: NCCL_SOCKET_NTHREADS, value: "4"}
+                - {name: NCCL_NSOCKS_PERTHREAD, value: "4"}
+                - {name: NCCL_IB_DISABLE, value: "1"}
+                {{- if $v.nccl.ifname }}
+                - {name: NCCL_SOCKET_IFNAME, value: {{ $v.nccl.ifname | quote }}}
+                {{- end }}
+                - {name: HF_HOME, value: /models}
+                {{- include "waddleai.vllmRay.authEnv" $ | nindent 16 }}
+              resources:
+                limits:
+                  {{ $g.resourceName | quote }}: {{ int $g.gpusPerWorker }}
+              volumeMounts:
+                - {name: tmp, mountPath: /tmp}
+                - {name: dshm, mountPath: /dev/shm}
+                - {name: models, mountPath: /models}
+                - {name: deployment-keys, mountPath: /secrets/deployment-keys/, readOnly: true}
+                {{- if $v.hotCache.enabled }}
+                - {name: hot-cache, mountPath: {{ $v.hotCache.mountPath }}}
+                {{- end }}
+                {{- include "waddleai.vllmRay.authMounts" $ | nindent 16 }}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            - name: dshm
+              emptyDir: {medium: Memory}
+            - name: deployment-keys
+              secret:
+                secretName: waddleai-vllm-deployment-keys
+                optional: true
+            - name: models
+              persistentVolumeClaim:
+                claimName: waddleai-vllm-ray-models
+            {{- if $v.hotCache.enabled }}
+            # Generic ephemeral volume (AM24): a PVC created and deleted with the worker pod, so no
+            # hostPath and no Pod Security Admission exception is ever needed.
+            - name: hot-cache
+              ephemeral:
+                volumeClaimTemplate:
+                  spec:
+                    accessModes: ["ReadWriteOnce"]
+                    {{- with $v.hotCache.storageClass }}
+                    storageClassName: {{ . | quote }}
+                    {{- end }}
+                    resources:
+                      requests:
+                        storage: {{ $v.hotCache.size }}
+            {{- end }}
+            {{- include "waddleai.vllmRay.authVolumes" $ | nindent 12 }}
+    {{- end }}
+{{- end }}

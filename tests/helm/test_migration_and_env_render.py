@@ -39,7 +39,7 @@ class TestMigrationJobGating:
 
 
 class TestMigrationJobHookOrdering:
-    """The Job is a post-install,post-upgrade hook; its Secret is a pre-* hook.
+    """The Job is a post-install,post-upgrade hook; its Secret is a pre-install,pre-upgrade hook.
 
     The Job must be post-*: Postgres is a plain resource, applied only after all
     pre-* hooks finish, so a pre-install Job on an empty namespace waited forever
@@ -49,11 +49,12 @@ class TestMigrationJobHookOrdering:
     """
 
     def test_job_has_post_install_post_upgrade_hook(self):
-        """The Job is a post-* hook; only before-hook-creation, so its last log survives."""
+        """The Job runs after Postgres exists (post-* hook) and is recreated on every upgrade."""
         docs = render("values-alpha.yaml")
         job = find(docs, "Job", "waddleai-migration")
         ann = job["metadata"]["annotations"]
         assert ann["helm.sh/hook"] == "post-install,post-upgrade"
+        # The last run's log must survive: before-hook-creation only, never hook-succeeded.
         assert ann["helm.sh/hook-delete-policy"] == "before-hook-creation"
 
     def test_secret_is_also_a_hook_with_earlier_weight(self):

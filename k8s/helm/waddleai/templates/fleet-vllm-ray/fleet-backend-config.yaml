@@ -1,0 +1,57 @@
+{{- if .Values.fleet.vllmRay.enabled }}
+{{- $v := .Values.fleet.vllmRay }}
+{{- if le (float64 $v.tco.kwhUsd) 0.0 }}
+{{- fail "fleet.vllmRay.tco.kwhUsd must be > 0 (electricity price in USD/kWh drives the amortized price)" }}
+{{- end }}
+{{- /* Helm values are camelCase; everything past the chart boundary is snake_case (AM9).
+       --set delivers fractional numbers as strings, so numerics are coerced explicitly. */}}
+{{- $tco := dict
+  "kwh_usd" (float64 $v.tco.kwhUsd)
+  "lifecycle_years" (int $v.tco.lifecycleYears)
+  "utilization_pct" (int $v.tco.utilizationPct)
+  "input_ratio" (float64 $v.tco.inputRatio)
+  "ram_usd_per_gb" (float64 $v.tco.ramUsdPerGb)
+  "nvme_usd_per_gb" (float64 $v.tco.nvmeUsdPerGb)
+  "nvme_pro_usd_per_gb" (float64 $v.tco.nvmeProUsdPerGb)
+  "network_device_usd" (float64 $v.tco.networkDeviceUsd) }}
+{{- $costMap := dict
+  "card_usd" "cardUsd"
+  "tdp_watts" "tdpWatts"
+  "est_tokens_per_s" "estTokensPerS"
+  "cpu_usd" "cpuUsd"
+  "ram_gb" "ramGb"
+  "nvme_gb" "nvmeGb"
+  "nvme_pro" "nvmePro"
+  "network_devices" "networkDevices"
+  "node_base_watts" "nodeBaseWatts"
+  "gpus_per_node" "gpusPerNode"
+  "node_base_usd" "nodeBaseUsd" }}
+{{- $groups := list }}
+{{- range $g := $v.workerGroups }}
+{{- $cost := dict }}
+{{- range $snake, $camel := $costMap }}
+{{- if hasKey (default dict $g.cost) $camel }}
+{{- $val := index $g.cost $camel }}
+{{- if and (kindIs "string" $val) (ne $snake "nvme_pro") }}
+{{- $val = float64 $val }}
+{{- end }}
+{{- $_ := set $cost $snake $val }}
+{{- end }}
+{{- end }}
+{{- $groups = append $groups (dict "name" $g.name "gpu_class" $g.gpuClass "cost" $cost) }}
+{{- end }}
+{{- $cfg := dict "tco" $tco "worker_groups" $groups "link_auth" (dict "mutual_auth" $.Values.fleet.security.mutualAuth "internal_tls" $v.rayInternalTls) }}
+# Defaults for VllmRayBackend (AM9): management loads this file, then merges the fleet_backends
+# config row on top (row wins). Mounted read-only into the management pod.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: waddleai-vllm-ray-fleet-config
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm-ray-fleet-config
+data:
+  backend-config.json: |
+    {{- toPrettyJson $cfg | nindent 4 }}
+{{- end }}

@@ -8,5 +8,8 @@ dependencies:
 - name: intel-gpu-plugin
   repository: file://charts/intel-gpu-plugin
   version: 0.31.0
-digest: sha256:75b8de441e1c674cfb1d14bbdf964e63def6853e943f7b73a54c0852c79c9835
-generated: "2026-08-12T08:09:20.406118223-05:00"
+- name: kuberay-operator
+  repository: https://ray-project.github.io/kuberay-helm/
+  version: 1.6.2
+digest: sha256:9501ff92ed26ece71497609812f0947c21097052e4e665f5bbda6c551092f206
+generated: "2026-11-05T13:54:02.584248118-06:00"

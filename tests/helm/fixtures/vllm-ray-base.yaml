@@ -1,0 +1,48 @@
+# Render-only fixture for vllm-ray chart tests. Digests are fixed test values, never pulled.
+fleet:
+  vllmRay:
+    enabled: true
+    unsafeNoNetworkPolicy: true  # render-only: most tests render without the Cilium CRD
+    ray:
+      version: "2.60.0"
+      pythonMinor: "3.12"
+    images:
+      cuda: {repository: ghcr.io/penguintechinc/waddleai/vllm-ray-cuda, tag: "ray2.60.0-py312", digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+      rocm: {repository: ghcr.io/penguintechinc/waddleai/vllm-ray-rocm, tag: "ray2.60.0-py312", digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+      xpu: {repository: ghcr.io/penguintechinc/waddleai/vllm-ray-xpu, tag: "ray2.60.0-py312", digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+      head: {repository: rayproject/ray, tag: "2.60.0-py312", digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"}
+    nvidiaClassMap:
+      - {pattern: "*RTX 4090*", name: rtx4090}
+    workerGroups:
+      - name: nvidia-rtx4090
+        vendor: nvidia
+        gpuClass: nvidia-rtx4090
+        resourceName: nvidia.com/rtx4090
+        gpusPerWorker: 1
+        vramMbPerNode: 98304
+        minReplicas: 0
+        maxReplicas: 2
+        image: cuda
+        cost:
+          cardUsd: 1800
+          tdpWatts: 450
+          estTokensPerS: 60
+          cpuUsd: 500
+          ramGb: 128
+          nvmeGb: 2000
+          nvmePro: true
+          networkDevices: 1
+          nodeBaseWatts: 150
+          gpusPerNode: 2
+  # AM15 external key injection: fixture supplies the TLS Secret so default renders need no
+  # cert-manager CRDs; tests that exercise chart-generated certs clear this and pass api_versions.
+  security:
+    rayTls:
+      existingSecret: fixture-ray-tls
+nvidia-gpu-operator:
+  devicePlugin:
+    config:
+      name: waddleai-nvidia-device-plugin-config
+# values-alpha parity: restricted Pod Security Admission (the vLLM fleet constraint is PSA restricted).
+podSecurityAdmission:
+  enforce: restricted

@@ -1,0 +1,21 @@
+{{- if .Values.fleet.vllmRay.enabled }}
+# Shared RWX model store: weights are pulled once per cluster and mounted at /models by every
+# Ray worker (HF_HOME=/models).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: waddleai-vllm-ray-models
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: vllm-ray-models
+spec:
+  accessModes:
+    - {{ .Values.fleet.vllmRay.modelStore.accessMode }}
+  {{- with .Values.fleet.vllmRay.modelStore.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.fleet.vllmRay.modelStore.size }}
+{{- end }}

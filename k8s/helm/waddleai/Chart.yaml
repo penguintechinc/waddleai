@@ -38,3 +38,8 @@ dependencies:
     version: "0.31.0"
     repository: "file://charts/intel-gpu-plugin"
     condition: intel-gpu-plugin.enabled
+  # KubeRay operator, vendored and pinned. Enable via fleet.vllmRay.enabled=true.
+  - name: kuberay-operator
+    version: "1.6.2"
+    repository: "https://ray-project.github.io/kuberay-helm/"
+    condition: fleet.vllmRay.enabled

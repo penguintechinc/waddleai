@@ -1,6 +1,6 @@
 .PHONY: docker-build-classification test-classification-image test-classification-real dev setup install-hooks verify-hooks venv test test-classification test-unit test-integration test-valkey test-e2e test-functional test-security \
         test-contract test-contract-selftest smoke-test smoke-test-production smoke-test-classification loadtest-classification lint build docker-build docker-push deploy-dev deploy-prod \
-        seed-mock-data clean pre-commit generate-openapi openapi-lint gen-gpu-price-reference
+        seed-mock-data clean pre-commit generate-openapi openapi-lint helm-render-vllm-ray test-helm test-vllm-ray-images gen-gpu-price-reference
 
 # Every python invocation goes through the repo venv when it exists, and only
 # falls back to the interpreter on PATH when it does not.
@@ -140,10 +140,30 @@ openapi-lint: ## Lint openapi/v1.yaml with spectral -- gates on error, not just 
 
 test:
 	@$(MAKE) test-unit
+	@$(MAKE) test-helm
 
 test-unit:
 	@echo "Running unit tests..."
 	@scripts/check_collected_floor.sh $(PY) tests/unit -v --cov-report=html:htmlcov
+
+helm-render-vllm-ray: ## Render the chart with the vllm-ray fixture; any helm error fails
+	@helm template waddleai k8s/helm/waddleai -f tests/helm/fixtures/vllm-ray-base.yaml > /dev/null
+	@echo "helm-render-vllm-ray: OK"
+
+test-helm: ## Helm render tests; any failure OR skip fails (a skipped render is not a pass)
+	@scripts/test_helm.sh $(PY)
+
+# vllm-ray image contract tests (images must be built first: docker buildx build --load -t
+# waddleai/vllm-ray-<v>:dev images/vllm-ray-<v>).
+VLLM_RAY_IMAGES ?= cuda rocm xpu
+VLLM_RAY_RAY_VERSION ?= 2.60.0
+VLLM_RAY_PY_MINOR ?= 3.12
+IMG_TAG ?= dev
+test-vllm-ray-images: ## Image contract (uid 1000, Ray + Python versions) for each vllm-ray image
+	@set -eu; \
+	for v in $(VLLM_RAY_IMAGES); do \
+	  bash tests/images/test_vllm_ray_images.sh waddleai/vllm-ray-$$v:$(IMG_TAG) $(VLLM_RAY_RAY_VERSION) $(VLLM_RAY_PY_MINOR); \
+	done
 
 test-classification: ## Unit tests + >=90% coverage for services/classification/app (fails on zero collected)
 	@$(PY) -m pytest tests/unit/classification -o addopts="" -p no:warnings -q \

@@ -242,7 +242,7 @@ spec:
       {{- if .Values.ollama.gpu.enabled }}
       resources:
         limits:
-          {{ .Values.ollama.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollama.gpu.count | default 1 }}
+          {{ include "waddleai.gpuResourceName" (dict "ctx" . "class" .Values.ollama.gpu.nvidiaClass "type" .Values.ollama.gpu.type) }}: {{ .Values.ollama.gpu.count | default 1 }}
       {{- end }}
       volumeMounts:
         - name: ollama-models
@@ -338,13 +338,13 @@ spec:
       resources:
         {{- if .Values.ollama.gpu.enabled }}
         requests:
-          {{ .Values.ollama.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollama.gpu.count | default 1 }}
+          {{ include "waddleai.gpuResourceName" (dict "ctx" . "class" .Values.ollama.gpu.nvidiaClass "type" .Values.ollama.gpu.type) }}: {{ .Values.ollama.gpu.count | default 1 }}
           {{- with .Values.ollama.resources.requests }}
           memory: {{ .memory }}
           cpu: {{ .cpu }}
           {{- end }}
         limits:
-          {{ .Values.ollama.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollama.gpu.count | default 1 }}
+          {{ include "waddleai.gpuResourceName" (dict "ctx" . "class" .Values.ollama.gpu.nvidiaClass "type" .Values.ollama.gpu.type) }}: {{ .Values.ollama.gpu.count | default 1 }}
           {{- with .Values.ollama.resources.limits }}
           memory: {{ .memory }}
           cpu: {{ .cpu }}
@@ -459,7 +459,7 @@ spec:
       {{- if .Values.ollamaEmbeddings.gpu.enabled }}
       resources:
         limits:
-          {{ .Values.ollamaEmbeddings.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
+          {{ include "waddleai.gpuResourceName" (dict "ctx" . "class" .Values.ollamaEmbeddings.gpu.nvidiaClass "type" .Values.ollamaEmbeddings.gpu.type) }}: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
       {{- end }}
       volumeMounts:
         - name: ollama-embeddings-models
@@ -555,13 +555,13 @@ spec:
       resources:
         {{- if .Values.ollamaEmbeddings.gpu.enabled }}
         requests:
-          {{ .Values.ollamaEmbeddings.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
+          {{ include "waddleai.gpuResourceName" (dict "ctx" . "class" .Values.ollamaEmbeddings.gpu.nvidiaClass "type" .Values.ollamaEmbeddings.gpu.type) }}: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
           {{- with .Values.ollamaEmbeddings.resources.requests }}
           memory: {{ .memory }}
           cpu: {{ .cpu }}
           {{- end }}
         limits:
-          {{ .Values.ollamaEmbeddings.gpu.type | default "nvidia" }}.com/gpu: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
+          {{ include "waddleai.gpuResourceName" (dict "ctx" . "class" .Values.ollamaEmbeddings.gpu.nvidiaClass "type" .Values.ollamaEmbeddings.gpu.type) }}: {{ .Values.ollamaEmbeddings.gpu.count | default 1 }}
           {{- with .Values.ollamaEmbeddings.resources.limits }}
           memory: {{ .memory }}
           cpu: {{ .cpu }}
@@ -888,3 +888,22 @@ deliberately NO vendor-domain default for a trust anchor. JWKS must be https.
 {{- end -}}
 {{- dict "issuer" $issuer "jwksUrl" $jwks "jwksHost" $u.hostname | toJson -}}
 {{- end }}
+
+{{/*
+GPU resource name for a workload. Args: dict "ctx" <root> "class" <nvidiaClass> "type" <gpu.type>.
+When the vLLM-on-Ray fleet renames NVIDIA resources per card model (fleet.vllmRay.enabled and a
+non-empty nvidiaClassMap), a plain nvidia.com/gpu request can never be satisfied on a renamed
+node, so a missing class fails the render instead of emitting it.
+*/}}
+{{- define "waddleai.gpuResourceName" -}}
+{{- $type := default "nvidia" .type -}}
+{{- $v := .ctx.Values.fleet.vllmRay -}}
+{{- if and $v.enabled $v.nvidiaClassMap (eq $type "nvidia") -}}
+{{- if not .class -}}
+{{- fail "fleet.vllmRay renames NVIDIA GPU resources per model: set nvidiaClass on every ollama/ollamaEmbeddings/llamacpp gpu block (e.g. ollama.gpu.nvidiaClass=rtx4090)" -}}
+{{- end -}}
+{{- printf "nvidia.com/%s" .class -}}
+{{- else -}}
+{{- printf "%s.com/gpu" $type -}}
+{{- end -}}
+{{- end -}}

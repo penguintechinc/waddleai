@@ -1,0 +1,29 @@
+{{- if and .Values.fleet.vllmRay.enabled .Values.fleet.vllmRay.nvidiaClassMap }}
+{{- $gpuOp := index .Values "nvidia-gpu-operator" }}
+{{- if not $gpuOp.devicePlugin.config.name }}
+{{- fail "fleet.vllmRay.nvidiaClassMap is set: nvidia-gpu-operator.devicePlugin.config.name must be waddleai-nvidia-device-plugin-config (and devicePlugin.config.default: config.yaml) so the device plugin applies the per-model resource names" }}
+{{- end }}
+# Per-model NVIDIA resource names (spec 4.2): two different cards on one node become two schedulable
+# resources, nvidia.com/<name>. The default nvidia.com/gpu resource is intentionally not advertised
+# on AI nodes. E1 live check (not a render gate): confirm the pinned device plugin stops advertising
+# nvidia.com/gpu in renamed mode.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: waddleai-nvidia-device-plugin-config
+  namespace: {{ default "gpu-operator" $gpuOp.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: nvidia-device-plugin-config
+data:
+  config.yaml: |
+    version: v1
+    flags:
+      migStrategy: none
+    resources:
+      gpus:
+        {{- range .Values.fleet.vllmRay.nvidiaClassMap }}
+        - pattern: {{ .pattern | quote }}
+          name: {{ .name }}
+        {{- end }}
+{{- end }}

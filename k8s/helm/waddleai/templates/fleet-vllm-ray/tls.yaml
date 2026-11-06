@@ -1,0 +1,74 @@
+{{- if and .Values.fleet.vllmRay.enabled .Values.fleet.vllmRay.rayInternalTls (not .Values.fleet.security.rayTls.existingSecret) }}
+{{- if not (.Capabilities.APIVersions.Has "cert-manager.io/v1") }}
+{{- fail "fleet.vllmRay.rayInternalTls needs cert-manager: install cert-manager (cert-manager.io/v1 CRDs), supply fleet.security.rayTls.existingSecret, or set rayInternalTls=false (allowed only while fleet.security.mutualAuth is on)" }}
+{{- end }}
+# One CA per cluster (AM13). cert-manager is the default over SPIRE SVIDs because Ray reads certs
+# once at startup, so rotation needs a pod restart either way (AM12); the restart-generation
+# annotation on the RayCluster pod templates is that hook.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: waddleai-ray-selfsigned
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: waddleai-ray-ca
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  isCA: true
+  commonName: waddleai-ray-ca
+  secretName: waddleai-ray-ca
+  duration: 8760h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: waddleai-ray-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: waddleai-ray-ca-issuer
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  ca:
+    secretName: waddleai-ray-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: waddleai-ray-tls
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  secretName: waddleai-ray-tls
+  duration: 2160h
+  renewBefore: 720h
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  usages:
+    - server auth
+    - client auth
+  dnsNames:
+    - waddleai-inference-head-svc
+    - waddleai-inference-head-svc.{{ .Values.namespace }}.svc
+    - localhost
+    - "*.waddleai-inference.{{ .Values.namespace }}.svc.cluster.local"
+  issuerRef:
+    name: waddleai-ray-ca-issuer
+    kind: Issuer
+{{- end }}

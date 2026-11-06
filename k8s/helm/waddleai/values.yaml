@@ -908,6 +908,85 @@ fleet:
         tag: "stable-bookworm"
         digest: "sha256:552e7481ca93ffccd046aa658dbbed22caefbc09c66fa7cd247cbb90b8a5c609"
         pullPolicy: IfNotPresent
+  # vLLM-on-Ray GPU fleet (KubeRay RayCluster, one worker group per GPU vendor+class).
+  # Disabled by default: enabling renders nothing unless every digest below is set.
+  vllmRay:
+    enabled: false # gated; default OFF
+    # UNSAFE: when true, the render no longer fails if Cilium policies cannot render or
+    # fleet.security.mutualAuth=false, leaving Ray ports (and plaintext Serve 8000) unprotected.
+    # Never set outside throwaway test environments.
+    unsafeNoNetworkPolicy: false
+    ray:
+      version: "2.60.0" # identical across head and every worker image (latest published Ray as of 2026-11-05)
+      pythonMinor: "3.12" # head and all workers must match
+    # Own images (cuda/rocm/xpu) are built and pushed by CI (images/vllm-ray-*); their digest is
+    # only known after that build, so it MUST be supplied per environment (render fails if empty).
+    images:
+      cuda:
+        repository: ghcr.io/penguintechinc/waddleai/vllm-ray-cuda
+        tag: "ray2.60.0-py312"
+        digest: ""
+      rocm:
+        repository: ghcr.io/penguintechinc/waddleai/vllm-ray-rocm
+        tag: "ray2.60.0-py312"
+        digest: ""
+      xpu:
+        repository: ghcr.io/penguintechinc/waddleai/vllm-ray-xpu
+        tag: "ray2.60.0-py312"
+        digest: ""
+      head: # CPU head, same Ray and Python minor
+        repository: rayproject/ray
+        tag: "2.60.0-py312"
+        digest: "sha256:307d271427cbca373affad1c1d406776acd5f5a5dd041523008c8d44a796e4fd"
+    head:
+      resources:
+        requests: { cpu: "2", memory: "4Gi" }
+        limits: { cpu: "4", memory: "8Gi" }
+      nodeSelector: {} # override to a storage node until compute nodes land (spec 7)
+      affinity: # default: never on AI nodes
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - { key: waddleai.penguintech.io/ai-node, operator: NotIn, values: ["true"] }
+    tco: # AM6 / spec 4.7 owner defaults; handed to the fleet backend config
+      kwhUsd: 0.18
+      lifecycleYears: 10
+      utilizationPct: 50
+      inputRatio: 0.2
+      ramUsdPerGb: 1
+      nvmeUsdPerGb: 1
+      nvmeProUsdPerGb: 2
+      networkDeviceUsd: 400
+    workerGroups: [] # required when enabled; render fails if empty
+    # workerGroups[] entry: {name, vendor (nvidia|amd|intel), gpuClass, resourceName,
+    #   gpusPerWorker (>=1), vramMbPerNode (int), minReplicas (0), maxReplicas (>=1),
+    #   nodeSelector {}, tolerations [], image (images key: cuda|rocm|xpu)}
+    #   cost {cardUsd, tdpWatts, estTokensPerS, cpuUsd, ramGb, nvmeGb, nvmePro (bool),
+    #     networkDevices, nodeBaseWatts, gpusPerNode, nodeBaseUsd (optional explicit override)}
+    #   cardUsd and tdpWatts are optional: unset = reference fallback (B4d load_pricing_inputs).
+    nvidiaClassMap: [] # [{pattern: "*RTX 4090*", name: rtx4090}]; empty = no renaming
+    modelStore: { storageClass: "", size: 500Gi, accessMode: ReadWriteMany }
+    hotCache: # opt-in node-local weight cache as a generic ephemeral volume on worker pods (AM24)
+      enabled: false
+      storageClass: "" # node-local NVMe class (e.g. local-path, topolvm); empty = cluster default
+      size: 200Gi
+      mountPath: /models-cache # cache lifetime = worker pod
+    nccl:
+      ifname: "" # empty = pod primary interface
+    serve: { port: 8000 }
+    dashboard: { port: 8265 }
+    ports: { gcs: 6379, client: 10001, workerMin: 10002, workerMax: 10199 } # D2
+    autoscaler: { idleTimeoutSeconds: 300 }
+    rayInternalTls: true # AM11: Ray TLS envs + cert-manager certs (A2b); default on
+    restartGeneration: 1 # bumps pod-template annotation waddleai.penguintech.io/restart-generation (A2b)
+  security: # AM11/AM15
+    mutualAuth: true # Cilium mutual auth (SPIRE) on fleet CNPs (A5)
+    wireguard: true # PREREQUISITE: Cilium WireGuard encryption; documented, not rendered
+    spiffeTrustDomain: penguintech.io
+    rayAuthToken: { existingSecret: "", envSecret: "" } # env secret (key token) > existingSecret (key token) > chart-generated
+    rayTls: { existingSecret: "" } # keys tls.crt, tls.key, ca.crt; else chart-generated
+    tokenEncryptionKey: { existingSecret: "" } # key fernet; env WADDLEAI_FLEET_TOKEN_ENCRYPTION_KEY wins
 
 # Secret management
 # Set manage: false to skip chart-managed secret (use externally created secret instead)
@@ -1036,6 +1115,7 @@ ollama:
     enabled: true
     type: nvidia
     count: 1
+    nvidiaClass: "" # required when fleet.vllmRay renames NVIDIA resources (nvidia.com/<class>)
 
   resources:
     requests:
@@ -1145,6 +1225,7 @@ ollamaEmbeddings:
     enabled: false
     type: nvidia
     count: 1
+    nvidiaClass: "" # required when fleet.vllmRay renames NVIDIA resources (nvidia.com/<class>)
 
   resources:
     requests:
@@ -1251,6 +1332,7 @@ llamacpp:
   gpu:
     enabled: true
     type: nvidia
+    nvidiaClass: "" # required when fleet.vllmRay renames NVIDIA resources (nvidia.com/<class>)
 
   resources:
     requests:
@@ -1325,6 +1407,10 @@ nvidia-gpu-operator:
     enabled: true
   devicePlugin:
     enabled: true
+    # Must be waddleai-nvidia-device-plugin-config (with config.default: config.yaml) when
+    # fleet.vllmRay.nvidiaClassMap is non-empty; the render fails otherwise.
+    config:
+      name: ""
   gfd:
     enabled: true
   dcgm:
@@ -1350,6 +1436,17 @@ intel-gpu-plugin:
   namespace: kube-system
   nodeSelector: {}
   sharedDevNum: 1
+
+# KubeRay operator (vLLM-on-Ray fleet) — installed only when fleet.vllmRay.enabled=true.
+# Its CRDs (ray.io/v1 RayCluster) ship in the subchart's crds/ directory.
+# Image pinned by digest (tag carries the immutable @sha256 reference).
+kuberay-operator:
+  image:
+    repository: quay.io/kuberay/operator
+    tag: "v1.6.2@sha256:f9eb07d0d3384554763d739f0eed27aa5d0c2ed4c727ceb075930c1f3f4b9f47"
+  singleNamespaceInstall: true
+  watchNamespace:
+    - waddleai
 
 # ---------------------------------------------------------------------------
 # Tetragon runtime-security TracingPolicies + Kubernetes admission policies
@@ -1433,6 +1530,21 @@ tetragon:
           - /llama-server
           - /bin/sh
           - /usr/bin/curl
+      # vLLM-on-Ray worker pods (renders only when fleet.vllmRay.enabled). Allowlist = binaries
+      # observed in the pinned ray-llm image running `ray start` (/proc/*/exe). nvidia-smi is injected
+      # by the NVIDIA toolkit at runtime and the ROCm/XPU images are not built yet, so vendor SMI
+      # tools are deliberately absent: confirm with mode: observe on dal2beta (E1) before widening.
+      ray-worker:
+        enabled: true
+        mode: enforce
+        allowedExecs:
+          - /home/ray/anaconda3/bin/ray
+          - /home/ray/anaconda3/bin/python
+          - /home/ray/anaconda3/bin/python3
+          - /home/ray/anaconda3/bin/python3.12
+          - /home/ray/anaconda3/lib/python3.12/site-packages/ray/core/src/ray/raylet/raylet
+          - /usr/bin/bash
+          - /bin/bash
   egress:
     # Observe/flag AIProxy egress + unexpected file-write activity (spec
     # §12.2). FQDN allow-listing to provider endpoints is the

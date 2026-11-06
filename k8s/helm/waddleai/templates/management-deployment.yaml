@@ -134,6 +134,21 @@ spec:
             - name: CILIUM_ENABLED
               value: "false"
             {{- end }}
+            {{- if .Values.fleet.vllmRay.enabled }}
+            - name: WADDLEAI_FLEET_MUTUAL_AUTH
+              value: {{ .Values.fleet.security.mutualAuth | quote }}
+            - name: WADDLEAI_FLEET_RAY_INTERNAL_TLS
+              value: {{ .Values.fleet.vllmRay.rayInternalTls | quote }}
+            - name: WADDLEAI_SPIFFE_TRUST_DOMAIN
+              value: {{ .Values.fleet.security.spiffeTrustDomain | quote }}
+            - name: WADDLEAI_FLEET_TOKEN_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "waddleai.vllmRay.tokenKeySecretName" . }}
+                  key: fernet
+            - name: WADDLEAI_VLLM_RAY_BACKEND_CONFIG
+              value: /etc/waddleai/vllm-ray/backend-config.json
+            {{- end }}
           {{- if .Values.management.livenessProbe.enabled }}
           livenessProbe:
             httpGet:
@@ -187,6 +202,11 @@ spec:
               mountPath: /app/databases
             - name: app-config-marchproxy
               mountPath: /app/config/marchproxy
+            {{- if .Values.fleet.vllmRay.enabled }}
+            - name: vllm-ray-config
+              mountPath: /etc/waddleai/vllm-ray
+              readOnly: true
+            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
@@ -196,6 +216,11 @@ spec:
           emptyDir: {}
         - name: app-config-marchproxy
           emptyDir: {}
+        {{- if .Values.fleet.vllmRay.enabled }}
+        - name: vllm-ray-config
+          configMap:
+            name: waddleai-vllm-ray-fleet-config
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
