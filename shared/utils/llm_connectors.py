@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, cast
 
 import aiohttp
@@ -363,6 +364,30 @@ class OpenAIConnector(LLMConnector):
         adapted.setdefault("max_completion_tokens", value)
         return adapted
 
+    async def _handle_missing_usage(
+        self, model: str, messages: list[dict[str, str]], content: str
+    ) -> dict[str, Any]:
+        """Non-stream response without ``usage``: OpenAI proper treats it as a provider fault."""
+        raise ProviderServerError(
+            provider="openai",
+            model=model,
+            message="OpenAI response missing usage data",
+        )
+
+    def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
+        """Hook to annotate a usage dict before it leaves the connector (identity by default)."""
+        return usage_info
+
+    async def _finalize_stream_usage(
+        self,
+        usage: dict[str, Any] | None,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+    ) -> dict[str, Any] | None:
+        """Hook run once a stream ends; subclasses may repair a missing usage chunk."""
+        return usage
+
     async def chat_completion(
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
@@ -378,12 +403,15 @@ class OpenAIConnector(LLMConnector):
             content = response.choices[0].message.content or ""
             usage = response.usage
             if usage is None:
-                raise ProviderServerError(
-                    provider="openai",
-                    model=model,
-                    message="OpenAI response missing usage data",
-                )
-            usage_info: dict[str, Any] = {
+                estimated = await self._handle_missing_usage(model, messages, content)
+                usage_info: dict[str, Any] = {
+                    **estimated,
+                    "model": response.model,
+                    "finish_reason": response.choices[0].finish_reason,
+                    "cached_tokens": 0,
+                }
+                return content, self._stamp_usage(usage_info)
+            usage_info = {
                 "input_tokens": usage.prompt_tokens,
                 "output_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
@@ -398,7 +426,7 @@ class OpenAIConnector(LLMConnector):
             cached_tokens = getattr(details, "cached_tokens", 0) if details else 0
             usage_info["cached_tokens"] = cached_tokens if isinstance(cached_tokens, int) else 0
 
-            return content, usage_info
+            return content, self._stamp_usage(usage_info)
 
         except openai.APITimeoutError as e:
             raise ProviderTimeoutError(
@@ -461,8 +489,10 @@ class OpenAIConnector(LLMConnector):
             # stream=True above guarantees the AsyncStream branch at runtime.
             stream = cast(AsyncStream[ChatCompletionChunk], raw_stream)
             usage: dict[str, Any] | None = None
+            text_parts: list[str] = []
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
+                    text_parts.append(chunk.choices[0].delta.content)
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
                 # The usage-bearing chunk arrives last and carries no choices.
                 chunk_usage = getattr(chunk, "usage", None)
@@ -473,6 +503,9 @@ class OpenAIConnector(LLMConnector):
                         "provider": self.provider_label,
                         "model": model,
                     }
+            usage = await self._finalize_stream_usage(usage, model, messages, "".join(text_parts))
+            if usage is not None:
+                usage = self._stamp_usage(usage)
             yield StreamChunk(delta="", usage=usage, done=True)
 
         except openai.APITimeoutError as e:
@@ -576,6 +609,131 @@ class OpenAIConnector(LLMConnector):
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat(),
             }
+
+
+class VllmConnector(OpenAIConnector):
+    """vLLM-on-Ray fleet deployment (OpenAI wire) with real-usage metering and a loud estimate.
+
+    The SDK key is the connection link's per-deployment bearer (AM11); a missing key fails
+    closed before any request. Usage the engine did not report is estimated, flagged
+    ``estimated=True`` and counted -- never silently zero (Plan C review focus 1).
+    """
+
+    provider_label: str = "vllm"
+    local_deployment_kind: int = 1  # shared.fleet.enums.LocalDeploymentKind.VLLM
+
+    def __init__(self, name: str, config: dict[str, Any]):
+        """Read fleet metadata from ``management_capabilities``; keep the SDK constructible."""
+        # The SDK refuses a None key at construction; a placeholder is never sent because
+        # every request path checks ``self.api_key`` first and fails closed.
+        super().__init__(name, {**config, "api_key": config.get("api_key") or "no-key-never-sent"})
+        self.api_key = config.get("api_key") or None
+        caps = config.get("management_capabilities") or {}
+        self.local_deployment_id: int | None = caps.get("local_deployment_id")
+        self.unit_price_input: Decimal | None = _opt_decimal(caps.get("unit_price_input"))
+        self.unit_price_output: Decimal | None = _opt_decimal(caps.get("unit_price_output"))
+        self.fleet_status: int | None = caps.get("fleet_status")
+        self.owner_org_id: int | None = config.get("owner_org_id")
+
+    @property
+    def is_routable(self) -> bool:
+        """True unless the deployment is known and not SERVING (spec §4.6)."""
+        from shared.fleet.enums import DeploymentStatus
+
+        return self.fleet_status is None or self.fleet_status == int(DeploymentStatus.SERVING)
+
+    def _require_key(self, model: str) -> None:
+        """Fail closed when the link carries no per-deployment bearer key."""
+        if not self.api_key:
+            raise ProviderServerError(
+                provider="vllm",
+                model=model,
+                message="vllm connection link has no per-deployment api key",
+            )
+
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
+        """Chat completion; refuses to send without the deployment key."""
+        self._require_key(model)
+        return await super().chat_completion(messages, model, **kwargs)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream with ``include_usage`` forced on so the engine reports real counts."""
+        self._require_key(model)
+        kwargs["stream_options"] = {"include_usage": True}
+        async for chunk in super().stream_chat_completion(messages, model, **kwargs):
+            yield chunk
+
+    async def _estimate(
+        self, model: str, messages: list[dict[str, str]], content: str, reason: str
+    ) -> dict[str, Any]:
+        """Estimate token counts locally, count the gap, and warn (no prompt/response content)."""
+        from shared.observability.vllm_metrics import usage_missing_counter
+
+        prompt = "\n".join(str(m.get("content", "")) for m in messages)
+        in_tokens = await self.count_tokens(prompt, model)
+        out_tokens = await self.count_tokens(content, model)
+        try:
+            usage_missing_counter().add(1, {"reason": reason})
+        except Exception:  # noqa: BLE001 -- a dead exporter never breaks a request
+            logger.debug("usage-missing counter emission failed", exc_info=True)
+        logger.warning(
+            "vllm deployment %s reported no usage (%s); estimated %d in / %d out tokens",
+            self.local_deployment_id,
+            reason,
+            in_tokens,
+            out_tokens,
+        )
+        return {
+            "input_tokens": in_tokens,
+            "output_tokens": out_tokens,
+            "total_tokens": in_tokens + out_tokens,
+            "provider": "vllm",
+            "estimated": True,
+        }
+
+    async def _handle_missing_usage(
+        self, model: str, messages: list[dict[str, str]], content: str
+    ) -> dict[str, Any]:
+        """Non-stream body without ``usage``: estimate, flag, count."""
+        return await self._estimate(model, messages, content, "non_stream")
+
+    async def _finalize_stream_usage(
+        self,
+        usage: dict[str, Any] | None,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+    ) -> dict[str, Any] | None:
+        """Stream ended without a usage chunk: estimate, flag, count."""
+        if usage is not None:
+            return usage
+        estimated = await self._estimate(model, messages, text, "stream")
+        return {**estimated, "model": model}
+
+    def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
+        """Attach the chargeback snapshot: kind, deployment id and the unit prices in force."""
+        stamped = dict(usage_info)
+        stamped["provider"] = "vllm"
+        stamped.setdefault("estimated", False)
+        stamped["local_deployment_kind"] = self.local_deployment_kind
+        stamped["local_deployment_id"] = self.local_deployment_id
+        stamped["unit_price_input"] = _opt_str(self.unit_price_input)
+        stamped["unit_price_output"] = _opt_str(self.unit_price_output)
+        return stamped
+
+
+def _opt_decimal(value: Any) -> Decimal | None:
+    """Exact Decimal from a stored price, or None when absent."""
+    return None if value is None else Decimal(str(value))
+
+
+def _opt_str(value: Decimal | None) -> str | None:
+    """String form of an optional Decimal (JSON-safe)."""
+    return None if value is None else str(value)
 
 
 class XAIConnector(OpenAIConnector):
@@ -2407,6 +2565,8 @@ class LLMConnectionManager:
                     "model_list": link.model_list or [],
                     "rate_limits": link.rate_limits or {},
                     "tls_config": link.tls_config or {},
+                    "management_capabilities": getattr(link, "management_capabilities", None) or {},
+                    "owner_org_id": getattr(link, "owner_org_id", None),
                 }
 
                 connector: LLMConnector
@@ -2414,6 +2574,8 @@ class LLMConnectionManager:
                     connector = OpenAIConnector(link.name, config)
                 elif link.provider == "xai":
                     connector = XAIConnector(link.name, config)
+                elif link.provider == "vllm":
+                    connector = VllmConnector(link.name, config)
                 elif link.provider == "anthropic":
                     connector = AnthropicConnector(link.name, config)
                 elif link.provider == "gemini":
