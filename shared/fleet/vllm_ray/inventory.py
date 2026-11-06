@@ -18,7 +18,7 @@ import logging
 import re
 from collections.abc import Collection
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
@@ -37,6 +37,7 @@ _INCOMPLETE_TOTAL = Counter(
 _MB = 1048576
 MAX_GPUS_PER_NODE = 64
 MAX_RECORDS_PER_COLLECT = 4096
+STALE_AFTER_S = 180.0  # 3 inventory intervals
 _REFERENCE_DIR = Path(__file__).resolve().parents[3] / "docs" / "reference"
 _PARENS = re.compile(r"\([^)]*\)")
 _GB = re.compile(r"^(\d+)gb$")
@@ -253,10 +254,15 @@ def parse_xpu_smi(json_text: str) -> list[GpuRecord]:
 
 @dataclass(slots=True)
 class InventoryResult:
-    """Collected records plus whether the collect saw every node unmodified."""
+    """Collected records, plus the nodes whose own payload was unusable this cycle.
+
+    ``skipped_node_uids`` keep their previous rows untouched (until the age sweep);
+    ``complete`` is False when any node was skipped or dropped.
+    """
 
     records: list[GpuRecord]
     complete: bool
+    skipped_node_uids: frozenset[str] = frozenset()
 
 
 class _RejectPayload(Exception):  # noqa: N818 - internal control-flow signal
@@ -349,10 +355,10 @@ class InventoryCollector:
     ) -> InventoryResult:
         """Gather inventory from every worker into an ``InventoryResult``.
 
-        The result is marked incomplete (so the caller must not sweep absent rows COLD)
-        when any payload is dropped, a node_uid repeats, the record cap is hit, or no
-        payloads arrive. When ``authoritative_node_ids`` (the Ray node list) is given,
-        payloads for any other node_uid are dropped.
+        A node whose payload is rejected, duplicated (ALL its payloads dropped) or cut by
+        the record cap lands in ``skipped_node_uids`` so the upsert leaves its rows alone.
+        When ``authoritative_node_ids`` (the trusted Ray node list) is given, payloads for
+        any other node_uid are dropped. Zero payloads yields an incomplete empty result.
         """
         payloads = await client.run_inventory()
         if not payloads:
@@ -361,44 +367,53 @@ class InventoryCollector:
             )
             return InventoryResult([], complete=False)
         allowed = None if authoritative_node_ids is None else set(authoritative_node_ids)
-        complete = True
-        seen_nodes: set[str] = set()
-        out: list[GpuRecord] = []
+        counts: dict[str, int] = {}
         for payload in payloads:
             uid = str(payload.get("node_uid", ""))
-            if uid in seen_nodes:
-                logger.warning("duplicate inventory payload for node %r dropped", uid)
+            counts[uid] = counts.get(uid, 0) + 1
+        skipped: set[str] = set()
+        complete = True
+        out: list[GpuRecord] = []
+        capped = False
+        for payload in payloads:
+            uid = str(payload.get("node_uid", ""))
+            if counts[uid] > 1:
+                logger.warning("duplicate inventory payloads for node %r: all dropped", uid)
+                skipped.add(uid)
                 complete = False
                 continue
-            seen_nodes.add(uid)
             if allowed is not None and uid not in allowed:
                 logger.warning("inventory payload for unknown node %r dropped", uid)
                 complete = False
                 continue
+            if capped:
+                skipped.add(uid)
+                continue
             try:
                 parsed = self._parse_payload(payload)
             except _RejectPayload:
+                skipped.add(uid)
                 complete = False
                 continue
-            node = [
-                dataclasses.replace(
-                    r, node_uid=str(payload["node_uid"]), node_name=str(payload["node_name"])
-                )
-                for r in parsed
-            ]
-            out.extend(self._classify_node(node))
-            if len(out) > MAX_RECORDS_PER_COLLECT:
-                break
-        if len(out) > MAX_RECORDS_PER_COLLECT:
-            logger.warning(
-                "record cap %d hit for backend %s: dropping %d records",
-                MAX_RECORDS_PER_COLLECT,
-                self.backend_id,
-                len(out) - MAX_RECORDS_PER_COLLECT,
+            node = self._classify_node(
+                [
+                    dataclasses.replace(r, node_uid=uid, node_name=str(payload["node_name"]))
+                    for r in parsed
+                ]
             )
-            out = out[:MAX_RECORDS_PER_COLLECT]
-            complete = False
-        return InventoryResult(out, complete=complete)
+            if len(out) + len(node) > MAX_RECORDS_PER_COLLECT:
+                logger.warning(
+                    "record cap %d hit for backend %s: node %r and later nodes skipped",
+                    MAX_RECORDS_PER_COLLECT,
+                    self.backend_id,
+                    uid,
+                )
+                capped = True
+                skipped.add(uid)
+                complete = False
+                continue
+            out.extend(node)
+        return InventoryResult(out, complete=complete, skipped_node_uids=frozenset(skipped))
 
 
 async def upsert_inventory(
@@ -406,19 +421,33 @@ async def upsert_inventory(
     fleet_backend_id: int,
     org_id: int,
     records: list[GpuRecord],
-    complete: bool = True,
+    *,
+    skip_node_uids: Collection[str] = (),
+    authoritative_node_ids: Collection[str] | None = None,
+    stale_after_s: float = STALE_AFTER_S,
 ) -> None:
-    """Upsert records on (backend, node_uid, gpu_index); absent rows become COLD.
+    """Upsert records on (backend, node_uid, gpu_index) and COLD-sweep stale rows.
 
-    When ``complete`` is False the stale sweep is skipped (records are still upserted):
-    an incomplete collect must never force legitimate, merely-unseen nodes COLD.
-
-    Blocking DAL calls run in a worker thread so the event loop stays free.
+    Unseen rows go COLD, except rows of ``skip_node_uids`` (nodes whose own payload was
+    rejected this cycle), which keep their previous state. Rows of nodes absent from the
+    trusted ``authoritative_node_ids`` always go COLD. Independently, any row not seen for
+    ``stale_after_s`` (3 inventory intervals) goes COLD whatever happened. Blocking DAL
+    calls run in a worker thread so the event loop stays free.
     """
+    skip = frozenset(skip_node_uids)
+    trusted = None if authoritative_node_ids is None else frozenset(authoritative_node_ids)
+    if skip:
+        logger.warning(
+            "incomplete inventory for backend %s: %d node(s) left untouched",
+            fleet_backend_id,
+            len(skip),
+        )
+        _INCOMPLETE_TOTAL.inc()
 
     def _write() -> None:
         table = db.gpu_inventory
         now = datetime.now(UTC).replace(tzinfo=None)
+        cutoff = now - timedelta(seconds=stale_after_s)
         seen: set[tuple[str, int]] = set()
         for rec in records:
             seen.add((rec.node_uid, rec.gpu_index))
@@ -449,12 +478,13 @@ async def upsert_inventory(
                     gpu_index=rec.gpu_index,
                     **values,
                 )
-        for row in db(table.fleet_backend_id == fleet_backend_id).select() if complete else ():
-            if (row.node_uid, row.gpu_index) not in seen:
+        for row in db(table.fleet_backend_id == fleet_backend_id).select():
+            if (row.node_uid, row.gpu_index) in seen:
+                continue
+            stale = row.last_seen is not None and row.last_seen < cutoff
+            off_list = trusted is not None and row.node_uid not in trusted
+            if stale or off_list or row.node_uid not in skip:
                 db(table.id == row.id).update(state=int(InventoryState.COLD), schedulable=False)
         db.commit()
 
-    if not complete:
-        logger.warning("incomplete inventory for backend %s: stale sweep skipped", fleet_backend_id)
-        _INCOMPLETE_TOTAL.inc()
     await asyncio.to_thread(_write)

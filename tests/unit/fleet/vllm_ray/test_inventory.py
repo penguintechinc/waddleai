@@ -498,35 +498,77 @@ def test_collect_caps_total_records(caplog: pytest.LogCaptureFixture) -> None:
     assert "record cap" in caplog.text
 
 
-def _count_cold(db: Any) -> int:
-    return len([r for r in db(db.gpu_inventory).select() if r.state == InventoryState.COLD])
+def _states(db: Any) -> dict[tuple[str, int], int]:
+    return {(r.node_uid, r.gpu_index): r.state for r in db(db.gpu_inventory).select()}
 
 
-def test_cap_hit_is_incomplete_and_skips_cold_sweep(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Hitting the record cap marks the result incomplete; no COLD sweep follows."""
-    monkeypatch.setattr("shared.fleet.vllm_ray.inventory.MAX_RECORDS_PER_COLLECT", 3)
-    client = _StubInventoryClient([_nv_payload(node_uid="flood")])
-    res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client))
-    assert res.complete is False and len(res.records) == 3
-    db = _db(tmp_path)
-
+def _apply(db: Any, res: Any, ids: Any = None, **kw: Any) -> None:
     async def _go() -> None:
-        await upsert_inventory(db, 1, 7, [_rec(0, 1, "legit")])
-        await upsert_inventory(db, 1, 7, res.records, complete=res.complete)
+        await upsert_inventory(
+            db,
+            1,
+            7,
+            res.records,
+            skip_node_uids=res.skipped_node_uids,
+            authoritative_node_ids=ids,
+            **kw,
+        )
 
     asyncio.run(_go())
-    legit = [r for r in db(db.gpu_inventory).select() if r.node_uid == "legit"]
-    assert len(legit) == 1 and legit[0].state == InventoryState.WARM
-    assert _count_cold(db) == 0
 
 
-def test_duplicate_node_uid_is_incomplete_first_payload_wins() -> None:
-    """A repeated node_uid is dropped and marks the result incomplete."""
+def _seed(db: Any, *uids: str) -> None:
+    async def _go() -> None:
+        await upsert_inventory(db, 1, 7, [_rec(0, 1, u) for u in uids])
+
+    asyncio.run(_go())
+
+
+def test_one_bad_payload_does_not_stop_other_absent_nodes_going_cold(tmp_path: Path) -> None:
+    """A rejected payload only freezes its own node; other absent nodes still go COLD."""
+    db = _db(tmp_path)
+    _seed(db, "bad", "gone", "ok")
+    client = _StubInventoryClient(
+        [
+            _nv_payload(node_uid="bad", raw="", allocatable_gpus=10**9),
+            _nv_payload(node_uid="ok", raw="", allocatable_gpus=1, node_class="nvidia-rtx4090"),
+        ]
+    )
+    res = asyncio.run(InventoryCollector(1, 1).collect(client))
+    assert res.skipped_node_uids == {"bad"} and res.complete is False
+    _apply(db, res)
+    st = _states(db)
+    assert st[("bad", 0)] == InventoryState.WARM  # untouched
+    assert st[("gone", 0)] == InventoryState.COLD
+
+
+def test_node_absent_from_ray_list_goes_cold_even_when_it_floods(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rows of a node not in the trusted Ray list go COLD whatever its payloads did."""
+    monkeypatch.setattr("shared.fleet.vllm_ray.inventory.MAX_RECORDS_PER_COLLECT", 3)
+    db = _db(tmp_path)
+    _seed(db, "flood", "legit")
+    client = _StubInventoryClient([_nv_payload(node_uid="flood"), _nv_payload(node_uid="legit")])
+    ids = {"legit"}
+    res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client, ids))
+    assert [r.node_uid for r in res.records] == []  # legit's 4 GPUs exceed the cap: skipped
+    assert "legit" in res.skipped_node_uids
+    _apply(db, res, ids)
+    st = _states(db)
+    assert st[("flood", 0)] == InventoryState.COLD
+    assert st[("legit", 0)] == InventoryState.WARM
+
+
+def test_duplicate_node_uid_applies_none_of_its_payloads(tmp_path: Path) -> None:
+    """On a repeated node_uid every payload for it is dropped and its rows stay put."""
+    db = _db(tmp_path)
+    _seed(db, "d")
     client = _StubInventoryClient([_nv_payload(node_uid="d"), _nv_payload(node_uid="d")])
     res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client))
-    assert res.complete is False and len(res.records) == 4
+    assert res.records == [] and res.skipped_node_uids == {"d"} and res.complete is False
+    _apply(db, res)
+    assert _states(db) == {("d", 0): InventoryState.WARM}
 
 
 def test_unknown_node_uid_dropped_against_authoritative_list() -> None:
@@ -536,17 +578,28 @@ def test_unknown_node_uid_dropped_against_authoritative_list() -> None:
     assert {r.node_uid for r in res.records} == {"ok"} and res.complete is False
 
 
+def test_last_seen_age_sweep_without_ray_list(tmp_path: Path) -> None:
+    """A skipped node's rows go COLD once last_seen is older than the stale window."""
+    db = _db(tmp_path)
+    _seed(db, "frozen")
+    res = asyncio.run(
+        InventoryCollector(1, 1).collect(
+            _StubInventoryClient([_nv_payload(node_uid="frozen", raw="", allocatable_gpus=-1)])
+        )
+    )
+    assert res.skipped_node_uids == {"frozen"}
+    _apply(db, res)
+    assert _states(db)[("frozen", 0)] == InventoryState.WARM  # fresh: untouched
+    _apply(db, res, stale_after_s=-1.0)  # window elapsed
+    assert _states(db)[("frozen", 0)] == InventoryState.COLD
+
+
 def test_clean_collect_is_complete_and_sweeps_stale_cold(tmp_path: Path) -> None:
     """A complete run still marks absent rows COLD."""
+    db = _db(tmp_path)
+    _seed(db, "gone")
     client = _StubInventoryClient([_nv_payload(node_uid="ok")])
     res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client, {"ok"}))
-    assert res.complete is True
-    db = _db(tmp_path)
-
-    async def _go() -> None:
-        await upsert_inventory(db, 1, 7, [_rec(0, 1, "gone")])
-        await upsert_inventory(db, 1, 7, res.records, complete=res.complete)
-
-    asyncio.run(_go())
-    gone = [r for r in db(db.gpu_inventory).select() if r.node_uid == "gone"]
-    assert gone[0].state == InventoryState.COLD
+    assert res.complete is True and not res.skipped_node_uids
+    _apply(db, res, {"ok"})
+    assert _states(db)[("gone", 0)] == InventoryState.COLD
