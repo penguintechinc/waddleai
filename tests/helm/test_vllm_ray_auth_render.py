@@ -1,7 +1,5 @@
 """Ray token Secret, internal TLS, external key precedence and restart hook (A2b, AM11/13/15)."""
 
-import base64
-import re
 from pathlib import Path
 
 import pytest
@@ -24,20 +22,6 @@ def _pod_templates(docs):
 def _mgmt_env(docs):
     d = [d for d in docs if d["kind"] == "Deployment" and "management" in d["metadata"]["name"]][0]
     return d["spec"]["template"]["spec"]["containers"][0]["env"]
-
-
-def test_token_secret_generated_48_alnum():
-    """Chart generates a 48-char alphanumeric Ray token when nothing external is supplied."""
-    secret = find(render(BASE), "Secret", "waddleai-ray-auth")
-    token = base64.b64decode(secret["data"]["token"]).decode()
-    assert len(token) == 48 and re.fullmatch(r"[A-Za-z0-9]+", token)
-
-
-def test_token_secret_upgrade_uses_lookup():
-    """The generator re-reads the live Secret so upgrades keep the token (lookup + keep policy)."""
-    tpl = (CHART / "templates/fleet-vllm-ray/secrets.yaml").read_text()
-    assert 'lookup "v1" "Secret"' in tpl and "randAlphaNum 48" in tpl
-    assert "helm.sh/resource-policy: keep" in tpl
 
 
 def test_external_token_wins_nothing_generated():
@@ -138,15 +122,6 @@ def test_management_env_mutual_auth_and_internal_tls_flags():
     assert env["WADDLEAI_SPIFFE_TRUST_DOMAIN"] == "penguintech.io"
 
 
-def test_token_encryption_key_generated_valid_fernet_and_wired():
-    """Generated key is a valid 32-byte urlsafe-base64 Fernet key and reaches management."""
-    docs = render(BASE)
-    raw = base64.b64decode(find(docs, "Secret", KEY_SECRET)["data"]["fernet"])
-    assert len(base64.urlsafe_b64decode(raw)) == 32
-    env = [e for e in _mgmt_env(docs) if e["name"] == "WADDLEAI_FLEET_TOKEN_ENCRYPTION_KEY"][0]
-    assert env["valueFrom"]["secretKeyRef"] == {"name": KEY_SECRET, "key": "fernet"}
-
-
 def test_token_encryption_key_external_secret_wins():
     """tokenEncryptionKey.existingSecret suppresses generation and is the env source."""
     docs = render(BASE, {"fleet.security.tokenEncryptionKey.existingSecret": "ops-fernet"})
@@ -196,3 +171,75 @@ def test_auth_and_tls_on_head_and_every_worker_group_from_secret():
         vols = {v["name"]: v for v in pod["spec"]["volumes"]}
         assert vols["ray-auth"]["secret"]["secretName"] == "waddleai-ray-auth"
         assert vols["ray-tls"]["secret"]["secretName"] == "fixture-ray-tls"
+
+
+JOB = "waddleai-fleet-secret-init"
+EXT_KEY = {"fleet.security.tokenEncryptionKey.existingSecret": "ops-fernet"}
+
+
+def _job_script(docs):
+    c = find(docs, "Job", JOB)["spec"]["template"]["spec"]["containers"][0]
+    return c, "\n".join(c["command"] + c.get("args", []))
+
+
+def test_secret_init_job_present_by_default_as_pre_hook():
+    """Generated Secrets come from a pre-install,pre-upgrade hook Job, create-if-absent."""
+    job = find(render(BASE), "Job", JOB)
+    ann = job["metadata"]["annotations"]
+    assert ann["helm.sh/hook"] == "pre-install,pre-upgrade"
+    assert ann["helm.sh/hook-delete-policy"] == "before-hook-creation,hook-succeeded"
+    pod = job["spec"]["template"]["spec"]
+    c = pod["containers"][0]
+    assert pod["restartPolicy"] == "Never" and pod["serviceAccountName"] == JOB
+    sc = c["securityContext"]
+    assert sc["runAsNonRoot"] is True and sc["allowPrivilegeEscalation"] is False
+    assert sc["readOnlyRootFilesystem"] is True and sc["capabilities"] == {"drop": ["ALL"]}
+    assert sc["seccompProfile"] == {"type": "RuntimeDefault"}
+    assert "management" in c["image"]
+    _, script = _job_script(render(BASE))
+    assert "waddleai-ray-auth" in script and "waddleai-fleet-token-key" in script
+    assert "token_urlsafe(36)" in script and "Fernet" in script
+
+
+def test_secret_init_job_never_overwrites_or_prints():
+    """Creates only (409 = keep existing); no update verbs, no value printing."""
+    _, script = _job_script(render(BASE))
+    assert "409" in script and "PUT" not in script and "PATCH" not in script
+    assert "print(token" not in script and "print(key" not in script
+
+
+def test_secret_init_job_absent_when_both_external():
+    """env/existingSecret precedence: nothing to generate => no Job, no RBAC."""
+    docs = render(BASE, {**EXT_TOKEN, **EXT_KEY})
+    assert find_optional(docs, "Job", JOB) is None
+    assert find_optional(docs, "Role", JOB) is None
+
+
+def test_secret_init_job_generates_only_missing_secret():
+    """External token only: the Job generates just the Fernet key, and vice versa."""
+    _, script = _job_script(render(BASE, EXT_TOKEN))
+    assert "waddleai-fleet-token-key" in script and "waddleai-ray-auth" not in script
+    _, script = _job_script(render(BASE, EXT_KEY))
+    assert "waddleai-ray-auth" in script and "waddleai-fleet-token-key" not in script
+
+
+def test_secret_init_role_scoped_to_exact_secrets():
+    """Role: get limited by resourceNames, create-only otherwise (RBAC cannot scope create)."""
+    docs = render(BASE)
+    role = find(docs, "Role", JOB)
+    get = [r for r in role["rules"] if "get" in r["verbs"]]
+    assert len(get) == 1 and get[0]["resources"] == ["secrets"]
+    assert sorted(get[0]["resourceNames"]) == ["waddleai-fleet-token-key", "waddleai-ray-auth"]
+    verbs = {v for r in role["rules"] for v in r["verbs"]}
+    assert verbs == {"get", "create"}
+    bind = find(docs, "RoleBinding", JOB)
+    assert bind["roleRef"]["name"] == JOB and bind["subjects"][0]["name"] == JOB
+
+
+def test_no_secret_data_rendered_in_templates():
+    """No Secret objects for generated keys: nothing random is rendered into the manifest."""
+    docs = render(BASE)
+    assert find_optional(docs, "Secret", "waddleai-ray-auth") is None
+    assert find_optional(docs, "Secret", KEY_SECRET) is None
+    tpl = (CHART / "templates/fleet-vllm-ray/secrets.yaml").read_text()
+    assert 'lookup "' not in tpl and "randAlphaNum 4" not in tpl and "| b64enc" not in tpl
