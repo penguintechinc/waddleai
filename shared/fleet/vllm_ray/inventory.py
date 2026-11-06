@@ -18,6 +18,8 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Protocol
 
 from shared.fleet.enums import GpuVendor, InventoryState
@@ -25,6 +27,9 @@ from shared.fleet.enums import GpuVendor, InventoryState
 logger = logging.getLogger(__name__)
 
 _MB = 1048576
+MAX_GPUS_PER_NODE = 64
+MAX_RECORDS_PER_COLLECT = 4096
+_REFERENCE_DIR = Path(__file__).resolve().parents[3] / "docs" / "reference"
 _PARENS = re.compile(r"\([^)]*\)")
 _GB = re.compile(r"^(\d+)gb$")
 _AMD_NOISE = frozenset({"amd", "graphics", "series"})
@@ -32,6 +37,26 @@ _INTEL_NOISE = frozenset({"intel", "graphics", "gpu", "data", "center"})
 # Slug families whose reference rows differ only by VRAM size: the size suffix is
 # resolved from the product name ("16GB") or from the reported VRAM.
 _VRAM_VARIANT_SLUGS = frozenset({"amd-rx9060xt", "amd-radeon-pro-w7800", "intel-arc-a770"})
+
+
+@lru_cache(maxsize=1)
+def reference_slugs() -> frozenset[str]:
+    """Load the valid GPU class slugs from the price-reference JSON files (once).
+
+    Raises when no slugs load: an empty set would silently unclassify every GPU.
+    """
+    slugs: set[str] = set()
+    for vendor in ("nvidia", "amd", "intel"):
+        data = json.loads((_REFERENCE_DIR / f"gpu-price-reference-{vendor}.json").read_text())
+        slugs.update(str(row["class"]) for row in data["gpus"])
+    if not slugs:
+        raise RuntimeError(f"no GPU class slugs found under {_REFERENCE_DIR}")
+    return frozenset(slugs)
+
+
+def _valid_class(gpu_class: str | None) -> str | None:
+    """Return gpu_class only if it is a known reference slug, else None."""
+    return gpu_class if gpu_class in reference_slugs() else None
 
 
 class InventoryClient(Protocol):
@@ -135,6 +160,7 @@ def _record(
     gpu_class: str | None,
 ) -> GpuRecord:
     """Build a record applying the state rules (degraded sentinel, unclassified)."""
+    gpu_class = _valid_class(gpu_class)
     if total_mb == 0:
         state, schedulable = InventoryState.COLD, False
     elif gpu_class is None:
@@ -156,12 +182,19 @@ def _record(
     )
 
 
+def _cap_entries[T](items: list[T], kind: str) -> list[T]:
+    """Truncate a per-node GPU entry list to MAX_GPUS_PER_NODE, logging the drop."""
+    if len(items) > MAX_GPUS_PER_NODE:
+        logger.warning("%s entries capped at %d (got %d)", kind, MAX_GPUS_PER_NODE, len(items))
+        return items[:MAX_GPUS_PER_NODE]
+    return items
+
+
 def parse_nvidia_smi(csv_text: str, class_map: dict[str, str]) -> list[GpuRecord]:
     """Parse ``nvidia-smi --query-gpu=index,name,memory.total,memory.used,pci.bus_id`` CSV."""
     records: list[GpuRecord] = []
-    for row in csv.reader(io.StringIO(csv_text)):
-        if not row:
-            continue
+    rows = [r for r in csv.reader(io.StringIO(csv_text)) if r]
+    for row in _cap_entries(rows, "nvidia-smi"):
         fields = [f.strip() for f in row]
         if len(fields) != 5:
             raise ValueError(f"nvidia-smi row needs 5 fields, got {len(fields)}: {row!r}")
@@ -177,7 +210,7 @@ def parse_rocm_smi(json_text: str) -> list[GpuRecord]:
     data = json.loads(json_text)
     cards = sorted((int(k[4:]), v) for k, v in data.items() if re.fullmatch(r"card\d+", k))
     records: list[GpuRecord] = []
-    for index, card in cards:
+    for index, card in _cap_entries(cards, "rocm-smi"):
         total_mb = int(card["VRAM Total Memory (B)"]) // _MB
         used_mb = int(card["VRAM Total Used Memory (B)"]) // _MB
         name = str(card["Card Series"])
@@ -192,7 +225,7 @@ def parse_xpu_smi(json_text: str) -> list[GpuRecord]:
     """Parse ``xpu-smi discovery -j`` output; used VRAM is 0 (needs a stats dump, v1 gap)."""
     data = json.loads(json_text)
     records: list[GpuRecord] = []
-    for dev in data["device_list"]:
+    for dev in _cap_entries(list(data["device_list"]), "xpu-smi"):
         total_mb = int(dev["memory_physical_size_byte"]) // _MB
         name = str(dev["device_name"])
         cls = normalize_class(GpuVendor.INTEL, name, {}, total_mb)
@@ -210,13 +243,23 @@ def parse_xpu_smi(json_text: str) -> list[GpuRecord]:
     return records
 
 
+class _RejectPayload(Exception):  # noqa: N818 - internal control-flow signal
+    """Raised to drop one untrusted node payload without failing the whole collect."""
+
+
 class InventoryCollector:
     """Collects per-node GPU inventory from the Ray cluster and classifies each node."""
 
-    def __init__(self, backend_id: int, org_id: int) -> None:
-        """Bind the collector to one fleet backend and its owning org."""
+    def __init__(
+        self, backend_id: int, org_id: int, class_map: dict[str, str] | None = None
+    ) -> None:
+        """Bind the collector to one backend, its org, and its TRUSTED NVIDIA class_map.
+
+        The class_map comes from backend config, never from worker payloads.
+        """
         self.backend_id = backend_id
         self.org_id = org_id
+        self.class_map: dict[str, str] = dict(class_map or {})
 
     @staticmethod
     def _classify_node(records: list[GpuRecord]) -> list[GpuRecord]:
@@ -230,8 +273,7 @@ class InventoryCollector:
             rec.schedulable = False
         return records
 
-    @staticmethod
-    def _parse_payload(payload: dict[str, Any]) -> list[GpuRecord]:
+    def _parse_payload(self, payload: dict[str, Any]) -> list[GpuRecord]:
         """Dispatch one worker payload to its vendor parser (or the cold-node path)."""
         vendor = str(payload["vendor"])
         if vendor not in ("nvidia", "amd", "intel"):
@@ -243,29 +285,48 @@ class InventoryCollector:
                 "amd": GpuVendor.AMD,
                 "intel": GpuVendor.INTEL,
             }[vendor]
-            count = int(payload.get("allocatable_gpus") or 0)
+            count = self._allocatable(payload)
             node_class = payload.get("node_class")
+            valid = _valid_class(node_class if isinstance(node_class, str) else None)
+            state = InventoryState.UNCLASSIFIED if node_class and not valid else InventoryState.COLD
             return [
                 GpuRecord(
                     node_uid="",
                     node_name="",
                     gpu_index=i,
                     vendor=int(vendor_id),
-                    gpu_class=node_class,
+                    gpu_class=valid,
                     product_name="",
                     vram_total_mb=0,
                     vram_used_mb=0,
                     pci_bus_id="",
                     schedulable=False,
-                    state=int(InventoryState.COLD),
+                    state=int(state),
                 )
                 for i in range(count)
             ]
         if vendor == "nvidia":
-            return parse_nvidia_smi(raw, dict(payload.get("class_map") or {}))
+            return parse_nvidia_smi(raw, self.class_map)
         if vendor == "amd":
             return parse_rocm_smi(raw)
         return parse_xpu_smi(raw)
+
+    def _allocatable(self, payload: dict[str, Any]) -> int:
+        """Validate allocatable_gpus to 0..MAX_GPUS_PER_NODE; out of range yields 0 GPUs."""
+        value = payload.get("allocatable_gpus", 0) or 0
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 0 <= value <= MAX_GPUS_PER_NODE
+        ):
+            logger.warning(
+                "rejecting node %r: allocatable_gpus %r outside 0..%d",
+                payload.get("node_uid"),
+                value,
+                MAX_GPUS_PER_NODE,
+            )
+            raise _RejectPayload
+        return value
 
     async def collect(self, client: InventoryClient) -> list[GpuRecord]:
         """Gather inventory from every worker; zero payloads yields ``[]`` plus a warning."""
@@ -277,13 +338,27 @@ class InventoryCollector:
             return []
         out: list[GpuRecord] = []
         for payload in payloads:
+            try:
+                parsed = self._parse_payload(payload)
+            except _RejectPayload:
+                continue
             node = [
                 dataclasses.replace(
                     r, node_uid=str(payload["node_uid"]), node_name=str(payload["node_name"])
                 )
-                for r in self._parse_payload(payload)
+                for r in parsed
             ]
             out.extend(self._classify_node(node))
+            if len(out) > MAX_RECORDS_PER_COLLECT:
+                break
+        if len(out) > MAX_RECORDS_PER_COLLECT:
+            logger.warning(
+                "record cap %d hit for backend %s: dropping %d records",
+                MAX_RECORDS_PER_COLLECT,
+                self.backend_id,
+                len(out) - MAX_RECORDS_PER_COLLECT,
+            )
+            out = out[:MAX_RECORDS_PER_COLLECT]
         return out
 
 

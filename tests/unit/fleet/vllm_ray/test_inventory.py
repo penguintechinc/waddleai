@@ -396,3 +396,103 @@ def test_upsert_marks_absent_gpus_cold_and_scopes_to_backend(tmp_path: Path) -> 
     assert by[(1, 1)].state == InventoryState.COLD and by[(1, 1)].schedulable is False
     assert by[(1, 0)].state == InventoryState.WARM
     assert by[(2, 0)].state == InventoryState.WARM
+
+
+def _nv_payload(**kw: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "node_uid": "u",
+        "node_name": "n",
+        "vendor": "nvidia",
+        "raw": _fix("nvidia_smi_4090_4070.csv"),
+    }
+    base.update(kw)
+    return base
+
+
+def test_payload_supplied_class_map_is_ignored() -> None:
+    """A worker-supplied class_map must not influence classification."""
+    forged = {"*A9000*": "nvidia-rtx4090"}
+    client = _StubInventoryClient([_nv_payload(class_map=forged)])
+    recs = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client))
+    assert recs[3].gpu_class is None and recs[3].state == InventoryState.UNCLASSIFIED
+    assert recs[0].gpu_class == "nvidia-rtx4090"
+    no_trusted = asyncio.run(InventoryCollector(1, 1).collect(client))
+    assert all(r.gpu_class is None for r in no_trusted)
+
+
+def test_forged_node_class_is_unclassified() -> None:
+    """A node_class outside the reference slug set is rejected."""
+    client = _StubInventoryClient(
+        [_nv_payload(raw="", allocatable_gpus=2, node_class="nvidia-h200-forged")]
+    )
+    recs = asyncio.run(InventoryCollector(1, 1).collect(client))
+    assert len(recs) == 2
+    assert all(r.gpu_class is None and r.state == InventoryState.UNCLASSIFIED for r in recs)
+    assert not any(r.schedulable for r in recs)
+
+
+def test_unknown_class_map_slug_is_unclassified() -> None:
+    """A trusted class_map pointing at a non-reference slug still yields UNCLASSIFIED."""
+    recs = parse_nvidia_smi(_fix("nvidia_smi_4090_4070.csv"), {"*RTX 4090*": "nvidia-bogus"})
+    assert recs[0].gpu_class is None
+    assert recs[0].state == InventoryState.UNCLASSIFIED and recs[0].schedulable is False
+
+
+@pytest.mark.parametrize("count", [-1, 65, 10**9, "many"])
+def test_allocatable_out_of_range_rejects_payload(
+    count: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Out-of-range or non-integer allocatable_gpus drops the node with a warning."""
+    client = _StubInventoryClient([_nv_payload(raw="", allocatable_gpus=count)])
+    with caplog.at_level("WARNING"):
+        assert asyncio.run(InventoryCollector(1, 1).collect(client)) == []
+    assert "allocatable_gpus" in caplog.text
+
+
+def test_allocatable_boundary_64_is_accepted() -> None:
+    """64 is the inclusive upper bound."""
+    client = _StubInventoryClient([_nv_payload(raw="", allocatable_gpus=64)])
+    assert len(asyncio.run(InventoryCollector(1, 1).collect(client))) == 64
+
+
+def test_parsers_cap_entries_per_payload(caplog: pytest.LogCaptureFixture) -> None:
+    """Each SMI parser stops at 64 GPU entries."""
+    csv_text = "\n".join(f"{i}, NVIDIA GeForce RTX 4090, 24564, 0, 0:{i}" for i in range(200))
+    rocm = json.dumps(
+        {
+            f"card{i}": {
+                "VRAM Total Memory (B)": "1048576",
+                "VRAM Total Used Memory (B)": "0",
+                "Card Series": "AMD Instinct MI300X",
+                "PCI Bus": f"0:{i}",
+            }
+            for i in range(200)
+        }
+    )
+    xpu = json.dumps(
+        {
+            "device_list": [
+                {
+                    "device_id": i,
+                    "device_name": "Intel(R) Data Center GPU Max 1100",
+                    "memory_physical_size_byte": 1048576,
+                    "pci_bdf_address": f"0:{i}",
+                }
+                for i in range(200)
+            ]
+        }
+    )
+    with caplog.at_level("WARNING"):
+        assert len(parse_nvidia_smi(csv_text, CLASS_MAP)) == 64
+        assert len(parse_rocm_smi(rocm)) == 64
+        assert len(parse_xpu_smi(xpu)) == 64
+    assert "capped" in caplog.text
+
+
+def test_collect_caps_total_records(caplog: pytest.LogCaptureFixture) -> None:
+    """collect() drops records beyond 4096 total and logs it."""
+    payloads = [_nv_payload(node_uid=f"u{i}", raw="", allocatable_gpus=64) for i in range(100)]
+    with caplog.at_level("WARNING"):
+        recs = asyncio.run(InventoryCollector(1, 1).collect(_StubInventoryClient(payloads)))
+    assert len(recs) == 4096
+    assert "record cap" in caplog.text
