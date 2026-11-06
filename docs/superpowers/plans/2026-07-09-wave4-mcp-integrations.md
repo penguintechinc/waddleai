@@ -8,9 +8,9 @@
 
 ---
 
-**Goal:** Make WaddleAI a first-class MCP citizen in both directions and ship the apparatus that connects real coding agents to it. **As an MCP server:** the official `mcp` Python SDK (MIT, already pinned `mcp==1.26.0`) exposing streamable-HTTP at `/mcp` in the AIProxy (Quart, `wa-` bearer auth sharing the pipeline session) plus a `waddleai-mcp` Rust static-binary stdio shim; nine tools (`search_code`, `get_symbol`, `search_docs`, `fetch_docs`, `memory_add`, `memory_search`, `list_models`, `get_routing_policy`, `usage_summary`) that are thin, scope-aware wrappers over the §9/§7 services, plus cached-docs-page and repo-chunk resources. **As an MCP client (gateway):** admin-registered external MCP endpoints (Elder, etc.) whose tools are namespaced (`elder.*`) and re-served through WaddleAI's own MCP surface, with outbound static-header **and** OAuth2 (client-credentials + authorization-code/dynamic-client-registration) auth, per-endpoint `shared`|`per_user` identity (per-user tokens encrypted at rest, linked via WebUI/CLI login), and every external tool call routed through the §8 per-tool security policies. **Apparatus:** the `waddleai` Rust CLI (same binary as the shim, thin `/api/v1` client), the OpenCode config template + `/api/v1/integrations/opencode-config`, Claude Code / Cursor / Antigravity / generic docs, and a cuttable VS Code extension refresh. **WebUI is the first-class surface** — every capability ships in `services/webui` first; the CLI mirrors it. Migration 014 adds `mcp_endpoints` + `mcp_user_links`. Everything sits behind PostHog flag `waddleai.mcp_v2` (default OFF, fail-safe OFF).
+**Goal:** Make WaddleAI a first-class MCP citizen in both directions and ship the apparatus that connects real coding agents to it. **As an MCP server:** the official `mcp` Python SDK (MIT, already pinned `mcp==1.26.0`) exposing streamable-HTTP at `/mcp` in the AIProxy (Quart, `wa-` bearer auth sharing the pipeline session) plus a `waddleai-mcp` Rust static-binary stdio shim; nine tools (`search_code`, `get_symbol`, `search_docs`, `fetch_docs`, `memory_add`, `memory_search`, `list_models`, `get_routing_policy`, `usage_summary`) that are thin, scope-aware wrappers over the §9/§7 services, plus cached-docs-page and repo-chunk resources. **As an MCP client & orchestrator (gateway):** admin-registered external and fleet-deployed MCP endpoints (Elder, fleet-managed MCP containers, etc.) whose tools are namespaced (`elder.*`, etc.) and presented directly to client-side harnesses (OpenCode, Claude Code, Cursor, Antigravity, penguin desktop) alongside WaddleAI native tools, with outbound static-header **and** OAuth2 (client-credentials + authorization-code/dynamic-client-registration) auth, per-endpoint `shared`|`per_user` identity (per-user tokens encrypted at rest, linked via WebUI/CLI login), and every external tool call routed through the §8 per-tool security policies. **Apparatus:** the `waddleai` Rust CLI (same binary as the shim, thin `/api/v1` client), the OpenCode config template + `/api/v1/integrations/opencode-config`, Claude Code / Cursor / Antigravity / generic docs, and a cuttable VS Code extension refresh. **WebUI is the first-class surface** — every capability ships in `services/webui` first; the CLI mirrors it. Migration 014 adds `mcp_endpoints` + `mcp_user_links`. Everything sits behind PostHog flag `waddleai.mcp_v2` (default OFF, fail-safe OFF).
 
-**Architecture:** The nine tools live once in a framework-agnostic `shared/mcp/tools.py` (`WaddleAITools`) — pure async wrappers that receive a `ToolContext(org_id, user_uuid, session_id, workspace_hint, scopes)` and delegate to the §9 knowledge services, §7 routing engine, and the token/usage layer; they never hold business logic. Both transports (streamable-HTTP mount, stdio shim) register the *same* tool objects on one `mcp` SDK server (`shared/mcp/server.py`), so behavior is transport-identical. Retrieved content that flows back through `memory_*`/`search_*` is provenance-tagged and re-filtered per §9.6/§9.7 (data, never instruction). The gateway (`shared/mcp/gateway/`) is a second `mcp`-SDK *client* whose discovered tools are namespaced and merged into the same server surface, so a downstream agent configures one MCP connection and sees WaddleAI-native + `elder.*` tools together; each external invocation passes through the §8 policy chokepoint before dispatch. Outbound tokens are minted/refreshed by Management and never returned to the end client. The Rust binary is a new greenfield Cargo sub-project under `clients/waddleai-cli/` — static musl multi-arch, thin over `/api/v1`, scoped for build/CI here but deliberately logic-free. Every new path is gated by `features.enabled("mcp_v2", distinct_id=str(org_id))` with fail-safe OFF.
+**Architecture:** The nine tools live once in a framework-agnostic `shared/mcp/tools.py` (`WaddleAITools`) — pure async wrappers that receive a `ToolContext(org_id, user_uuid, session_id, workspace_hint, scopes)` and delegate to the §9 knowledge services, §7 routing engine, and the token/usage layer; they never hold business logic. Both transports (streamable-HTTP mount, stdio shim) register the *same* tool objects on one `mcp` SDK server (`shared/mcp/server.py`), so behavior is transport-identical. Retrieved content that flows back through `memory_*`/`search_*` is provenance-tagged and re-filtered per §9.6/§9.7 (data, never instruction). The gateway (`shared/mcp/gateway/`) is a second `mcp`-SDK *client* whose discovered tools are namespaced and merged into the same server surface, so a downstream agent configures one MCP connection and sees WaddleAI-native, fleet-managed, + `elder.*` tools presented together in a single catalog to client harnesses; each external invocation passes through the §8 policy chokepoint before dispatch. Outbound tokens are minted/refreshed by Management and never returned to the end client. The Rust binary is a new greenfield Cargo sub-project under `clients/waddleai-cli/` — static musl multi-arch, thin over `/api/v1`, scoped for build/CI here but deliberately logic-free. Every new path is gated by `features.enabled("mcp_v2", distinct_id=str(org_id))` with fail-safe OFF.
 
 **Tech Stack:** Python 3.13, Quart + hypercorn (proxy + management), official `mcp` SDK 1.26 (server + client, streamable-HTTP + stdio), penguin-dal (runtime) / SQLAlchemy + Alembic (schema, migration 014), penguin-aaa (auth), `authlib`/`httpx` for outbound OAuth2 (client-credentials + auth-code + dynamic client registration), Fernet/AES-GCM envelope encryption (reusing the provider-credential pattern) for `mcp_user_links`, Valkey (outbound-token cache), pytest + pytest-asyncio + an in-process `mcp` fixture server. **Rust:** stable toolchain, `clap` (subcommands), `reqwest` (HTTP), `oauth2` + `tiny_http` (device/browser login), `keyring` (OS keychain), `rmcp`/hand-rolled stdio JSON-RPC bridge; static `x86_64-unknown-linux-musl` + `aarch64` + macOS targets. React 18 + TypeScript + `@penguintechinc/react-*` (`services/webui`).
 
@@ -53,7 +53,7 @@
 | Modify | `services/webui/src/**` | First-class: MCP-endpoint registration/mgmt, per-user link flow, opencode-config download |
 | Modify | `vscode-extension/waddleai-copilot/src/**` | Endpoint refresh + cache/routing metadata (LAST, cuttable) |
 | Create | `tests/integration/test_mcp_v2_acceptance.py` | §11.5 both transports + gateway matrix + policy + flag-off |
-| Create | `tests/e2e/tests/mcp_apparatus.spec.ts` | OpenCode + Claude Code config connect-and-complete-a-turn (beta, scripted) |
+| Create | `tests/e2e/tests/mcp_apparatus.spec.js` | Apparatus config parity + authenticated beta MCP initialize/list-tools check |
 
 ---
 
@@ -267,7 +267,7 @@ Greenfield Cargo project (no Rust in the repo today). Scope the build/CI and the
 
 ### Task 12: CLI commands — thin `/api/v1` client (login, link, keys, usage, models, knowledge, fleet)
 
-Mirror the WebUI for headless users; **no business logic** — every command is an `/api/v1` call. Login uses browser/device OAuth with the token in the OS keychain (client standards); `link` drives the §11.4 per-user external-MCP link.
+Mirror the WebUI for headless users; **no business logic** — every command is an `/api/v1` call. Login uses browser/device OAuth with the token in the OS keychain (client standards); `link` drives the §11.4 per-user external-MCP link. The §20 DAC `apply` command is deliberately planned and delivered on its own branch, after its reconciliation and destructive-change semantics are settled.
 
 **Files:** Modify `clients/waddleai-cli/src/{cli,api_client,auth}.rs`. Extend `clients/waddleai-cli/tests/`.
 
@@ -284,19 +284,20 @@ Mirror the WebUI for headless users; **no business logic** — every command is 
 
 ---
 
-### Task 13: Apparatus docs + OpenCode template
+### Task 13: Apparatus docs, templates & harness configuration
 
-Publishable setup docs (OpenCode default; Claude Code depends on the already-landed §5 `/v1/messages` fidelity) + the OpenCode config example the Management endpoint (Task 10) renders per key.
+Publishable setup docs (OpenCode default; Claude Code depends on the already-landed §5 `/v1/messages` fidelity), the OpenCode config example rendered per key, and documented harness configuration for Claude Code, Antigravity/AGY, OpenCode, and Cursor. This branch may add `waddleai harness sync` only as an explicit, user-invoked config writer for the MCP connection; evaluation of hooks, model redirects, role dispatch, or dynamic skill activation belongs to the separate §18 `feature/agent-hooks` delivery.
+- **Default Disabled State**: Auto-installed MCP servers default to `enabled: false` / inactive until deliberately enabled by the developer or activated by a hook, preventing prompt bloat and unintended token overhead while making tools immediately discoverable.
 
-**Files:** Create `examples/opencode/opencode.json`, `docs/integrations/{opencode,claude-code,cursor,antigravity,generic-openai}.md`.
+**Files:** Create `examples/opencode/opencode.json`, `docs/integrations/{opencode,claude-code,cursor,antigravity,generic-openai}.md`, `clients/waddleai-cli/src/harness_sync.rs`.
 
-- [ ] **Step 1: Write failing checks** — `tests/unit/mcp/test_opencode_template.py`: `examples/opencode/opencode.json` parses as JSON, declares a custom provider pointed at `/v1`, sources models from `/v1/models`, and includes an MCP entry pointed at `/mcp`; the Task-10 renderer produces the same shape with a real key substituted. Run → fails (file absent).
-- [ ] **Step 2: Author the template + docs** — `opencode.json` (custom provider + MCP); `opencode.md` (+ the `/api/v1/integrations/opencode-config` download path); `claude-code.md` (`ANTHROPIC_BASE_URL` + `wa-` token, streaming/tool_use/thinking/prompt-cache/`count_tokens` all working per §5); `cursor.md`/`antigravity.md`/`generic-openai.md` (OpenAI base-URL + per-tool quirk notes).
+- [ ] **Step 1: Write failing checks** — `tests/unit/mcp/test_opencode_template.py`: `examples/opencode/opencode.json` parses as JSON, declares a custom provider pointed at `/v1`, sources models from `/v1/models`, and includes an MCP entry pointed at `/mcp`; assert generated harness configuration registers MCP servers with `disabled: true` (or `enabled: false`) by default. For each supported harness, the sync command must render a preview and require an explicit write flag before changing a local config file.
+- [ ] **Step 2: Author the template + docs** — `opencode.json` (custom provider + MCP); `opencode.md` (+ the `/api/v1/integrations/opencode-config` download path); `claude-code.md` (`ANTHROPIC_BASE_URL` + `wa-` token, streaming/tool_use/thinking/prompt-cache/`count_tokens` all working per §5); `antigravity.md`/`cursor.md`/`generic-openai.md` (base-URL, MCP registration in disabled state, and per-tool quirk notes). Link the §18 docs for hook support rather than duplicating hook behavior here.
 - [ ] **Step 3: Run checks, verify pass.**
 - [ ] **Step 4: Commit**
   ```bash
   git add examples/opencode/opencode.json docs/integrations/ tests/unit/mcp/test_opencode_template.py
-  git commit -m "docs(integrations): OpenCode template + Claude Code/Cursor/Antigravity/generic setup docs" \
+  git commit -m "docs(integrations): OpenCode template + Claude Code/Cursor/Antigravity setup (default-disabled MCP)" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```
 
@@ -304,7 +305,7 @@ Publishable setup docs (OpenCode default; Claude Code depends on the already-lan
 
 ### Task 14: WebUI — first-class integrations surface (`services/webui`)
 
-Per §11.2/§11.3/§11.4 the WebUI is primary. Ships the MCP-endpoint registration/management screens, the per-user "link your account" OAuth flow, and the OpenCode-config download — before the CLI mirror is considered done.
+Per §11.2/§11.3/§11.4 the WebUI is primary. Ships the MCP-endpoint registration/management screens, the per-user "link your account" OAuth flow, and the OpenCode-config download — before the CLI mirror is considered done. The §20 DAC studio is a separate delivery because it introduces reconciliation and destructive-change confirmation semantics.
 
 **Files:** Modify `services/webui/src/**` (new pages/components + API client entries; `@penguintechinc/react-*` shared components). Create `services/webui/src/**/__tests__/*` + Playwright specs.
 
@@ -344,18 +345,18 @@ Explicitly deferred/cuttable per §11.3/§14.1. Refresh the existing TypeScript 
 
 Turn each §11.5 acceptance item into an explicit verify.
 
-**Files:** Create `tests/integration/test_mcp_v2_acceptance.py`, `tests/e2e/tests/mcp_apparatus.spec.ts`.
+**Files:** Create `tests/integration/test_mcp_v2_acceptance.py`, `tests/e2e/tests/mcp_apparatus.spec.js`.
 
 - [ ] **Step 1: Both transports via the official `mcp` client SDK** — integration test: `list_tools`/`call_tool`/`read_resource` succeed over the streamable-HTTP `/mcp` mount **and** the `waddleai mcp` stdio shim (spawn the built binary), asserting identical tool sets/results.
 - [ ] **Step 2: Gateway matrix vs the fixture server** — `header` + OAuth2 `client-credentials` + OAuth2 `auth-code/DCR`, each × `shared` and `per_user` identity, complete a namespaced `elder.*` call and echo the expected caller identity.
 - [ ] **Step 3: Namespaced collision handling** — two fixture endpoints with a colliding tool name both resolve without shadowing native tools.
 - [ ] **Step 4: Per-tool security policy on an external call** — a policy set to `block` on `elder.<tool>` prevents dispatch (fixture not hit) and audit-logs; `flag`/`audit` pass through with a log entry.
-- [ ] **Step 5: OpenCode + Claude Code connect-and-complete** — `tests/e2e/tests/mcp_apparatus.spec.ts` (beta, scripted through the internal LB): the rendered OpenCode config and the Claude Code `ANTHROPIC_BASE_URL` config each connect and complete one turn.
+- [ ] **Step 5: Apparatus verification** — `tests/e2e/tests/mcp_apparatus.spec.js` validates the rendered OpenCode and Claude Code configuration targets and, when `WADDLEAI_MCP_E2E_KEY` is supplied in beta CI, performs an authenticated streamable-HTTP initialize/list-tools round trip through the internal LB. Full interactive agent completion remains an operator-run beta smoke because it requires installed third-party clients and a scoped key.
 - [ ] **Step 6: Flag-off proof** — `waddleai.mcp_v2` OFF → `/mcp` disabled, gateway tools absent, tools error; zero behavior change on `/v1/*` (§14.2).
 - [ ] **Step 7: Coverage gate** — `python3 -m pytest tests/ --cov --cov-fail-under=90 2>&1 | tail -15` on changed modules; `cargo test` green for the CLI.
 - [ ] **Step 8: Commit**
   ```bash
-  git add tests/integration/test_mcp_v2_acceptance.py tests/e2e/tests/mcp_apparatus.spec.ts
+  git add tests/integration/test_mcp_v2_acceptance.py tests/e2e/tests/mcp_apparatus.spec.js
   git commit -m "test(mcp): §11.5 acceptance — both transports, gateway auth×identity matrix, policy chokepoint, flag-off" \
              -m "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>"
   ```

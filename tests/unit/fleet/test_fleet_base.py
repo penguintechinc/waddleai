@@ -82,13 +82,15 @@ def test_omitting_any_method_blocks_instantiation(omit: str) -> None:
 
 
 def test_backend_type_enum_values() -> None:
-    """``BackendType`` has exactly the five spec-mandated members."""
+    """``BackendType`` includes the registered cloud-target extensions."""
     assert {member.value for member in BackendType} == {
         "ollama",
         "llamacpp",
         "exo",
         "vertex_ai",
         "bedrock",
+        "azure_ai",
+        "ollama_cloud",
     }
 
 

@@ -13,5 +13,6 @@ pub mod browser;
 pub mod cli;
 pub mod config;
 pub mod error;
+pub mod harness_sync;
 pub mod mcp_shim;
 pub mod token_store;

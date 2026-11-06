@@ -31,10 +31,23 @@ cargo build --release
 | `waddleai models` | List models available to your key. |
 | `waddleai knowledge upload <path>` | Upload a PDF/Markdown document. |
 | `waddleai fleet status` | Show inference fleet backend status. |
+| `waddleai harness sync` | Preview a default-disabled MCP configuration fragment; `--output <path>` creates a new explicit fragment file. |
+| `waddleai apply -f <manifest>` | Validate and dry-run a DAC v1alpha1 manifest; use `--confirm <plan-id>` to apply the reviewed plan. |
 | `waddleai mcp` | Stdio MCP shim -- forwards stdin/stdout JSON-RPC to `/mcp`. |
 
 Every subcommand accepts `--api-url <url>`, falling back to
 `$WADDLEAI_API_URL`, then the saved config, then `http://localhost:8000`.
+
+`harness sync` never guesses a client configuration path or overwrites one.
+Without `--output`, it previews a fragment using `${WADDLEAI_API_KEY}` and
+`enabled: false`. With `--output ./waddleai-mcp.json`, it creates only that
+new file; copy it deliberately into the client-specific configuration
+described in `docs/integrations/`.
+
+`apply` never mutates state by default. Its dry run returns a short-lived
+`plan_id`; pass that exact value with `--confirm` only after reviewing the
+create/update/no-op plan. Manifests may reference credentials, but cannot
+contain tokens or other inline secrets.
 
 ## Authentication
 

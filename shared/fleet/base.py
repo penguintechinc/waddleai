@@ -1,6 +1,7 @@
 """``InferenceFleetBackend`` ABC and its value types (spec §10.1).
 
-Every inference fleet backend — Ollama, llama.cpp, EXO, Vertex AI, Bedrock —
+Every inference fleet backend — Ollama, llama.cpp, EXO, Vertex AI, Bedrock,
+Azure AI, and Ollama Cloud —
 implements this six-method interface so the placement engine and the
 ``fleet_backends`` API can treat them uniformly regardless of whether the
 backend is a K8s DaemonSet, an external cluster, or a Professional-gated
@@ -22,6 +23,8 @@ class BackendType(StrEnum):
     EXO = "exo"
     VERTEX_AI = "vertex_ai"
     BEDROCK = "bedrock"
+    AZURE_AI = "azure_ai"
+    OLLAMA_CLOUD = "ollama_cloud"
 
 
 class ManagementScope(StrEnum):

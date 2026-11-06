@@ -238,3 +238,15 @@ def test_ensure_imported_swallows_missing_optional_module(caplog) -> None:
         assert BackendType.BEDROCK not in fleet_registry._REGISTRY
     finally:
         fleet_registry._MODULE_MAP[BackendType.BEDROCK] = original_module
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "module"),
+    [
+        (BackendType.AZURE_AI, "shared.fleet.azure_ai"),
+        (BackendType.OLLAMA_CLOUD, "shared.fleet.ollama_cloud"),
+    ],
+)
+def test_new_cloud_types_have_lazy_module_entries(backend_type: BackendType, module: str) -> None:
+    """New cloud targets are lazy-loaded rather than imported with the core registry."""
+    assert fleet_registry._MODULE_MAP[backend_type] == module
