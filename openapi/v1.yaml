@@ -4984,8 +4984,8 @@ paths:
                 title: FleetBackendResponse
                 type: object
           description: Response body for GET/POST/PUT of a single fleet backend.
-      summary: Fetch one registered fleet backend -- 403 across orgs, 404 if it never
-        existed.
+      summary: Fetch one registered fleet backend -- 404 for another org's backend
+        and for a missing one.
     put:
       description: '
 
@@ -4996,11 +4996,11 @@ paths:
         class) -- delete and recreate to change type.
 
 
-        Body validation runs in-handler, AFTER the flag/existence/forbidden
+        Body validation runs in-handler, AFTER the flag/existence
 
         checks, so a malformed body against a nonexistent or foreign-org backend
 
-        returns 404/403 rather than 400 -- preserving the deliberate
+        returns 404 rather than 400 -- preserving the deliberate
 
         existence/authz-before-input-validation order that
 
@@ -5146,7 +5146,10 @@ paths:
         head pod must be
 
         rolled (workers untouched). A failed Secret write leaves the old token in
-        place.'
+        place; a failed
+
+        restart is reported as "rotated, restart pending" (Secret and link already
+        moved).'
       operationId: post_rotate_llamacpp_token
       parameters:
       - in: path
@@ -5482,7 +5485,8 @@ paths:
                 title: DeploymentResponse
                 type: object
           description: GET one deployment (with timeline).
-      summary: One deployment with its recent timeline (403 across orgs, 404 unknown).
+      summary: One deployment with its recent timeline (404 for unknown and for another
+        org's).
     patch:
       description: ''
       operationId: patch_update_vllm_deployment

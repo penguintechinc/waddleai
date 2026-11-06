@@ -44,14 +44,17 @@ def upgrade() -> None:
         ) WHERE owner_org_id IS NULL AND fleet_backend_id IS NOT NULL
         """
     )
-    op.execute(
-        """
-        UPDATE llamacpp_deployments SET owner_org_id = (
-            SELECT cl.owner_org_id FROM connection_links cl
-            WHERE cl.name = 'llamacpp-' || CAST(llamacpp_deployments.public_id AS VARCHAR(36))
-        ) WHERE owner_org_id IS NULL AND public_id IS NOT NULL
-        """
-    )
+    # connection_links is PyDAL-created (not Alembic): on a fresh DB it does not exist yet, and
+    # there are then no legacy rows to backfill from it.
+    if "connection_links" in sa.inspect(op.get_bind()).get_table_names():
+        op.execute(
+            """
+            UPDATE llamacpp_deployments SET owner_org_id = (
+                SELECT cl.owner_org_id FROM connection_links cl
+                WHERE cl.name = 'llamacpp-' || CAST(llamacpp_deployments.public_id AS VARCHAR(36))
+            ) WHERE owner_org_id IS NULL AND public_id IS NOT NULL
+            """
+        )
 
 
 def downgrade() -> None:
