@@ -32,6 +32,7 @@ _MIRRORED = (
     # day one rather than left to fork later.
     "operations/MONITORING.md",
     "operations/SLOS.md",
+    "operations/gpu-fleet-vllm-ray.md",
 )
 
 # Known fork, deliberately not asserted: none currently. Add an entry here
