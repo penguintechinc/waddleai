@@ -232,3 +232,38 @@ async def test_fleet_ollama_without_key_fails_closed() -> None:
     finally:
         await server.close()
     assert hits == [1]
+
+
+async def test_reported_zero_with_nonempty_text_is_estimated_and_flagged() -> None:
+    """A reported 0 is only trusted when the text is empty; otherwise estimate + flag."""
+    from shared.utils.llm_connectors import resolve_reported_counts
+
+    async def est() -> int:
+        return 9
+
+    caps = (4096, 4096)
+    got = await resolve_reported_counts(
+        0, 0, caps, est, est, prompt_text="hello there", output_text="a real answer"
+    )
+    assert got == (9, 9, True)
+    # genuinely empty output / prompt: the reported zero stands
+    assert await resolve_reported_counts(
+        5, 0, caps, est, est, prompt_text="hello", output_text="  "
+    ) == (5, 0, False)
+    # legacy callers (no text supplied) keep the old behaviour
+    assert await resolve_reported_counts(0, 0, caps, est, est) == (0, 0, False)
+
+
+async def test_vllm_zero_completion_with_text_bumps_missing_counter(
+    fake_openai_server, monkeypatch
+) -> None:
+    """0 completion_tokens beside a non-empty answer is estimated, flagged and counted."""
+    from shared.utils import llm_connectors
+
+    seen: list[str] = []
+    monkeypatch.setattr(llm_connectors, "_count_missing", lambda reason, *a: seen.append(reason))
+    fake_openai_server.usage_override = {"prompt_tokens": 11, "completion_tokens": 0}
+    text, usage = await _vllm(fake_openai_server).chat_completion(MSGS, "m", max_tokens=50)
+    assert text.strip() and usage["estimated"] is True
+    assert usage["input_tokens"] == 11 and usage["output_tokens"] > 0
+    assert seen

@@ -132,3 +132,33 @@ def test_resolve_params_b_prefers_breakdown_then_registry_then_name(db) -> None:
     assert resolve_params_b(db, _row()) == 9.0
     assert resolve_params_b(db, _row(model_ref="org/other-3B")) == 3.0
     assert resolve_params_b(db, _row(model_ref="org/other")) is None
+
+
+def test_estimate_lookup_error_is_logged_counted_and_returns_none(db, caplog) -> None:
+    """An expected lookup failure (bad row) -> None, logged with traceback and counted."""
+    from shared.fleet.pricing import load_pricing_inputs
+    from shared.fleet.vllm_pricing import estimate_aggregate_tokens_per_s
+
+    _inputs, costs = load_pricing_inputs(BACKEND_CONFIG)
+    bad = _row(replicas_min="not-a-number")
+    with caplog.at_level("WARNING"):
+        assert estimate_aggregate_tokens_per_s(db, 1, bad, costs) is None
+    assert any(r.exc_info for r in caplog.records)
+
+
+def test_estimate_unexpected_error_propagates(db) -> None:
+    """Only expected lookup errors are swallowed -- a programming/DB error must not become None."""
+    from shared.fleet.pricing import load_pricing_inputs
+    from shared.fleet.vllm_pricing import estimate_aggregate_tokens_per_s
+
+    _inputs, costs = load_pricing_inputs(BACKEND_CONFIG)
+
+    class Boom:
+        def __call__(self, *a, **k):
+            raise RuntimeError("db exploded")
+
+        def __getattr__(self, name: str):
+            raise RuntimeError("db exploded")
+
+    with pytest.raises(RuntimeError):
+        estimate_aggregate_tokens_per_s(Boom(), 1, _row(price_breakdown=None), costs)

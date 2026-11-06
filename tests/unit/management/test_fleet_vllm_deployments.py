@@ -237,10 +237,13 @@ async def test_create_served_name_equal_to_commercial_model_ok(
     assert vllm_db(vllm_db.model_configs.id > 0).count() == 0
 
 
-async def test_create_backend_foreign_org_403_and_missing_404(client, ready, vllm_db, auth_headers):
-    """Another org's backend is 403; a missing one is 404; a non-vllm backend is 400."""
+async def test_create_backend_foreign_org_404_same_as_missing(client, ready, vllm_db, auth_headers):
+    """Another org's backend is 404, indistinguishable from a missing one; non-vllm is 400."""
     foreign = seed_backend(vllm_db, org_id=2, name="f")
-    assert (await _create(client, auth_headers, foreign)).status_code == 403
+    foreign_resp = await _create(client, auth_headers, foreign)
+    missing_resp = await _create(client, auth_headers, 9999)
+    assert foreign_resp.status_code == missing_resp.status_code == 404
+    assert await foreign_resp.get_json() == await missing_resp.get_json()
     assert (await _create(client, auth_headers, 9999)).status_code == 404
     vllm_db(vllm_db.fleet_backends.id == ready).update(type="ollama")
     vllm_db.commit()
@@ -323,10 +326,10 @@ async def test_list_pagination_and_invalid_filters(client, three, auth_headers):
         assert (await client.get(f"{DEPS}?{bad}", headers=auth_headers)).status_code == 400
 
 
-async def test_detail_has_timeline_404_unknown_403_foreign_org(
+async def test_detail_has_timeline_404_unknown_and_foreign_org(
     client, three, vllm_db, auth_headers
 ):
-    """Detail carries events; unknown 404; another org's 403."""
+    """Detail carries events; unknown and another org's are both 404 (no existence oracle)."""
     dep = vllm_db(vllm_db.vllm_deployments.name == "a").select().first()
     vllm_db.vllm_deployment_events.insert(
         deployment_id=dep.id, ts=dep.created_at, state=5, message="serving"
@@ -340,7 +343,7 @@ async def test_detail_has_timeline_404_unknown_403_foreign_org(
     foreign = vllm_db(vllm_db.vllm_deployments.name == "z").select().first()
     assert (
         await client.get(f"{DEPS}/{foreign.public_id}", headers=auth_headers)
-    ).status_code == 403
+    ).status_code == 404
 
 
 async def test_events_ordered_desc_paginated_org_scoped(client, three, vllm_db, auth_headers):
@@ -362,7 +365,7 @@ async def test_events_ordered_desc_paginated_org_scoped(client, three, vllm_db, 
     foreign = vllm_db(vllm_db.vllm_deployments.name == "z").select().first()
     assert (
         await client.get(f"{DEPS}/{foreign.public_id}/events", headers=auth_headers)
-    ).status_code == 403
+    ).status_code == 404
 
 
 def _first(db, name="a"):
@@ -483,10 +486,10 @@ async def test_delete_orders_backend_delete_then_remove_key_then_unlink_then_row
     assert _first(vllm_db) is None
 
 
-async def test_delete_failure_keeps_row_and_foreign_is_403(
+async def test_delete_failure_keeps_row_and_foreign_is_404(
     client, three, vllm_db, auth_headers, fake_backend
 ):
-    """A backend failure leaves the row for retry (502); another org's deployment is 403."""
+    """A backend failure leaves the row for retry (502); another org's deployment is 404."""
     dep = _first(vllm_db)
     fake_backend.delete_error = "Ray Serve rejected the request; see backend logs."
     assert (await client.delete(f"{DEPS}/{dep.public_id}", headers=auth_headers)).status_code == 502
@@ -494,7 +497,7 @@ async def test_delete_failure_keeps_row_and_foreign_is_403(
     foreign = _first(vllm_db, "z")
     assert (
         await client.delete(f"{DEPS}/{foreign.public_id}", headers=auth_headers)
-    ).status_code == 403
+    ).status_code == 404
 
 
 async def test_every_route_404_when_second_flag_off(client, vllm_db, auth_headers, monkeypatch):
@@ -663,3 +666,25 @@ async def test_vllm_price_patch_upserts_rate_row(client, ready, auth_headers, vl
     assert resp.status_code == 200
     rate = vllm_db(vllm_db.token_conversion_rates.provider == "vllm").select().first()
     assert (rate.input_rate, rate.output_rate) != before
+
+
+async def test_patch_scale_then_reprice_uses_the_reloaded_replica_count(
+    client, ready, auth_headers, vllm_db, fake_backend, monkeypatch
+):
+    """backend.scale persists new replicas; the AUTO re-price must see them (not the stale row)."""
+    created = (await (await _create(client, auth_headers, ready)).get_json())["data"]
+    dep = vllm_db(vllm_db.vllm_deployments.public_id == created["public_id"]).select().first()
+
+    async def scale(d, rmin, rmax):
+        vllm_db(vllm_db.vllm_deployments.id == d.id).update(replicas_min=rmin, replicas_max=rmax)
+        vllm_db.commit()
+
+    monkeypatch.setattr(fake_backend, "scale", scale)
+    resp = await client.patch(
+        f"{DEPS}/{dep.public_id}",
+        headers=auth_headers,
+        json={"replicas_min": 3, "replicas_max": 3, "price_mode": 1},
+    )
+    assert resp.status_code == 200
+    row = vllm_db(vllm_db.vllm_deployments.id == dep.id).select().first()
+    assert row.price_breakdown["total_gpus"] == 3

@@ -90,13 +90,15 @@ async def test_rotate_token_logs_audit_event_without_value(
     assert token not in caplog.text
 
 
-async def test_rotate_token_foreign_org_403_unknown_404(client, ready, vllm_db, auth_headers):
-    """Another org's deployment is 403; an unknown id is 404."""
+async def test_rotate_token_foreign_org_and_unknown_are_both_404(
+    client, ready, vllm_db, auth_headers
+):
+    """Another org's deployment and an unknown id are both 404 (no existence oracle)."""
     other = seed_backend(vllm_db, org_id=2, name="o2")
     foreign = seed_deployment(vllm_db, other, org_id=2, name="f")
     assert (
         await client.post(f"{DEPS}/{foreign.public_id}/rotate-token", headers=auth_headers)
-    ).status_code == 403
+    ).status_code == 404
     import uuid
 
     assert (

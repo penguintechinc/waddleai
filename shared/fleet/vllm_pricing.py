@@ -10,16 +10,24 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import math
 from decimal import Decimal
 from typing import Any
 
 from shared.fleet.enums import LocalDeploymentKind, PriceMode
 from shared.fleet.pricing import apply_pricing, load_pricing_inputs
+from shared.fleet.throughput import _count_dropped
 from shared.fleet.vllm_ray.fit import Layout
 from shared.fleet.vllm_ray.model_size import parse_params_b
 from shared.fleet.vllm_ray.tco import _REFERENCE_PARAMS_B, TcoResult, compute_tco
 from shared.routing.providers import LOCAL_PROVIDERS
+
+logger = logging.getLogger(__name__)
+
+# Expected failures of the registry/row lookups (bad/missing row fields or params); anything
+# else (DB outage, programming error) must propagate rather than silently drop the bound.
+_ESTIMATE_LOOKUP_ERRORS = (ValueError, TypeError, KeyError, AttributeError, ArithmeticError)
 
 OBSERVED_WINDOW_S = 86400
 NO_PARAMS_B = "Can't infer model size from the name; enter the parameter count in billions."
@@ -142,7 +150,8 @@ async def price_deployment(
 ) -> PricedDeployment:
     """Price ``row`` and upsert its rate row; the caller persists the returned values.
 
-    AUTO computes via ``compute_tco`` (so a model missing from the registry still prices from
+    AUTO computes via ``compute_tco`` (which clamps throughput to ``max(estimate, observed)`` so
+    observed may only lower the price; so a model missing from the registry still prices from
     the supplied ``params_b``) and the result is written through ``apply_pricing`` as a fixed
     price so the rate-row upsert path is the single shared one. MANUAL prices are validated by
     ``apply_pricing`` (finite, > 0) before anything is written.
@@ -178,7 +187,7 @@ async def price_deployment(
         in_price,
         out_price,
         breakdown,
-        observed_tokens_per_s if result is not None else None,
+        observed_tokens_per_s if result is not None and result.source == "observed" else None,
         result,
     )
 
@@ -207,7 +216,14 @@ def estimate_aggregate_tokens_per_s(
                 return None
             cls = next(iter(classes))
             params_b = _params_b(db, _model_lookup_name(kind, row))
-    except Exception:  # noqa: BLE001 -- an unresolvable estimate just loosens the sanity bound
+    except _ESTIMATE_LOOKUP_ERRORS:
+        # Owner rule: no estimate => the observed rate is IGNORED (never accepted unbounded).
+        logger.warning(
+            "throughput estimate unavailable for deployment %s; observed rate will be ignored",
+            getattr(row, "public_id", None),
+            exc_info=True,
+        )
+        _count_dropped("estimate_unavailable", 1)
         return None
     cost = costs.get(cls)
     if cost is None or not params_b or params_b <= 0:

@@ -26,12 +26,24 @@ DEPLOYMENT_KEYS_SECRET = "waddleai-vllm-deployment-keys"  # noqa: S105  # nosec 
 RAY_AUTH_SECRET = "waddleai-ray-auth"  # noqa: S105  # nosec B105
 RAY_TLS_SECRET = "waddleai-ray-tls"  # noqa: S105  # nosec B105
 RESTART_ANNOTATION = "waddleai.penguintech.io/restart-generation"
+_TLS_REISSUE_TIMEOUT_S = 60.0  # bounded wait for cert-manager to reissue the deleted TLS Secret
+_TLS_REISSUE_POLL_S = 1.0
 _RAY_TOKEN_ALPHABET = string.ascii_letters + string.digits  # Helm randAlphaNum alphabet
 _RAY_TOKEN_LENGTH = 48
 
 
 class SecretWriteFailed(RuntimeError):  # noqa: N818 -- public name fixed by the plan
-    """A Kubernetes Secret write failed; the message never contains a secret value."""
+    """A Kubernetes Secret write failed; the message never contains a secret value.
+
+    ``partially_applied`` is True when an earlier step already took effect (the Secret rotated
+    but the pod restart did not happen), so callers can say "rotated, restart pending, retry"
+    instead of implying nothing changed.
+    """
+
+    def __init__(self, message: str = "secret write failed", *, partially_applied: bool = False):
+        """Record the (value-free) message and whether an earlier step already took effect."""
+        super().__init__(message)
+        self.partially_applied = partially_applied
 
 
 class UnknownSecret(KeyError):  # noqa: N818 -- public name fixed by the plan
@@ -177,6 +189,37 @@ async def write_deployment_key(slug: str, token: str) -> None:
         raise SecretWriteFailed("secret write failed") from None
 
 
+async def read_deployment_key(slug: str) -> str | None:
+    """Current ``data.<slug>`` of the shared deployment-keys Secret, or None when absent."""
+    try:
+        data = await asyncio.to_thread(
+            get_gateway().read_secret, namespace(), DEPLOYMENT_KEYS_SECRET
+        )
+    except Exception:
+        logger.error("deployment key read failed for slug %s", slug)
+        raise SecretWriteFailed("secret read failed") from None
+    return (data or {}).get(slug)
+
+
+async def restore_deployment_key(slug: str, previous: str | None) -> None:
+    """Put ``data.<slug>`` back to ``previous`` (or remove it when there was none)."""
+    if previous is None:
+        await remove_key(slug)
+    else:
+        await write_deployment_key(slug, previous)
+
+
+async def remove_hf_token_secret(deployment_id: int) -> None:
+    """Delete the short-lived ``waddleai-hf-<id>`` pull-token Secret (absent is fine)."""
+    try:
+        await asyncio.to_thread(
+            get_gateway().delete_secret, namespace(), f"waddleai-hf-{deployment_id}"
+        )
+    except Exception:
+        logger.error("hf token secret removal failed for deployment %s", deployment_id)
+        raise SecretWriteFailed("secret write failed") from None
+
+
 async def remove_key(slug: str) -> None:
     """Remove ``data.<slug>`` from the shared deployment-keys Secret (merge-patch to null)."""
     try:
@@ -270,10 +313,40 @@ async def rotate_secret(name: str) -> SecretInfo:
     except Exception:
         logger.error("cluster secret rotation failed for %s", name)
         raise SecretWriteFailed("secret write failed") from None
-    await bump_restart("RayCluster", ray_cluster_name())
+    if name == "ray-internal-tls":
+        await _wait_for_reissue(gateway, spec)
+    try:
+        await bump_restart("RayCluster", ray_cluster_name())
+    except SecretWriteFailed:
+        # the Secret already rotated: tell the caller the restart is what is still pending
+        raise SecretWriteFailed("restart failed", partially_applied=True) from None
     data = await asyncio.to_thread(gateway.read_secret, namespace(), spec.secret)
     value = (data or {}).get(spec.key)
     return SecretInfo(name, "generated", fingerprint(value) if value else None)
+
+
+async def _wait_for_reissue(gateway: K8sGateway, spec: _SecretSpec) -> None:
+    """Wait (bounded) until the deleted TLS Secret is readable again; fail loudly on timeout.
+
+    Restarting before cert-manager reissues the Secret would roll the Ray pods onto a missing
+    mount, so the restart bump is only issued once the new material exists.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _TLS_REISSUE_TIMEOUT_S
+    while True:
+        try:
+            data = await asyncio.to_thread(gateway.read_secret, namespace(), spec.secret)
+        except Exception:
+            logger.error("tls reissue poll failed for %s", spec.secret)
+            raise SecretWriteFailed("secret read failed", partially_applied=True) from None
+        if (data or {}).get(spec.key):
+            return
+        if loop.time() >= deadline:
+            logger.error(
+                "tls secret %s was not reissued within %ss", spec.secret, _TLS_REISSUE_TIMEOUT_S
+            )
+            raise SecretWriteFailed("tls reissue timed out", partially_applied=True)
+        await asyncio.sleep(_TLS_REISSUE_POLL_S)
 
 
 class KubernetesGateway:

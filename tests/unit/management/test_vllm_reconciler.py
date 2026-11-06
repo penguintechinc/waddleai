@@ -330,7 +330,7 @@ def _auto(env, **over):
 def test_auto_price_recomputed_daily_from_observed_p50(env) -> None:
     """Daily recompute uses the observed throughput, stores it, upserts the rate, logs an event."""
     _, dep = _auto(env)
-    usage = FakeUsage(40.0)
+    usage = FakeUsage(80.0)  # must EXCEED the 40 tok/s class estimate to lower the price
     rec, _, clock = _reconciler(env, usage_source=usage)
     assert _tick(rec)["prices_recalculated"] == 1
     clock.now = 86399
@@ -338,7 +338,7 @@ def test_auto_price_recomputed_daily_from_observed_p50(env) -> None:
     clock.now = 86400
     assert _tick(rec)["prices_recalculated"] == 1
     row = env(env.vllm_deployments.id == dep.id).select().first()
-    assert float(row.observed_tokens_per_s) == 40.0
+    assert float(row.observed_tokens_per_s) == 80.0
     assert row.price_breakdown["throughput_source"] == "observed"
     rate = (
         env(
@@ -622,3 +622,82 @@ def test_db_enforces_one_offer_per_org_and_name(env) -> None:
     for org in (1, None):
         with pytest.raises(IntegrityError):
             _offer(env, ["vllm"], owner_org_id=org)
+
+
+# --- review fixes (Plan C): price integrity + tick cost --------------------------------------
+
+
+class RaisingUsage:
+    """A usage source whose lookup always fails."""
+
+    def observed_aggregate_tps(self, *_a: Any, **_k: Any) -> float | None:
+        """Fail like a broken samples query."""
+        raise RuntimeError("samples query failed")
+
+
+def test_local_throughput_lookup_failure_counts_error_and_keeps_last_price(two_orgs) -> None:
+    """A failed observed lookup is NOT treated as 'no observation': error counted, price kept."""
+    env, _b1, _b2 = two_orgs
+    rec, _, _ = _reconciler(env, usage_source=RaisingUsage())
+    counts = _tick(rec)
+    assert counts["reconcile_errors"] >= 4 and counts["prices_recalculated"] == 0
+    row = env(env.ollama_deployments.name == "ollama_deployments-1").select().first()
+    assert row.price_breakdown is None and Decimal(str(row.price_output_per_1m)) == 0
+
+
+def test_vllm_throughput_lookup_failure_counts_error_and_keeps_last_price(env) -> None:
+    """Same contract on the vLLM path."""
+    _, dep = _auto(env)
+    before = env(env.vllm_deployments.id == dep.id).select().first().price_output_per_1m
+    rec, _, _ = _reconciler(env, usage_source=RaisingUsage())
+    counts = _tick(rec)
+    assert counts["reconcile_errors"] == 1 and counts["prices_recalculated"] == 0
+    after = env(env.vllm_deployments.id == dep.id).select().first().price_output_per_1m
+    assert after == before
+
+
+def test_estimate_only_recompute_writes_null_observed_not_a_stale_value(env) -> None:
+    """No observation this round: observed_tokens_per_s becomes NULL, never the old value."""
+    _, dep = _auto(env, observed_tokens_per_s=99.0)
+    rec, _, _ = _reconciler(env, usage_source=FakeUsage(None))
+    _tick(rec)
+    row = env(env.vllm_deployments.id == dep.id).select().first()
+    assert row.observed_tokens_per_s is None
+
+
+def test_counts_gauge_gated_by_interval(env, monkeypatch) -> None:
+    """The all-deployments status scan runs at most once per deployment interval."""
+    calls: list[int] = []
+    monkeypatch.setattr(
+        "services.management.app.services.vllm_reconciler.record_deployment_counts",
+        lambda by_status: calls.append(1),
+    )
+    seed_backend(env)
+    rec, _, clock = _reconciler(env)
+    _tick(rec)
+    _tick(rec)
+    assert len(calls) == 1
+    clock.now = 16
+    _tick(rec)
+    assert len(calls) == 2
+
+
+def test_local_scan_gated_by_interval_and_filtered_in_sql(two_orgs, monkeypatch) -> None:
+    """Running-AUTO selects are interval-gated and take the owned backend ids (SQL filter)."""
+    env, b1, b2 = two_orgs
+    rec, _, clock = _reconciler(env, usage_source=FakeUsage(None))
+    seen: list[set[int]] = []
+    real = rec._running_auto_rows
+
+    def spy(table: str, owned: set[int]) -> list[Any]:
+        seen.append(set(owned))
+        return real(table, owned)
+
+    monkeypatch.setattr(rec, "_running_auto_rows", spy)
+    _tick(rec)
+    first = len(seen)
+    _tick(rec)
+    assert len(seen) == first > 0
+    assert all(s <= {b1} or s <= {b2} for s in seen)
+    rows = rec._running_auto_rows("ollama_deployments", {b1})
+    assert [r.name for r in rows] == ["ollama_deployments-1"]

@@ -204,6 +204,10 @@ class FakeK8s:
     job_states: dict[str, str] = field(default_factory=dict)
     deleted_secrets: list[str] = field(default_factory=list)
     fail_next_patch: bool = False
+    fail_next_restart: bool = False
+    fail_create_job: bool = False
+    reissue_tls: bool = True  # cert-manager reissues the TLS Secret (False: it never does)
+    patch_fail_after: int | None = None  # fail every patch once this many have succeeded
 
     def read_secret(self, namespace: str, name: str) -> dict[str, str] | None:
         """Secret data or None."""
@@ -214,6 +218,8 @@ class FakeK8s:
         """Merge-patch; ``None`` removes a key; ``fail_next_patch`` raises once."""
         if self.fail_next_patch:
             self.fail_next_patch = False
+            raise RuntimeError("apiserver unavailable")
+        if self.patch_fail_after is not None and len(self.patches) >= self.patch_fail_after:
             raise RuntimeError("apiserver unavailable")
         self.patches.append((name, dict(data)))
         target = self.secrets.setdefault(name, {})
@@ -227,19 +233,26 @@ class FakeK8s:
         """Delete a Secret."""
         self.deleted_secrets.append(name)
         self.secrets.pop(name, None)
+        if self.reissue_tls and name == "waddleai-ray-tls":
+            self.secrets[name] = {"tls.crt": "reissued-cert-body"}
 
     def create_secret(self, namespace: str, name: str, data: dict[str, str]) -> None:
         """Create a Secret."""
         self.secrets[name] = dict(data)
 
     def bump_restart_generation(self, namespace: str, kind: str, name: str) -> int:
-        """Increment the restart generation."""
+        """Increment the restart generation (``fail_next_restart`` raises once)."""
+        if self.fail_next_restart:
+            self.fail_next_restart = False
+            raise RuntimeError("apiserver unavailable")
         key = f"{kind}/{name}"
         self.restart[key] = self.restart.get(key, 0) + 1
         return self.restart[key]
 
     def create_job(self, namespace: str, manifest: dict[str, Any]) -> None:
-        """Record a Job."""
+        """Record a Job (``fail_create_job`` raises)."""
+        if self.fail_create_job:
+            raise RuntimeError("apiserver unavailable")
         self.jobs[manifest["metadata"]["name"]] = manifest
 
     def job_state(self, namespace: str, name: str) -> str:

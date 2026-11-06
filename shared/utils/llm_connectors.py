@@ -523,14 +523,23 @@ async def resolve_reported_counts(
     caps: tuple[int, int],
     estimate_in: Callable[[], Awaitable[int]],
     estimate_out: Callable[[], Awaitable[int]],
+    *,
+    prompt_text: str = "",
+    output_text: str = "",
 ) -> tuple[int, int, bool]:
     """Validated counts; each invalid/missing field is estimated and the row flagged.
 
     Returns ``(input_tokens, output_tokens, estimated)``. A field is "real" only when the engine
-    reported a valid value for it; nothing ever defaults to 0 on a row marked not-estimated.
+    reported a valid value for it; nothing ever defaults to 0 on a row marked not-estimated. A
+    reported 0 beside non-empty text (``prompt_text`` / ``output_text``) is a missing count, not
+    a free request, so it is estimated and flagged like any other invalid value.
     """
     in_t = validate_token_count(raw_in, caps[0])
     out_t = validate_token_count(raw_out, caps[1])
+    if in_t == 0 and prompt_text.strip():
+        in_t = None
+    if out_t == 0 and output_text.strip():
+        out_t = None
     estimated = in_t is None or out_t is None
     if in_t is None:
         in_t = max(0, await estimate_in())
@@ -1011,6 +1020,8 @@ class VllmConnector(OpenAIConnector):
             usage_count_caps(self.config, request_kwargs),
             lambda: self.count_tokens(prompt, model),
             lambda: self.count_tokens(text, model),
+            prompt_text=prompt,
+            output_text=text,
         )
         out = {
             **usage_info,
@@ -2285,7 +2296,13 @@ class OllamaConnector(LLMConnector):
             return len(self.token_estimator.encode(text))
 
         in_t, out_t, estimated = await resolve_reported_counts(
-            raw_in, raw_out, usage_count_caps(self.config, request_kwargs), est_in, est_out
+            raw_in,
+            raw_out,
+            usage_count_caps(self.config, request_kwargs),
+            est_in,
+            est_out,
+            prompt_text=prompt,
+            output_text=text,
         )
         if estimated:
             _count_missing(reason, "ollama")
@@ -2469,6 +2486,8 @@ class LlamaCppConnector(LLMConnector):
             usage_count_caps(self.config, request_kwargs),
             lambda: self.count_tokens(prompt, model),
             lambda: self.count_tokens(text, model),
+            prompt_text=prompt,
+            output_text=text,
         )
         if estimated:
             _count_missing(reason, "llamacpp")

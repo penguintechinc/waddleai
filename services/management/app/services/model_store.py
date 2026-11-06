@@ -151,25 +151,36 @@ async def ensure_weights(
     secret_name: str | None = None
     gateway = fleet_secrets.get_gateway()
     namespace = fleet_secrets.namespace()
-    if token:
-        secret_name = f"waddleai-hf-{deployment_id}"
-        await asyncio.to_thread(gateway.create_secret, namespace, secret_name, {"HF_TOKEN": token})
-    manifest = build_pull_job_manifest(
-        name=job_name(org_id, model_ref),
-        namespace=namespace,
-        image=pull_image(),
-        model_ref=model_ref,
-        store_path=path,
-        secret_name=secret_name,
-        store_root=store_root(),
-    )
-    await asyncio.to_thread(gateway.create_job, namespace, manifest)
+    try:
+        if token:
+            secret_name = f"waddleai-hf-{deployment_id}"
+            await asyncio.to_thread(
+                gateway.create_secret, namespace, secret_name, {"HF_TOKEN": token}
+            )
+        manifest = build_pull_job_manifest(
+            name=job_name(org_id, model_ref),
+            namespace=namespace,
+            image=pull_image(),
+            model_ref=model_ref,
+            store_path=path,
+            secret_name=secret_name,
+            store_root=store_root(),
+        )
+        await asyncio.to_thread(gateway.create_job, namespace, manifest)
 
-    def _mark() -> None:
-        _set_status(db, deployment_id, S.PULLING, None)
-        _event(db, deployment_id, S.PULLING, "pulling model weights")
+        def _mark() -> None:
+            _set_status(db, deployment_id, S.PULLING, None)
+            _event(db, deployment_id, S.PULLING, "pulling model weights")
 
-    await asyncio.to_thread(_mark)
+        await asyncio.to_thread(_mark)
+    except BaseException:
+        if secret_name is not None:
+            # the token Secret must not outlive a pull that never started (404 is fine)
+            try:
+                await asyncio.to_thread(gateway.delete_secret, namespace, secret_name)
+            except Exception:
+                logger.error("hf token secret cleanup failed for deployment %s", deployment_id)
+        raise
     return path
 
 

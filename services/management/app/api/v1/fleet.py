@@ -314,13 +314,15 @@ def _validation_error(detail: str) -> tuple[Any, int]:
 
 
 def _get_org_scoped_backend(backend_id: int, org_id: int) -> tuple[Any, str]:
-    """Return a ``fleet_backends`` row, distinguishing "not found" from "wrong org"."""
+    """Return an org-scoped ``fleet_backends`` row.
+
+    Another org's backend is reported as ``not_found`` -- identical to a missing id -- so the
+    API is not an existence oracle across tenants.
+    """
     database = _db()
     row = database(database.fleet_backends.id == backend_id).select().first()
-    if row is None:
+    if row is None or row.org_id != org_id:
         return None, "not_found"
-    if row.org_id != org_id:
-        return None, "forbidden"
     return row, "ok"
 
 
@@ -476,7 +478,7 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
 @require_scope(Permission.FLEET_ADMIN)
 @validate_response(FleetBackendResponse, 200)
 async def get_fleet_backend(backend_id: int):
-    """Fetch one registered fleet backend -- 403 across orgs, 404 if it never existed."""
+    """Fetch one registered fleet backend -- 404 for another org's backend and for a missing one."""
     org_id = g.user.get("organization_id")
     if not _fleet_v2_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
@@ -484,8 +486,6 @@ async def get_fleet_backend(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     return {"status": "success", "data": _backend_to_dict(row), "meta": {"timestamp": _now()}}, 200
 
@@ -501,9 +501,9 @@ async def update_fleet_backend(backend_id: int):
     reinterpret ``config``/``credentials_ref`` for a different backend
     class) -- delete and recreate to change type.
 
-    Body validation runs in-handler, AFTER the flag/existence/forbidden
+    Body validation runs in-handler, AFTER the flag/existence
     checks, so a malformed body against a nonexistent or foreign-org backend
-    returns 404/403 rather than 400 -- preserving the deliberate
+    returns 404 rather than 400 -- preserving the deliberate
     existence/authz-before-input-validation order that
     tests/contract/test_management_mutations.py locks. A @validate_request
     decorator would run before the handler and invert that order
@@ -516,8 +516,6 @@ async def update_fleet_backend(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     body = (await request.get_json(silent=True)) or {}
     update_fields: dict[str, Any] = {}
@@ -578,8 +576,6 @@ async def delete_fleet_backend(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     def _delete():
         db(db.fleet_backends.id == backend_id).delete()
@@ -612,8 +608,6 @@ async def check_fleet_backend_health(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     try:
         backend = build_backend(db, row)
@@ -817,8 +811,20 @@ async def rotate_fleet_secret(name: str):
     except fleet_secrets.ManagedExternally:
         await asyncio.to_thread(_release_rotation, row_id)
         return jsonify({"status": "error", "error": "managed externally"}), 409
-    except fleet_secrets.SecretWriteFailed:
+    except fleet_secrets.SecretWriteFailed as exc:
         await asyncio.to_thread(_release_rotation, row_id)
+        if exc.partially_applied:
+            logger.error("fleet.secret.rotation_partial name=%s: restart pending", name)
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": "rotated, restart pending, retry",
+                        "reason": "restart pending",
+                    }
+                ),
+                502,
+            )
         return (
             jsonify(
                 {"status": "error", "error": "secret write failed", "reason": "secret write failed"}

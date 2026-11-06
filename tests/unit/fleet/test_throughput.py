@@ -31,6 +31,9 @@ def db(tmp_path: Path) -> Any:
     return get_db(db_uri=f"sqlite:///{tmp_path / 'tp.db'}")
 
 
+# Deployment-total estimate: owner rule => without one the observed rate is ignored entirely.
+EST = 50.0
+
 _NEXT_USER = [1000]
 
 
@@ -118,23 +121,31 @@ def test_ten_concurrent_streams_aggregate_not_per_request(db) -> None:
     """10 streams x 20 tok/s each, continuously, are ~200 tok/s aggregate -- not 20."""
     _traffic(db, users=10, buckets=6)  # 200 tokens / 10 s = 20 tok/s per request
     # 10 users x 30 requests x 200 tokens = 60_000 tokens per 300 s bucket
-    assert observed_aggregate_tokens_per_s(db, 1, 7) == pytest.approx(200.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)
 
 
 def test_idle_buckets_do_not_dilute(db) -> None:
     """Gaps between busy buckets (idle time) leave the sustained busy rate unchanged."""
     _traffic(db, users=10, buckets=3, start=0)
     _traffic(db, users=10, buckets=3, start=10)  # buckets 3..9 idle
-    assert observed_aggregate_tokens_per_s(db, 1, 7) == pytest.approx(200.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)
 
 
 def test_p90_of_busy_buckets(db) -> None:
     """The answer is the p90 of busy buckets: one outlier bucket does not set the price."""
     for k in range(10):  # 10 busy buckets: nine at 100 tok/s, one at 200 tok/s
         _traffic(db, users=10, buckets=1, per_user=15 if k else 30, start=k)
-    assert observed_aggregate_tokens_per_s(db, 1, 7) == pytest.approx(100.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(100.0)
     _traffic(db, users=10, buckets=1, per_user=30, start=10)  # 2 of 11 at 200 -> p90 = 200
-    assert observed_aggregate_tokens_per_s(db, 1, 7) == pytest.approx(200.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)
 
 
 def test_single_principal_flooding_a_bucket_is_capped(db) -> None:
@@ -149,7 +160,7 @@ def test_single_principal_flooding_a_bucket_is_capped(db) -> None:
     _bulk(db, rows)
     # ordinary users hold 2000 tokens each (under the cap); the flooder is cut to the c with
     # c = 0.2 * (18000 + c) = 4500 tokens
-    got = observed_aggregate_tokens_per_s(db, 1, 7)
+    got = observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=EST)
     assert got is not None
     assert got == pytest.approx((9 * 2000 + 4500) / BUCKET_S)
     assert got < (9 * 2000 + 900 * 200) / BUCKET_S / 2
@@ -158,16 +169,18 @@ def test_single_principal_flooding_a_bucket_is_capped(db) -> None:
 def test_bucket_dominated_by_fewer_than_five_principals_does_not_count(db) -> None:
     """Four principals cannot satisfy the 20% cap: nothing is measured -> None."""
     _traffic(db, users=4, buckets=8)
-    assert observed_aggregate_tokens_per_s(db, 1, 7) is None
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=EST) is None
 
 
 def test_none_without_enough_principals_or_busy_buckets(db) -> None:
     """No samples, too few busy buckets, or too few principals overall -> None."""
-    assert observed_aggregate_tokens_per_s(db, 1, 7) is None
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=EST) is None
     _traffic(db, users=10, buckets=MIN_BUSY_BUCKETS - 1)
-    assert observed_aggregate_tokens_per_s(db, 1, 7) is None
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=EST) is None
     _traffic(db, users=10, buckets=1, start=MIN_BUSY_BUCKETS - 1)
-    assert observed_aggregate_tokens_per_s(db, 1, 7) == pytest.approx(200.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)
     with pytest.raises(ValueError, match="window_hours"):
         observed_aggregate_tokens_per_s(db, 1, 7, window_hours=0)
 
@@ -176,23 +189,31 @@ def test_window_deployment_and_kind_scope(db) -> None:
     """Other deployments, other kinds and samples outside the window are ignored."""
     _traffic(db, users=10, buckets=6, dep=8)
     _traffic(db, users=10, buckets=6, kind=2)
-    assert observed_aggregate_tokens_per_s(db, 1, 7) is None
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=EST) is None
     _traffic(db, users=10, buckets=6)
-    assert observed_aggregate_tokens_per_s(db, 1, 7, window_hours=1) == pytest.approx(200.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, window_hours=1, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)
     for _ in range(3):
         _sample(db, 200, 10_000, user=99, age_h=30)
-    assert observed_aggregate_tokens_per_s(db, 1, 7, window_hours=1) == pytest.approx(200.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, window_hours=1, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)
 
 
 def test_engine_samples_win_only_when_they_qualify(db) -> None:
     """Engine-timed samples answer alone if they qualify; else proxy-timed ones are used."""
     _traffic(db, users=10, buckets=6, source=TIMING_ENGINE)
     _traffic(db, users=10, buckets=6, per_user=15, source=TIMING_PROXY, first_user=100)
-    assert observed_aggregate_tokens_per_s(db, 1, 7) == pytest.approx(200.0)  # engine wins
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 7, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(200.0)  # engine wins
     _traffic(db, users=10, buckets=6, source=TIMING_ENGINE, dep=8, per_user=3)
     _traffic(db, users=4, buckets=2, source=TIMING_ENGINE, dep=8, first_user=50)
     _traffic(db, users=10, buckets=6, per_user=15, source=TIMING_PROXY, dep=8, first_user=100)
-    assert observed_aggregate_tokens_per_s(db, 1, 8) == pytest.approx(100.0)
+    assert observed_aggregate_tokens_per_s(
+        db, 1, 8, estimate_aggregate_tokens_per_s=EST
+    ) == pytest.approx(100.0)
 
 
 def test_absurd_samples_and_aggregate_are_dropped_and_counted(db, monkeypatch) -> None:
@@ -246,7 +267,7 @@ def test_flood_cannot_evict_other_principals_from_the_aggregate(db) -> None:
     _bulk(db, rows)
     # ordinary users: 6000 tokens/bucket each; the flooder's ~16.7k tokens are cut to the c with
     # c = 0.2 * (30000 + c) = 7500
-    got = observed_aggregate_tokens_per_s(db, 1, 7)
+    got = observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=EST)
     assert got is not None and got == pytest.approx((5 * 6000 + 7500) / BUCKET_S, rel=0.02)
 
 
@@ -306,3 +327,12 @@ def test_db_without_samples_table_is_inert() -> None:
     assert record_generation_sample(bare, 1, 7, 64, 800) is False
     assert observed_aggregate_tokens_per_s(bare, 1, 7) is None
     assert prune_generation_samples(bare) == 0
+
+
+@pytest.mark.parametrize("missing", [None, 0.0, -1.0])
+def test_missing_estimate_ignores_observed_never_unbounded(db, missing) -> None:
+    """No usable estimate => the observed rate is ignored (never accepted without a bound)."""
+    _traffic(db, users=10, buckets=6)
+    assert (
+        observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=missing) is None
+    )

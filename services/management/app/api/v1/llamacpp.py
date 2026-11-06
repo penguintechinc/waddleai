@@ -762,7 +762,8 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
     """Rotate a llama.cpp deployment's bearer token: Secret key, then head restart (AM18).
 
     llama-server loads ``--api-key-file`` once at startup, so unlike vLLM the head pod must be
-    rolled (workers untouched). A failed Secret write leaves the old token in place.
+    rolled (workers untouched). A failed Secret write leaves the old token in place; a failed
+    restart is reported as "rotated, restart pending" (Secret and link already moved).
     """
     if not _fleet_keys_enabled(g.user.get("organization_id")):
         return jsonify({"status": "error", "error": "not_found"}), 404
@@ -776,12 +777,64 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
     link = await asyncio.to_thread(_llamacpp_link, f"llamacpp-{public_id}")
     token = secrets_svc.mint_token()
     try:
+        previous = await secrets_svc.read_deployment_key(slug)
         await secrets_svc.write_deployment_key(slug, token)
-        await secrets_svc.bump_restart("StatefulSet", dep.k8s_daemonset_name or dep.name)
     except secrets_svc.SecretWriteFailed:
         return jsonify({"error": "secret write failed", "reason": "secret write failed"}), 502
     if link is not None:
-        await asyncio.to_thread(_store_link_key, link.id, token)
+        # Keep the link in step with the Secret immediately; a restart failure below must never
+        # leave the proxy/canary holding a stale token.
+        try:
+            await asyncio.to_thread(_store_link_key, link.id, token)
+        except Exception:
+            logger.error(
+                "fleet.deployment.token_rotation_failed deployment=%s slug=%s: link update failed",
+                public_id,
+                slug,
+            )
+            try:
+                await secrets_svc.restore_deployment_key(slug, previous)
+            except secrets_svc.SecretWriteFailed:
+                logger.error(
+                    "fleet.deployment.token_rotation_restore_failed deployment=%s slug=%s",
+                    public_id,
+                    slug,
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": "token rotation failed",
+                            "reason": "link update failed; restore failed, rotate again",
+                        }
+                    ),
+                    502,
+                )
+            return (
+                jsonify(
+                    {
+                        "error": "token rotation failed",
+                        "reason": "link update failed; previous token restored",
+                    }
+                ),
+                502,
+            )
+    try:
+        await secrets_svc.bump_restart("StatefulSet", dep.k8s_daemonset_name or dep.name)
+    except secrets_svc.SecretWriteFailed:
+        logger.error(
+            "fleet.deployment.token_rotation_partial deployment=%s slug=%s: restart pending",
+            public_id,
+            slug,
+        )
+        return (
+            jsonify(
+                {
+                    "error": "rotated, restart pending, retry",
+                    "reason": "restart pending",
+                }
+            ),
+            502,
+        )
     fingerprint = secrets_svc.fingerprint(token)
     logger.info(
         "fleet.deployment.token_rotated deployment=%s fingerprint_new=%s", public_id, fingerprint

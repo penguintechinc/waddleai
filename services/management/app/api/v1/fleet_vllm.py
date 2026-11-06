@@ -446,19 +446,19 @@ def _events(database: Any, dep_id: int, limit: int, start: int = 0) -> list[Even
 
 
 def _get_deployment(database: Any, public_id: uuid.UUID, org_id: int) -> tuple[Any, str]:
-    """Deployment by public id plus outcome: ``ok``, ``not_found`` or ``forbidden``."""
+    """Deployment by public id plus outcome: ``ok`` or ``not_found``.
+
+    Another org's deployment is ``not_found`` (never 403) so ids are no existence oracle.
+    """
     row = database(database.vllm_deployments.public_id == str(public_id)).select().first()
-    if row is None:
+    if row is None or row.org_id != org_id:
         return None, "not_found"
-    if row.org_id != org_id:
-        return None, "forbidden"
     return row, "ok"
 
 
 def _deployment_lookup_error(outcome: str) -> tuple[Any, int]:
-    """404/403 envelope for a failed deployment lookup."""
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
+    """404 envelope for a failed deployment lookup (missing or another org's)."""
+    del outcome
     return jsonify({"status": "error", "error": "deployment not found"}), 404
 
 
@@ -932,7 +932,7 @@ async def list_vllm_deployments() -> Any:
 @require_scope(Permission.FLEET_ADMIN)
 @validate_response(DeploymentResponse, 200)
 async def get_vllm_deployment(public_id: uuid.UUID) -> Any:
-    """One deployment with its recent timeline (403 across orgs, 404 unknown)."""
+    """One deployment with its recent timeline (404 for unknown and for another org's)."""
     org_id = g.user.get("organization_id")
     if (blocked := _gate(org_id)) is not None:
         return blocked
@@ -1173,8 +1173,6 @@ async def create_vllm_deployment() -> Any:
     backend_row, outcome = await asyncio.to_thread(_get_org_scoped_backend, spec.backend_id, org_id)
     if outcome == "not_found":
         return _err("fleet backend not found", 404)
-    if outcome == "forbidden":
-        return _err("forbidden", 403)
     if backend_row.type != BackendType.VLLM_RAY.value:
         return _validation_error("fleet_backend_id must reference a vllm_ray backend")
     refusal, params_b, layout = await _create_refusal(database, org_id, spec, backend_row)
@@ -1190,6 +1188,9 @@ async def create_vllm_deployment() -> Any:
             "choose a different served_model_name.",
             409,
         )
+
+    if await asyncio.to_thread(_name_taken, database, org_id, spec.name):
+        return _err(f"a deployment named '{spec.name}' already exists for this org", 409)
 
     public_id = uuid.uuid4()
     slug = derive_slug(spec.name, public_id)
@@ -1258,8 +1259,14 @@ async def create_vllm_deployment() -> Any:
         database.commit()
         return "ok", database(database.vllm_deployments.id == new_id).select().first()
 
-    status, dep = await asyncio.to_thread(_insert)
+    try:
+        status, dep = await asyncio.to_thread(_insert)
+    except Exception:
+        # price_deployment already upserted the rate row: never leave it orphaned
+        await asyncio.to_thread(_discard_rate, database, public_id)
+        raise
     if status == "name_conflict":
+        await asyncio.to_thread(_discard_rate, database, public_id)
         return _err(f"a deployment named '{spec.name}' already exists for this org", 409)
 
     try:
@@ -1310,6 +1317,21 @@ async def create_vllm_deployment() -> Any:
         "data": item,
         "meta": {"action": "created", "timestamp": _now()},
     }, 201
+
+
+def _name_taken(database: Any, org_id: int, name: str) -> bool:
+    """True when this org already has a deployment called ``name`` (checked before pricing)."""
+    table = database.vllm_deployments
+    return database((table.org_id == org_id) & (table.name == name)).select().first() is not None
+
+
+def _discard_rate(database: Any, public_id: uuid.UUID) -> None:
+    """Remove the per-deployment rate row of a deployment that was never inserted."""
+    database(
+        (database.token_conversion_rates.provider == "vllm")
+        & (database.token_conversion_rates.model == f"deployment/{public_id}")
+    ).delete()
+    database.commit()
 
 
 def _discard(database: Any, dep: Any) -> None:
@@ -1407,7 +1429,14 @@ async def update_vllm_deployment(public_id: uuid.UUID) -> Any:
 async def _apply_price_change(
     database: Any, dep: Any, backend_row: Any, pricing: Any
 ) -> tuple[Any, int] | None:
-    """Re-price a deployment; the row is only written after the price validated."""
+    """Re-price a deployment; the row is only written after the price validated.
+
+    The row is reloaded first: ``backend.scale`` may just have changed ``replicas_min`` and the
+    AUTO price must be computed for the committed layout, not the pre-scale one.
+    """
+    dep = await asyncio.to_thread(
+        lambda: database(database.vllm_deployments.id == dep.id).select().first()
+    )
     row = SimpleNamespace(
         public_id=dep.public_id,
         price_mode=int(pricing.mode),
@@ -1466,6 +1495,7 @@ async def delete_vllm_deployment(public_id: uuid.UUID) -> Any:
             return _err(str(exc), 502)
     try:
         await fleet_secrets.remove_key(dep.slug)
+        await fleet_secrets.remove_hf_token_secret(dep.id)  # a leftover pull-token Secret
     except fleet_secrets.SecretWriteFailed:
         return _err("secret write failed", 502, reason="secret write failed")
     await unlink_deployment(database, dep)
@@ -1487,6 +1517,20 @@ async def delete_vllm_deployment(public_id: uuid.UUID) -> Any:
     }, 200
 
 
+def _audit_rotation(database: Any, dep: Any, old: str | None, new: str) -> None:
+    """Record who rotated a deployment token (fingerprints only, never a value)."""
+    database.audit_log.insert(
+        method="POST",
+        path=f"fleet.deployment.token_rotated/{dep.slug}",
+        resource_id=f"{old}->{new}",
+        status_code=200,
+        user_id=g.user.get("user_id"),
+        organization_id=g.user.get("organization_id"),
+        created_at=datetime.utcnow(),
+    )
+    database.commit()
+
+
 @api_v1_bp.route("/fleet/vllm/deployments/<uuid:public_id>/rotate-token", methods=["POST"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
@@ -1504,21 +1548,64 @@ async def rotate_vllm_token(public_id: uuid.UUID) -> Any:
     dep, outcome = await asyncio.to_thread(_get_deployment, database, public_id, org_id)
     if dep is None:
         return _deployment_lookup_error(outcome)
+    if not dep.connection_link_id:
+        # Fail loudly BEFORE writing anything: a Secret rotated without its link would leave the
+        # readiness canary and the proxy holding a token the engine no longer accepts.
+        logger.error(
+            "fleet.deployment.token_rotation_refused deployment=%s slug=%s: no connection link",
+            dep.public_id,
+            dep.slug,
+        )
+        return _err(
+            "deployment has no connection link; token cannot be rotated safely",
+            409,
+            reason="no connection link",
+        )
     old = await asyncio.to_thread(_fingerprint_for, database, dep)
     token = fleet_secrets.mint_token()
     try:
+        previous = await fleet_secrets.read_deployment_key(dep.slug)
         await fleet_secrets.write_deployment_key(dep.slug, token)
     except fleet_secrets.SecretWriteFailed:
         return _err("secret write failed", 502, reason="secret write failed")
-    if dep.connection_link_id:
-        await asyncio.to_thread(
-            update_connection_link_api_key, database, dep.connection_link_id, token
+
+    def _store_link() -> None:
+        update_connection_link_api_key(database, dep.connection_link_id, token)
+        database.commit()
+
+    try:
+        await asyncio.to_thread(_store_link)
+    except Exception:
+        # never half-rotated: put the previous Secret value back (the token is never logged)
+        logger.error(
+            "fleet.deployment.token_rotation_failed deployment=%s slug=%s: link update failed",
+            dep.public_id,
+            dep.slug,
         )
-        await asyncio.to_thread(database.commit)
+        try:
+            await fleet_secrets.restore_deployment_key(dep.slug, previous)
+        except fleet_secrets.SecretWriteFailed:
+            logger.error(
+                "fleet.deployment.token_rotation_restore_failed deployment=%s slug=%s: "
+                "Secret and link may disagree; rotate again",
+                dep.public_id,
+                dep.slug,
+            )
+            return _err(
+                "token rotation failed",
+                502,
+                reason="link update failed; restore failed, rotate again",
+            )
+        return _err(
+            "token rotation failed", 502, reason="link update failed; previous token restored"
+        )
     fingerprint = fleet_secrets.fingerprint(token)
+    await asyncio.to_thread(_audit_rotation, database, dep, old, fingerprint)
     logger.info(
-        "fleet.deployment.token_rotated deployment=%s fingerprint_old=%s fingerprint_new=%s",
+        "fleet.deployment.token_rotated deployment=%s actor=%s fingerprint_old=%s "
+        "fingerprint_new=%s",
         dep.public_id,
+        g.user.get("user_id"),
         old,
         fingerprint,
     )

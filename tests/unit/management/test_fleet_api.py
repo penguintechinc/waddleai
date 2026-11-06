@@ -305,15 +305,15 @@ class TestGetUpdateDeleteFleetBackend:
         resp = await client.get(f"{ENDPOINT_PATH}/999", headers=auth_headers)
         assert resp.status_code == 404
 
-    async def test_get_foreign_org_returns_403(
+    async def test_get_foreign_org_returns_404(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """A backend belonging to another org returns 403, not 404."""
+        """Another org's backend is 404 -- no existence oracle (identical to a missing id)."""
         _enable_flag(monkeypatch)
         foreign = make_mock_backend(org_id=99)
         app_mock_db.return_value.select.return_value = make_select_result([foreign])
         resp = await client.get(f"{ENDPOINT_PATH}/1", headers=auth_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     async def test_get_own_org_succeeds(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
@@ -345,17 +345,17 @@ class TestGetUpdateDeleteFleetBackend:
         body = await resp.get_json()
         assert body["data"]["management_scope"] == "register_and_route"
 
-    async def test_update_foreign_org_returns_403(
+    async def test_update_foreign_org_returns_404(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """Updating another org's backend returns 403."""
+        """Updating another org's backend is 404 (no existence oracle)."""
         _enable_flag(monkeypatch)
         foreign = make_mock_backend(org_id=99)
         app_mock_db.return_value.select.return_value = make_select_result([foreign])
         resp = await client.put(
             f"{ENDPOINT_PATH}/1", headers=auth_headers, json={"name": "hijacked"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     async def test_update_rejects_invalid_management_scope(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
@@ -379,15 +379,15 @@ class TestGetUpdateDeleteFleetBackend:
         resp = await client.delete(f"{ENDPOINT_PATH}/1", headers=auth_headers)
         assert resp.status_code == 200
 
-    async def test_delete_foreign_org_returns_403(
+    async def test_delete_foreign_org_returns_404(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """Deleting another org's backend returns 403."""
+        """Deleting another org's backend is 404 (no existence oracle)."""
         _enable_flag(monkeypatch)
         foreign = make_mock_backend(org_id=99)
         app_mock_db.return_value.select.return_value = make_select_result([foreign])
         resp = await client.delete(f"{ENDPOINT_PATH}/1", headers=auth_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
 
 class TestFleetBackendHealth:

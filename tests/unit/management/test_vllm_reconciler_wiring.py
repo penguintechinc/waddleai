@@ -71,14 +71,14 @@ def test_observed_value_overrides_estimate(env, monkeypatch) -> None:  # noqa: F
     """A trustworthy observation becomes the price's throughput source."""
     monkeypatch.setattr(
         "services.management.app.services.vllm_reconciler.observed_aggregate_tokens_per_s",
-        lambda *a, **k: 33.0,
+        lambda *a, **k: 80.0,  # must exceed the 40 tok/s estimate to lower price
     )
     b = seed_backend(env)
     dep = seed_deployment(env, b, status=5, price_mode=1)
     rec, _, _ = _reconciler(env)
     _tick(rec)
     row = env(env.vllm_deployments.id == dep.id).select().first()
-    assert float(row.observed_tokens_per_s) == 33.0
+    assert float(row.observed_tokens_per_s) == 80.0
 
 
 def test_sample_prune_runs_once_per_day(env, monkeypatch) -> None:  # noqa: F811

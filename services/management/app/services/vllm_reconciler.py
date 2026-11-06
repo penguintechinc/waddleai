@@ -331,6 +331,8 @@ class VllmReconciler:
         self._last_inventory: dict[int, float] = {}
         self._last_priced: dict[tuple[int, int], float] = {}
         self._last_pruned: float | None = None
+        self._last_counts: float | None = None
+        self._last_local_scan: dict[int, float] = {}
 
     def _select(self, build: Callable[[Any], Any]) -> list[Any]:
         """Blocking DAL select (run via ``asyncio.to_thread``)."""
@@ -370,7 +372,11 @@ class VllmReconciler:
         return counts
 
     async def _record_counts(self) -> None:
-        """Publish the per-status deployment gauge from one pass over every deployment row."""
+        """Publish the per-status deployment gauge, at most once per deployment interval."""
+        now = self.clock()
+        if self._last_counts is not None and now - self._last_counts < self.deployment_interval_s:
+            return
+        self._last_counts = now
         rows = await asyncio.to_thread(
             lambda: list(self.db(self.db.vllm_deployments.id > 0).select())
         )
@@ -402,6 +408,11 @@ class VllmReconciler:
         derivable owning org is skipped with a warning and never priced with another org's
         config. Only the org's lowest-id vllm_ray backend runs this, so each row is priced once.
         """
+        now = self.clock()
+        last_scan = self._last_local_scan.get(int(brow.id))
+        if last_scan is not None and now - last_scan < self.deployment_interval_s:
+            return  # the backend/row selects below are interval-gated, not per-tick
+        self._last_local_scan[int(brow.id)] = now
         first = await asyncio.to_thread(
             self._select,
             lambda db: (
@@ -427,7 +438,7 @@ class VllmReconciler:
             (int(LocalDeploymentKind.OLLAMA), "ollama_deployments"),
             (int(LocalDeploymentKind.LLAMACPP), "llamacpp_deployments"),
         ):
-            rows = await asyncio.to_thread(self._running_auto_rows, table)
+            rows = await asyncio.to_thread(self._running_auto_rows, table, owned_ids)
             for row in rows:
                 owner = row.fleet_backend_id
                 if owner is None:
@@ -439,10 +450,19 @@ class VllmReconciler:
                     continue  # another org's deployment: never priced with this org's config
                 await self._recompute_local(kind, table, row, inputs, costs, counts)
 
-    def _running_auto_rows(self, table_name: str) -> list[Any]:
-        """Running AUTO-priced rows of a local-deployment table."""
+    def _running_auto_rows(self, table_name: str, owned_ids: set[int]) -> list[Any]:
+        """Running AUTO-priced rows of a local-deployment table owned by ``owned_ids`` backends.
+
+        Ownership is filtered in SQL so a tick never loads (or prices) another org's rows; rows
+        with no owning backend are still returned so the caller can warn about them.
+        """
         table = getattr(self.db, table_name)
-        query = (table.status == "running") & (table.price_mode == int(PriceMode.AUTO_TCO))
+        owner = table.fleet_backend_id
+        query = (
+            (table.status == "running")
+            & (table.price_mode == int(PriceMode.AUTO_TCO))
+            & (owner.belongs(sorted(owned_ids)) | (owner == None))  # noqa: E711
+        )
         return list(self.db(query).select())
 
     async def _recompute_local(
@@ -469,8 +489,10 @@ class VllmReconciler:
                 estimate,
             )
         except Exception:
+            # A failed lookup is NOT "no observation": keep the last good price (skip recompute).
             logger.warning("throughput lookup failed for %s %s", table, row.id, exc_info=True)
-            observed = None
+            counts["reconcile_errors"] += 1
+            return
         try:
             await apply_pricing(self.db, kind, view, inputs, costs, observed)
         except (ValueError, PricingInputsUnavailable):
@@ -649,10 +671,10 @@ async def _price_row(
             "price_input_per_1m": priced.price_input_per_1m,
             "price_output_per_1m": priced.price_output_per_1m,
             "price_breakdown": priced.price_breakdown,
+            # NULL when no observation set the price -- never leave a stale value behind
+            "observed_tokens_per_s": priced.observed_tokens_per_s,
             "updated_at": _now(),
         }
-        if priced.observed_tokens_per_s is not None:
-            values["observed_tokens_per_s"] = priced.observed_tokens_per_s
         db(db.vllm_deployments.id == dep.id).update(**values)
         db.vllm_deployment_events.insert(
             deployment_id=dep.id, ts=_now(), state=int(dep.status), message=PRICE_RECALCULATED

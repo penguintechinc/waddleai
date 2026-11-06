@@ -229,7 +229,8 @@ def observed_aggregate_tokens_per_s(
     the quantity ``compute_tco`` expects. See the module docstring for the bucketing, the p90 of
     busy buckets, and the anti-manipulation rules; ``estimate_aggregate_tokens_per_s`` is the
     deployment-total GPU-class estimate: a result at or below it is ignored (None -- observed can
-    only LOWER the price) and one above 10x is rejected as implausible.
+    only LOWER the price), one above 10x is rejected as implausible, and a missing estimate
+    ignores the observation entirely.
     """
     if window_hours <= 0:
         raise ValueError("window_hours must be positive")
@@ -246,12 +247,15 @@ def observed_aggregate_tokens_per_s(
     if result is None:
         return None
     est = estimate_aggregate_tokens_per_s
-    if est is not None and est > 0:
-        if result > est * _ESTIMATE_HIGH:
-            _count_dropped("implausible_aggregate", 1)
-            return None
-        if result <= est:
-            return None  # demand is not capacity: observed may only LOWER the price
+    if est is None or est <= 0:
+        # Owner rule: a missing/failed estimate => observed is ignored, never accepted unbounded.
+        _count_dropped("estimate_unavailable", 1)
+        return None
+    if result > est * _ESTIMATE_HIGH:
+        _count_dropped("implausible_aggregate", 1)
+        return None
+    if result <= est:
+        return None  # demand is not capacity: observed may only LOWER the price
     return result
 
 
