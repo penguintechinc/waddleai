@@ -237,17 +237,39 @@ class PullPoller:
 
 
 def _references(db: Any, org_id: int, model_ref: str) -> list[tuple[int, str]]:
-    """``(kind, public_id)`` of every vLLM, Ollama or llama.cpp deployment using the model."""
+    """``(kind, public_id)`` of this org's deployments using the model, across all three kinds.
+
+    Ownership is derived only through ``fleet_backend_id -> fleet_backends.org_id`` (vLLM rows
+    carry ``org_id`` directly). Other orgs' rows, and rows with no derivable owner, are never
+    counted or returned, so a refusal can never reveal another tenant's deployments.
+    """
     refs: list[tuple[int, str]] = []
     for row in db(
         (db.vllm_deployments.org_id == org_id) & (db.vllm_deployments.model_ref == model_ref)
     ).select():
         refs.append((int(LocalDeploymentKind.VLLM), str(row.public_id)))
-    for model in db(db.ollama_models.model_name == model_ref).select():
-        owner = db(db.ollama_deployments.id == model.deployment_id).select().first()
-        if owner is not None:
-            refs.append((int(LocalDeploymentKind.OLLAMA), str(owner.public_id)))
-    for row in db(db.llamacpp_deployments.model_name == model_ref).select():
+    backend_ids = [int(r.id) for r in db(db.fleet_backends.org_id == org_id).select()]
+    if not backend_ids:
+        return refs
+    owned_ollama = {
+        int(r.id): r
+        for r in db(db.ollama_deployments.fleet_backend_id.belongs(backend_ids)).select()
+    }
+    if owned_ollama:
+        for model in db(
+            (db.ollama_models.model_name == model_ref)
+            & db.ollama_models.deployment_id.belongs(list(owned_ollama))
+        ).select():
+            refs.append(
+                (
+                    int(LocalDeploymentKind.OLLAMA),
+                    str(owned_ollama[int(model.deployment_id)].public_id),
+                )
+            )
+    for row in db(
+        (db.llamacpp_deployments.model_name == model_ref)
+        & db.llamacpp_deployments.fleet_backend_id.belongs(backend_ids)
+    ).select():
         refs.append((int(LocalDeploymentKind.LLAMACPP), str(row.public_id)))
     return refs
 
