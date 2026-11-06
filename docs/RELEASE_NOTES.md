@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added — GPU Fleet UI, CLI and admin guide (vLLM on Ray, Plan D)
+
+Flag-gated (`waddleai.fleet_v2` and `waddleai.fleet-vllm-ray`, default off) admin UI at `/gpu-fleet`:
+overview with savings, deployments table with timeline, six-step deploy wizard with live fit check
+and TCO pricing, backend settings (cluster keys, token rotation, cost inputs), and virtual pricing
+on the Ollama form. CLI: `waddleai fleet vllm ...` and `waddleai fleet secrets ...` (exit 2 for
+externally managed keys). `make seed-mock-data` seeds demo GPUs and deployments. See
+`operations/gpu-fleet-vllm-ray.md`.
+
 ### Added — Elastic pooled token quota (design: `docs/superpowers/specs/2026-10-14-elastic-pooled-quota-design.md`)
 
 Tenants get a credit pool split across teams and users: per-user guaranteed reservations, an

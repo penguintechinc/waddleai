@@ -6,3 +6,6 @@
 .wizard-nav { display: flex; justify-content: space-between; margin-top: 1.5rem; }
 .explain { color: #4b5563; font-size: 0.9rem; }
 .layout-choices label { display: block; margin: 0.5rem 0; }
+.gpu-fleet-wizard button, .gpu-fleet-wizard input, .gpu-fleet-wizard select { color: #111827; }
+.gpu-fleet-wizard input[type='radio'], .gpu-fleet-wizard input[type='checkbox'] { margin-right: 0.5rem; }
+.gpu-fleet-wizard fieldset { border: 1px solid #334155; padding: 0.75rem; }

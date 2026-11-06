@@ -1,4 +1,6 @@
 .gpu-fleet-backend { max-width: 900px; }
-.backend-vllm-settings section, .backend-vllm-settings form { background: #fff; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+.backend-vllm-settings section, .backend-vllm-settings form { background: #1f2a44; color: #e5e7eb; border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
 .cost-form label { display: block; margin: 0.4rem 0; }
 .badge { background: #e0e7ff; padding: 0.1rem 0.5rem; border-radius: 999px; }
+.gpu-fleet-backend button, .gpu-fleet-backend input { color: #111827; }
+.gpu-fleet-backend section, .gpu-fleet-backend form, .gpu-fleet-backend td, .gpu-fleet-backend p { color: #e5e7eb; }
