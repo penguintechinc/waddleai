@@ -99,14 +99,39 @@ def test_gpu_set_for_ollama_reads_node_label_and_gpu_count() -> None:
 
 
 def test_gpu_set_for_llamacpp_reads_node_selector() -> None:
-    """llama.cpp: class from node_selector; gpu_count default 1."""
-    assert gpu_set_for(LLAMACPP, _llama(gpu_count=None)) == ([(CLS, 1)], None)
+    """llama.cpp: class from node_selector; explicit gpu_count used as-is."""
+    assert gpu_set_for(LLAMACPP, _llama(gpu_count=1)) == ([(CLS, 1)], None)
 
 
-def test_gpu_set_for_ollama_defaults_count_to_one() -> None:
-    """Missing gpu_count in gpu_config defaults to 1."""
-    row = _ollama(gpu_config={"node_selector": {LABEL: CLS}})
-    assert gpu_set_for(OLLAMA, row)[0] == [(CLS, 1)]
+@pytest.mark.parametrize("count", [None, 0, -1])
+def test_gpu_set_for_requires_explicit_positive_count(count: Any) -> None:
+    """Missing/zero gpu_count never silently prices as 1 GPU."""
+    row = _ollama(gpu_config={"node_selector": {LABEL: CLS}, "gpu_count": count})
+    with pytest.raises(PricingInputsUnavailable):
+        gpu_set_for(OLLAMA, row)
+    with pytest.raises(PricingInputsUnavailable):
+        gpu_set_for(LLAMACPP, _llama(gpu_count=count))
+
+
+def test_gpu_set_for_ollama_missing_gpu_count_key_raises() -> None:
+    """Absent gpu_count key raises rather than defaulting to 1."""
+    with pytest.raises(PricingInputsUnavailable):
+        gpu_set_for(OLLAMA, _ollama(gpu_config={"node_selector": {LABEL: CLS}}))
+
+
+@pytest.mark.parametrize("kind", [OLLAMA, LLAMACPP])
+def test_gpu_set_for_multi_class_label_raises(kind: int) -> None:
+    """A comma-separated gpu-classes label is ambiguous: refuse instead of taking the first."""
+    sel = {LABEL: f"{CLS},nvidia-a100"}
+    row = (
+        _ollama(gpu_config={"node_selector": sel, "gpu_count": 2})
+        if kind == OLLAMA
+        else _llama(node_selector=sel)
+    )
+    with pytest.raises(PricingInputsUnavailable, match="multiple GPU classes"):
+        gpu_set_for(kind, row)
+    with pytest.raises(PricingInputsUnavailable, match="multiple GPU classes"):
+        gpu_set_for(kind, row, node_class_lookup=lambda _r: f"{CLS},nvidia-a100")
 
 
 @pytest.mark.parametrize("kind", [OLLAMA, LLAMACPP])
@@ -397,7 +422,7 @@ async def test_apply_pricing_unavailable_propagates_without_writing() -> None:
 async def test_apply_pricing_injected_lookup_is_used() -> None:
     """The K8s node-class lookup is injectable, so no cluster is needed."""
     lookup = MagicMock(return_value=CLS)
-    row = _ollama(gpu_config={})
+    row = _ollama(gpu_config={"gpu_count": 1})
     with patch(UPSERT):
         result = await apply_pricing(
             _db(), OLLAMA, row, TcoInputs(), _costs(), 40.0, node_class_lookup=lookup
@@ -440,3 +465,24 @@ def test_rate_model_key_is_deployment_public_id() -> None:
     """The helper keys by public_id, never by name."""
     row = _vllm()
     assert rate_model_key(row) == f"deployment/{row.public_id}"
+
+
+async def test_apply_pricing_uses_one_base_cost_for_validation_and_upsert() -> None:
+    """A non-default base is validated AND passed to the upsert (no 0.001 split-brain)."""
+    row = _vllm()
+    with patch(UPSERT) as upsert:
+        await apply_pricing(
+            _db(), VLLM, row, TcoInputs(), _costs(), 40.0,
+            base_cost_per_waddleai_token=Decimal("0.5"),
+        )  # fmt: skip
+    assert upsert.call_args.kwargs["base_cost_per_waddleai_token"] == Decimal("0.5")
+
+
+async def test_apply_pricing_rejects_invalid_base_before_write() -> None:
+    """A non-positive base fails validation and nothing is written."""
+    with patch(UPSERT) as upsert, pytest.raises(ValueError, match="base_cost"):
+        await apply_pricing(
+            _db(), VLLM, _vllm(), TcoInputs(), _costs(), 40.0,
+            base_cost_per_waddleai_token=Decimal(0),
+        )  # fmt: skip
+    upsert.assert_not_called()

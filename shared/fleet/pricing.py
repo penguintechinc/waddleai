@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import functools
 import logging
 import math
 from collections.abc import Callable
@@ -24,7 +25,11 @@ from shared.fleet.vllm_ray.tco import (
     TcoResult,
     compute_tco,
 )
-from shared.quota.virtual_price import rate_model_key, virtual_rates
+from shared.quota.virtual_price import (
+    DEFAULT_BASE_COST_PER_WADDLEAI_TOKEN,
+    rate_model_key,
+    virtual_rates,
+)
 
 __all__ = [
     "GPU_CLASSES_LABEL",
@@ -55,18 +60,34 @@ class PricingInputsUnavailable(Exception):  # noqa: N818 -- name fixed by AM23
     """The deployment's GPU class is not yet knowable (no scheduled pod, no node selector)."""
 
 
-def _first_class(value: Any) -> str | None:
-    """First class of a possibly comma-separated label value."""
+def _single_class(value: Any) -> str | None:
+    """The one class named by a label value; several classes are ambiguous and refused."""
     if not value:
         return None
-    return str(value).split(",")[0].strip() or None
+    classes = [c.strip() for c in str(value).split(",") if c.strip()]
+    if len(classes) > 1:
+        raise PricingInputsUnavailable(
+            "node has multiple GPU classes; set the deployment's gpu_class explicitly"
+        )
+    return classes[0] if classes else None
+
+
+def _explicit_count(value: Any) -> int:
+    """A deployment's explicit positive GPU count; missing/zero never defaults to 1."""
+    try:
+        count = int(value) if value is not None else 0
+    except (TypeError, ValueError):
+        count = 0
+    if count <= 0:
+        raise PricingInputsUnavailable("deployment gpu_count must be an explicit positive number")
+    return count
 
 
 def _resolve_class(row: Any, selector: Any, lookup: NodeClassLookup | None) -> str:
     """AM23: live pod node label, else row node_selector, else PricingInputsUnavailable."""
-    cls = _first_class(lookup(row)) if lookup is not None else None
+    cls = _single_class(lookup(row)) if lookup is not None else None
     if cls is None and isinstance(selector, dict):
-        cls = _first_class(selector.get(GPU_CLASSES_LABEL))
+        cls = _single_class(selector.get(GPU_CLASSES_LABEL))
     if cls is None:
         raise PricingInputsUnavailable("awaiting node placement for pricing")
     return cls
@@ -87,10 +108,10 @@ def gpu_set_for(
     if kind == LocalDeploymentKind.OLLAMA:
         config = getattr(row, "gpu_config", None) or {}
         cls = _resolve_class(row, config.get("node_selector"), node_class_lookup)
-        return [(cls, int(config.get("gpu_count") or 1))], None
+        return [(cls, _explicit_count(config.get("gpu_count")))], None
     if kind == LocalDeploymentKind.LLAMACPP:
         cls = _resolve_class(row, getattr(row, "node_selector", None), node_class_lookup)
-        entries = [(cls, int(getattr(row, "gpu_count", None) or 1))]
+        entries = [(cls, _explicit_count(getattr(row, "gpu_count", None)))]
         if getattr(row, "topology", None) == LlamaCppTopology.RPC_MULTI_NODE:
             for worker in getattr(row, "rpc_workers", None) or []:
                 entries.append((str(worker["gpu_class"]), int(worker["gpu_count"])))
@@ -140,6 +161,7 @@ async def apply_pricing(
     observed_tokens_per_s: float | None,
     *,
     node_class_lookup: NodeClassLookup | None = None,
+    base_cost_per_waddleai_token: Decimal = DEFAULT_BASE_COST_PER_WADDLEAI_TOKEN,
 ) -> TcoResult | None:
     """Price a local deployment (AUTO TCO or MANUAL) and upsert its conversion-rate row.
 
@@ -177,14 +199,22 @@ async def apply_pricing(
         raise ValueError(f"unknown price_mode {row.price_mode}")
 
     # validates (finite, > 0) before anything is written
-    virtual_rates(price_in, price_out, Decimal("0.001"))
+    virtual_rates(price_in, price_out, base_cost_per_waddleai_token)
     if result is not None:
         row.price_input_per_1m, row.price_output_per_1m = price_in, price_out
         row.price_breakdown = result.breakdown
         if observed_tokens_per_s is not None:
             row.observed_tokens_per_s = observed_tokens_per_s
     await asyncio.to_thread(
-        upsert_virtual_rate, db, provider, rate_model_key(row), price_in, price_out
+        functools.partial(
+            upsert_virtual_rate,
+            db,
+            provider,
+            rate_model_key(row),
+            price_in,
+            price_out,
+            base_cost_per_waddleai_token=base_cost_per_waddleai_token,
+        )
     )
     logger.info("priced %s deployment %s mode=%s", provider, rate_model_key(row), row.price_mode)
     return result

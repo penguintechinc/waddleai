@@ -79,5 +79,9 @@ def upsert_virtual_rate(
         return
     try:
         table.insert(provider=provider, model=model, enabled=True, **values)
-    except IntegrityError:  # lost an insert race: update the winner's row, keep its flag
-        match().update(**values)
+    except IntegrityError as exc:  # lost an insert race: update the winner's row, keep its flag
+        if not match().update(**values):
+            raise RuntimeError(
+                f"virtual rate upsert for {provider}/{model} did not converge: "
+                "insert collided but no existing row was updated"
+            ) from exc

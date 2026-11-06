@@ -99,3 +99,35 @@ def test_non_deployment_key_rejected(bad: str) -> None:
     with pytest.raises(ValueError, match="deployment/<uuid>"):
         upsert_virtual_rate(db, "vllm", bad, Decimal(1), Decimal(1))
     assert _rows(db, "vllm", bad) == []
+
+
+def test_upsert_raises_when_lost_race_leaves_no_row_to_update() -> None:
+    """IntegrityError on insert followed by a zero-row update must fail loudly, not pass."""
+    from sqlalchemy.exc import IntegrityError
+
+    class _Table:
+        provider = model = None
+
+        def insert(self, **_kw: object) -> None:
+            raise IntegrityError("insert", {}, Exception("unique"))
+
+    class _Col:
+        def __eq__(self, _o: object) -> "_Col":  # type: ignore[override]
+            return self
+
+        def __and__(self, _o: object) -> "_Col":
+            return self
+
+    class _Db:
+        token_conversion_rates = _Table()
+
+        def __call__(self, _q: object) -> "_Db":
+            return self
+
+        def update(self, **_kw: object) -> int:
+            return 0
+
+    _Table.provider = _Table.model = _Col()  # type: ignore[assignment]
+    with pytest.raises(RuntimeError, match="did not converge"):
+        upsert_virtual_rate(_Db(), "vllm", f"deployment/{'0' * 8}-0000-0000-0000-{'0' * 12}",
+                            Decimal(2), Decimal(4))  # fmt: skip
