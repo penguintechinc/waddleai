@@ -2,6 +2,7 @@
 fleet:
   vllmRay:
     enabled: true
+    unsafeNoNetworkPolicy: true  # render-only: most tests render without the Cilium CRD
     ray:
       version: "2.60.0"
       pythonMinor: "3.12"

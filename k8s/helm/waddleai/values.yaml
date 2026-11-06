@@ -912,6 +912,10 @@ fleet:
   # Disabled by default: enabling renders nothing unless every digest below is set.
   vllmRay:
     enabled: false # gated; default OFF
+    # UNSAFE: when true, the render no longer fails if Cilium policies cannot render or
+    # fleet.security.mutualAuth=false, leaving Ray ports (and plaintext Serve 8000) unprotected.
+    # Never set outside throwaway test environments.
+    unsafeNoNetworkPolicy: false
     ray:
       version: "2.60.0" # identical across head and every worker image (latest published Ray as of 2026-11-05)
       pythonMinor: "3.12" # head and all workers must match

@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from tests.helm.conftest import find, render
 
 BASE = str(Path(__file__).parent / "fixtures" / "vllm-ray-base.yaml")
@@ -67,16 +69,51 @@ def test_fleet_ports_unchanged():
 def test_mutual_auth_block_toggle():
     """AM11: mutualAuth on => every rule requires authentication; off => the key is absent."""
     on = _cnp(HEAD)["spec"]["ingress"]
-    off = _cnp(HEAD, overrides={"fleet.security.mutualAuth": "false"})["spec"]["ingress"]
+    off = _cnp(HEAD, overrides={**UNSAFE, "fleet.security.mutualAuth": "false"})["spec"]["ingress"]
     assert all(r.get("authentication") == {"mode": "required"} for r in on)
     assert all("authentication" not in r for r in off)
 
 
-def test_policies_skipped_without_cilium_crd():
-    """No cilium.io/v2 capability: nothing Ray-related renders (and nothing fails)."""
-    docs = render(BASE)
+SAFE = {"fleet.vllmRay.unsafeNoNetworkPolicy": "false"}
+UNSAFE = {"fleet.vllmRay.unsafeNoNetworkPolicy": "true"}
+
+
+def test_no_cilium_crd_fails_by_default():
+    """HIGH: Ray without its CNPs must fail the render, not silently expose Ray ports."""
+    with pytest.raises(AssertionError, match="unsafeNoNetworkPolicy"):
+        render(BASE, SAFE)
+
+
+@pytest.mark.parametrize("key", ["cilium.enabled", "cilium.networkPolicy.enabled"])
+def test_cilium_disabled_fails_by_default(key):
+    """Cilium switched off (either switch) fails even when the CRD is present."""
+    with pytest.raises(AssertionError, match="unsafeNoNetworkPolicy"):
+        render(BASE, {**SAFE, key: "false"}, api_versions=CILIUM)
+
+
+def test_opt_out_renders_without_policies():
+    """Only the explicit unsafe opt-out lets Ray render with no Cilium policies."""
+    docs = render(BASE, UNSAFE)
     names = [d["metadata"]["name"] for d in docs if d["kind"] == "CiliumNetworkPolicy"]
     assert not [n for n in names if "vllm-ray" in n]
+
+
+def test_policies_render_with_crd_and_no_opt_out():
+    """Normal path: CRD present, switches on, opt-out unset => renders cleanly with policies."""
+    assert _cnp(HEAD, overrides=SAFE)
+
+
+def test_mutual_auth_off_fails_by_default():
+    """MEDIUM: Serve HTTP 8000 is outside Ray TLS/token; plaintext ingress needs the opt-out."""
+    off = {**SAFE, "fleet.security.mutualAuth": "false"}
+    with pytest.raises(AssertionError, match="unsafeNoNetworkPolicy"):
+        render(BASE, off, api_versions=CILIUM)
+
+
+def test_mutual_auth_off_allowed_with_opt_out():
+    """The unsafe opt-out also accepts mutualAuth=false (TLS stays on)."""
+    off = {**UNSAFE, "fleet.security.mutualAuth": "false"}
+    assert _cnp(HEAD, overrides=off)
 
 
 def test_ray_pods_egress_limited_to_dns_and_cluster_peers():

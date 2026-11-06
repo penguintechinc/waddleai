@@ -8,6 +8,16 @@ Called once from raycluster.yaml. Messages name the offending values key.
 */}}
 {{- define "waddleai.vllmRay.validate" -}}
 {{- $v := .Values.fleet.vllmRay -}}
+{{- /* Network isolation is mandatory: Ray's ports are unauthenticated at the network layer and
+       Serve HTTP (8000) is outside Ray TLS/token, so only the Cilium policies protect it. */ -}}
+{{- if not $v.unsafeNoNetworkPolicy -}}
+{{- if not (and .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2")) -}}
+{{- fail "fleet.vllmRay.enabled=true requires CiliumNetworkPolicies, but they will not render: need cilium.enabled=true, cilium.networkPolicy.enabled=true and the cilium.io/v2 CRD. Fix that, or set fleet.vllmRay.unsafeNoNetworkPolicy=true (UNSAFE: Ray ports left unprotected)" -}}
+{{- end -}}
+{{- if not .Values.fleet.security.mutualAuth -}}
+{{- fail "fleet.security.mutualAuth=false leaves Ray Serve HTTP (8000) plaintext, protected only by network policy. Set mutualAuth=true, or set fleet.vllmRay.unsafeNoNetworkPolicy=true (UNSAFE) to accept it" -}}
+{{- end -}}
+{{- end -}}
 {{- if not $v.workerGroups -}}
 {{- fail "fleet.vllmRay.workerGroups must list at least one worker group when fleet.vllmRay.enabled=true" -}}
 {{- end -}}
