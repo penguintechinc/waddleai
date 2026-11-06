@@ -12,7 +12,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
-from shared.fleet.base import InferenceFleetBackend, ManagementScope, ProvisionSpec
+from shared.fleet.base import BackendType, InferenceFleetBackend, ManagementScope, ProvisionSpec
 
 _ACTIVITY_KEY = "waddleai:fleet:activity"
 
@@ -84,6 +84,8 @@ class IdleTeardownController:
         for backend in backends:
             if backend.management_scope != ManagementScope.FULL_LIFECYCLE:
                 continue
+            if backend.type == BackendType.VLLM_RAY:
+                continue  # vLLM deployments are stopped/deleted individually (AM19d)
             for node in await backend.list_nodes():
                 last_active = await self._last_activity(backend, node.node_id)
                 if last_active is None:
@@ -130,6 +132,8 @@ class IdleTeardownController:
             return False
         if backend.management_scope != ManagementScope.FULL_LIFECYCLE:
             return False
+        if backend.type == BackendType.VLLM_RAY:
+            return False  # no on-demand provisioning for vLLM deployments (AM19d)
         provision_spec = spec or ProvisionSpec(
             name=f"on-demand-{model.replace('/', '-').replace(':', '-')}",
             models=[model],
