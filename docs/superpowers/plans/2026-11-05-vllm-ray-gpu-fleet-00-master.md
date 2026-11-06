@@ -110,7 +110,7 @@ TokenUsage += local_deployment_kind (INT NULL, LocalDeploymentKind), local_deplo
 #   POST /vllm/fit-check response also carries allowed_quantizations: list[int] for the chosen vendor (from QUANT_MATRIX)
 #   POST /vllm/deployments body also accepts expose_via_proxy: bool = true, prefer_local: {fallback_model: str, match: dict} | null
 # Plan D webui facts: services/webui is JSX (no tsconfig) → JSDoc typedefs; @tanstack/react-query installed but no QueryClientProvider yet (D1 adds one at app root); no existing fleet page; CLI binary is `waddleai`; `make seed-mock-data` is a stub (Makefile:190) → D6 implements it
-# Amendments AM1–AM14 (authoritative over conflicting sub-plan text): see 2026-11-05-vllm-ray-gpu-fleet-01-amendments.md
+# Amendments AM1–AM27 (authoritative over conflicting sub-plan text): see 2026-11-05-vllm-ray-gpu-fleet-01-amendments.md (AM1–AM13) and 2026-11-05-vllm-ray-gpu-fleet-01b-amendments.md (AM14–AM27)
 # Docs cap: every markdown/code file ≤ 25,000 chars (docs/CLAUDE.md:161) → sub-plans split into -1/-2 files when larger
 # Plan C connector: shared/utils/llm_connectors.py  class VllmConnector(OpenAIConnector)  provider key "vllm"
 # Plan C providers constant: shared/routing/providers.py  LOCAL_PROVIDERS: frozenset = {"ollama","llamacpp","vllm"}
