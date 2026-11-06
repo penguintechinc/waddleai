@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.fleet.base import NodeInfo
+from shared.fleet.enums import DeploymentStatus, InventoryState
 from shared.utils.feature_flags import is_feature_enabled
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,15 @@ _FREE_MODEL_LIMIT = 3
 # models_sqlalchemy.py); NodeInfo.vram_free_mb is MB -- this is the single
 # conversion point between the two units.
 _MB_PER_GB = 1024
+
+# shared.fleet.enums.InventoryState.WARM / DeploymentStatus live set (see enums.py).
+_INVENTORY_WARM = int(InventoryState.WARM)
+_LIVE_VLLM_STATUSES = (
+    int(DeploymentStatus.STARTING),
+    int(DeploymentStatus.WARMING),
+    int(DeploymentStatus.SERVING),
+    int(DeploymentStatus.DEGRADED),
+)
 
 
 class CapExceededError(Exception):
@@ -76,9 +86,23 @@ def fits_capacity(node: NodeInfo, min_vram_gb: int | None) -> bool:
     return node.vram_free_mb >= min_vram_gb * _MB_PER_GB
 
 
-def select_capable_node(nodes: list[NodeInfo], min_vram_gb: int | None) -> NodeInfo | None:
-    """Return the first healthy node with enough free VRAM, or None if none qualify."""
+def select_capable_node(
+    nodes: list[NodeInfo],
+    min_vram_gb: int | None,
+    *,
+    gpu_class: str | None = None,
+    gpu_vendor: int | None = None,
+) -> NodeInfo | None:
+    """Return the first healthy node with enough free VRAM, or None if none qualify.
+
+    ``gpu_class`` / ``gpu_vendor`` (when given) additionally require an exact
+    match on the node's reported class / vendor.
+    """
     for node in nodes:
+        if gpu_class is not None and node.gpu_class != gpu_class:
+            continue
+        if gpu_vendor is not None and node.gpu_vendor != gpu_vendor:
+            continue
         if node.healthy and fits_capacity(node, min_vram_gb):
             return node
     return None
@@ -191,6 +215,22 @@ class CapEnforcer:
 
         return await asyncio.to_thread(_lookup)
 
+    async def vllm_enrolled_node_count(self) -> int:
+        """Distinct ``node_uid`` hosting >=1 WARM ``gpu_inventory`` row for this org.
+
+        COLD/unclassified GPUs do not enroll a node (spec §3 Free-tier caps).
+        Informational for the deploy-time check; never used to evict.
+        """
+
+        def _count() -> int:
+            table = self.db.gpu_inventory
+            rows = self.db(
+                (table.org_id == self.org_id) & (table.state == _INVENTORY_WARM)
+            ).select()
+            return len({r.node_uid for r in rows})
+
+        return await asyncio.to_thread(_count)
+
     async def is_utility_model(self, model: str) -> bool:
         """True when ``model`` is a ``model_registry`` row with ``is_utility=True``."""
         return await asyncio.to_thread(self._is_utility_model_sync, model)
@@ -211,11 +251,14 @@ class CapEnforcer:
         (§2.4: Free deployment targets are "K8s/local only").
         """
         db = self.db
+        names: set[str] = set()
+        for row in db(db.vllm_deployments.org_id == self.org_id).select():
+            if row.status in _LIVE_VLLM_STATUSES:
+                names.add(row.served_model_name)
+
         backend_ids = {r.id for r in db(db.fleet_backends.org_id == self.org_id).select()}
         if not backend_ids:
-            return set()
-
-        names: set[str] = set()
+            return names
 
         deployment_ids = {
             r.id for r in db(db.ollama_deployments.fleet_backend_id.belongs(backend_ids)).select()

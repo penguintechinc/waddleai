@@ -235,3 +235,71 @@ class TestMinVramAndUtilityLookup:
         enforcer = CapEnforcer(db, _FakeLicenseClient(), org_id=1)
         assert await enforcer.is_utility_model("shieldgemma:2b") is True
         assert await enforcer.is_utility_model("unknown-model") is False
+
+
+class TestVllmCaps:
+    """B8: class/vendor filter, vLLM warm-node enrollment, vLLM rows in the model cap."""
+
+    def test_select_capable_node_filters_by_class_and_vendor(self) -> None:
+        """gpu_class / gpu_vendor narrow the candidates."""
+        nodes = [
+            NodeInfo(
+                "a",
+                "uid-a",
+                "k8s",
+                [],
+                48000,
+                40000,
+                True,
+                gpu_vendor=1,
+                gpu_class="nvidia-rtx4090",
+            ),
+            NodeInfo(
+                "b",
+                "uid-b",
+                "k8s",
+                [],
+                48000,
+                40000,
+                True,
+                gpu_vendor=1,
+                gpu_class="nvidia-rtx4070",
+            ),
+        ]
+        picked = select_capable_node(nodes, 0, gpu_class="nvidia-rtx4070")
+        assert picked is not None and picked.node_id == "b"
+        assert select_capable_node(nodes, 0, gpu_vendor=2) is None
+        assert select_capable_node(nodes, 0, gpu_class="nvidia-l4") is None
+
+    def test_select_capable_node_defaults_unchanged(self) -> None:
+        """No filters: first healthy capable node, as before."""
+        nodes = [NodeInfo("a", "uid-a", "k8s", [], 48000, 40000, True)]
+        picked = select_capable_node(nodes, 8)
+        assert picked is not None and picked.node_id == "a"
+
+    async def test_vllm_enrolled_node_count_counts_warm_distinct_nodes_only(self) -> None:
+        """u1 (2 WARM gpus) + u2 WARM = 2; COLD u3 and other orgs excluded."""
+        db = FakeDAL()
+        for uid, idx, state, org in [
+            ("u1", 0, 1, 1),
+            ("u1", 1, 1, 1),
+            ("u2", 0, 1, 1),
+            ("u3", 0, 2, 1),
+            ("u4", 0, 1, 2),
+        ]:
+            db.gpu_inventory.insert(org_id=org, node_uid=uid, gpu_index=idx, state=state)
+        enforcer = CapEnforcer(db, _FakeLicenseClient(), org_id=1)
+        assert await enforcer.vllm_enrolled_node_count() == 2
+
+    async def test_vllm_deployments_count_toward_free_model_cap(self, monkeypatch) -> None:
+        """3 live vLLM rows fill the cap; a STOPPED row is not counted."""
+        _enable_flag(monkeypatch)
+        db = FakeDAL()
+        for name, status in [("a", 5), ("b", 3), ("c", 6), ("d", 7)]:
+            db.vllm_deployments.insert(org_id=1, served_model_name=name, status=status)
+        # another org's live row must not count
+        db.vllm_deployments.insert(org_id=2, served_model_name="z", status=5)
+        enforcer = CapEnforcer(db, _FakeLicenseClient(tier="community"), org_id=1)
+        with pytest.raises(CapExceededError, match="3 registered models"):
+            await enforcer.enforce_model_cap("new-model")
+        await enforcer.enforce_model_cap("a")
