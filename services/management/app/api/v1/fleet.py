@@ -39,6 +39,7 @@ from shared.security.credential_encryption import encrypt_credential
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
+from ...services import fleet_secrets
 from . import api_v1_bp
 from ._pagination import PageRequest
 from .auth import require_auth, require_scope
@@ -639,4 +640,114 @@ async def check_fleet_backend_health(backend_id: int):
             "detail": health.detail,
         },
         "meta": {"timestamp": _now()},
+    }, 200
+
+
+# ---------------------------------------------------------------------------
+# `/api/v1/fleet/secrets` -- cluster key list + rotation (AM13, AM15; values never returned)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class FleetSecretItem:
+    """A rotatable cluster secret: identity and fingerprint only, never the value."""
+
+    name: str
+    source: str
+    fingerprint: str | None
+    rotated_at: str | None
+
+
+@dataclass(slots=True)
+class FleetSecretListResponse:
+    """Response body for GET /api/v1/fleet/secrets."""
+
+    status: str
+    data: list[FleetSecretItem]
+    meta: TimestampMeta
+
+
+@dataclass(slots=True)
+class FleetSecretResponse:
+    """Response body for POST /api/v1/fleet/secrets/<name>/rotate."""
+
+    status: str
+    data: FleetSecretItem
+    meta: ActionMeta
+
+
+def _rotated_at(name: str) -> str | None:
+    """Time of the last successful rotation, from the audit trail (None when never rotated)."""
+    database = _db()
+    table = database.audit_log
+    rows = database(
+        (table.method == "POST")
+        & (table.path == f"/api/v1/fleet/secrets/{name}/rotate")
+        & (table.status_code == 200)
+    ).select(orderby=[~table.created_at], limitby=(0, 1))
+    row = rows.first() if rows else None
+    return row.created_at.isoformat() if row is not None and row.created_at else None
+
+
+@api_v1_bp.route("/fleet/secrets", methods=["GET"])
+@require_auth
+@require_scope(Permission.FLEET_ADMIN)
+@validate_response(FleetSecretListResponse, 200)
+async def list_fleet_secrets():
+    """List rotatable cluster secrets with source, fingerprint and last rotation time."""
+    org_id = g.user.get("organization_id")
+    if not _vllm_ray_enabled(org_id):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+    infos = await fleet_secrets.list_secrets()
+    items = []
+    for info in infos:
+        rotated = await asyncio.to_thread(_rotated_at, info.name)
+        items.append(
+            {
+                "name": info.name,
+                "source": info.source,
+                "fingerprint": info.fingerprint,
+                "rotated_at": rotated,
+            }
+        )
+    return {"status": "success", "data": items, "meta": {"timestamp": _now()}}, 200
+
+
+@api_v1_bp.route("/fleet/secrets/<name>/rotate", methods=["POST"])
+@require_auth
+@require_scope(Permission.FLEET_ADMIN)
+@validate_response(FleetSecretResponse, 200)
+async def rotate_fleet_secret(name: str):
+    """Rotate a generated cluster secret and roll the Ray pods; an externally managed key is 409."""
+    org_id = g.user.get("organization_id")
+    if not _vllm_ray_enabled(org_id):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+    try:
+        info = await fleet_secrets.rotate_secret(name)
+    except fleet_secrets.UnknownSecret:
+        return jsonify({"status": "error", "error": "unknown secret"}), 404
+    except fleet_secrets.ManagedExternally:
+        return (
+            jsonify(
+                {"status": "error", "error": "managed externally", "reason": "managed externally"}
+            ),
+            409,
+        )
+    except fleet_secrets.SecretWriteFailed:
+        return (
+            jsonify(
+                {"status": "error", "error": "secret write failed", "reason": "secret write failed"}
+            ),
+            502,
+        )
+    logger.info("fleet.secret.rotated name=%s fingerprint_new=%s", info.name, info.fingerprint)
+    return {
+        "status": "success",
+        "data": {
+            "name": info.name,
+            "source": info.source,
+            "fingerprint": info.fingerprint,
+            "rotated_at": _now(),
+        },
+        "meta": {"action": "rotated", "timestamp": _now()},
     }, 200

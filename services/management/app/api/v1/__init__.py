@@ -38,4 +38,5 @@ from . import (  # noqa: I001 -- append-only order, see comment above
     quota_pools,
     team_quota,
     managed_mcp,
+    fleet_vllm,
 )

@@ -1,0 +1,526 @@
+"""Leader-guarded lifecycle loop for vLLM deployments (Plan C, C3).
+
+Drives ``VllmRayBackend.reconcile`` for every live deployment, refreshes GPU inventory, mirrors
+``SERVING``/``DEGRADED`` state into ``connection_links`` and ``model_configs`` (so the proxy can
+route to the deployment), recomputes AUTO prices daily, and finishes model pulls by deploying the
+weights once they land. Exactly one management replica runs it, chosen by a Postgres advisory lock.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from collections.abc import Awaitable, Callable
+from datetime import datetime
+from types import SimpleNamespace
+from typing import Any, Protocol
+
+from shared.fleet.enums import DeploymentStatus, LocalDeploymentKind, PriceMode
+from shared.fleet.pricing import (
+    PricingInputsUnavailable,
+    apply_pricing,
+    load_pricing_inputs,
+)
+from shared.fleet.registry import build_backend
+from shared.fleet.vllm_pricing import resolve_params_b
+from shared.fleet.vllm_ray.tco import TcoResult
+
+logger = logging.getLogger(__name__)
+
+S = DeploymentStatus
+ADVISORY_LOCK_KEY = 7270011
+PRICE_RECALCULATED = "price recalculated"
+_LIVE = (S.PENDING, S.PULLING, S.STARTING, S.WARMING, S.SERVING, S.DEGRADED)
+_COUNTER_KEYS = (
+    "deployments_examined",
+    "status_changes",
+    "inventory_refreshes",
+    "links_upserted",
+    "links_removed",
+    "reconcile_errors",
+    "prices_recalculated",
+)
+
+PreferLocalFn = Callable[..., Awaitable[Any]]
+
+
+class LeaderGuard(Protocol):
+    """Decides whether this process may run the reconcile loop."""
+
+    async def acquire(self) -> bool:
+        """True when this process is (or becomes) the leader."""
+        ...
+
+
+class AlwaysLeader:
+    """Leader guard for tests and single-replica deployments."""
+
+    async def acquire(self) -> bool:
+        """Always the leader."""
+        return True
+
+
+class PgAdvisoryLeaderGuard:
+    """Leader election via a session-level Postgres advisory lock held for the process lifetime."""
+
+    def __init__(self, engine: Any) -> None:
+        """Bind the SQLAlchemy engine; the lock connection is opened lazily and kept."""
+        self._engine = engine
+        self._conn: Any = None
+        self._held = False
+
+    def _try_lock(self) -> bool:
+        """Take (once) the advisory lock on a dedicated connection; False on any failure."""
+        if self._held:
+            return True
+        try:
+            from sqlalchemy import text
+
+            if self._engine.dialect.name != "postgresql":
+                logger.warning("vllm reconciler leader lock needs PostgreSQL; not leading")
+                return False
+            self._conn = self._engine.connect()
+            got = bool(
+                self._conn.execute(
+                    text("SELECT pg_try_advisory_lock(:k)"), {"k": ADVISORY_LOCK_KEY}
+                ).scalar()
+            )
+            if not got:
+                self._conn.close()
+                self._conn = None
+            self._held = got
+            return got
+        except Exception:
+            logger.warning("vllm reconciler leader lock failed", exc_info=True)
+            return False
+
+    async def acquire(self) -> bool:
+        """Try the advisory lock off the event loop; never raises."""
+        return await asyncio.to_thread(self._try_lock)
+
+
+class UsageSource(Protocol):
+    """Observed-throughput source for AUTO price recomputation."""
+
+    def p50_output_tps(self, db: Any, kind: int, deployment_id: int, window_s: int) -> float | None:
+        """Rolling-window p50 output tokens/s of a deployment, or None when unmeasurable."""
+        ...
+
+
+class RollupUsageSource:
+    """Default source: ``token_usage`` is a daily rollup without per-request latency.
+
+    A p50 tokens/s cannot be derived from daily totals, so this reports ``None`` (the price
+    keeps its ``estimate`` source and the breakdown says so) rather than inventing a figure.
+    A metering source that records per-request latency replaces it.
+    """
+
+    def p50_output_tps(self, db: Any, kind: int, deployment_id: int, window_s: int) -> float | None:
+        """Always None: no per-request latency is recorded in the rollup."""
+        return None
+
+
+def _now() -> datetime:
+    """Naive UTC timestamp for DAL columns."""
+    return datetime.utcnow()
+
+
+def link_name(dep: Any) -> str:
+    """Org-scoped connection link name (the column is globally unique)."""
+    return f"vllm-{dep.org_id}-{dep.slug}"
+
+
+def _capabilities(dep: Any) -> dict[str, Any]:
+    """The ``management_capabilities`` the proxy connector reads (deployment, price, status)."""
+    return {
+        "org_id": dep.org_id,
+        "local_deployment_kind": int(LocalDeploymentKind.VLLM),
+        "local_deployment_id": dep.id,
+        "unit_price_input": str(dep.price_input_per_1m),
+        "unit_price_output": str(dep.price_output_per_1m),
+        "fleet_status": int(dep.status),
+    }
+
+
+def _find_link(db: Any, dep: Any) -> Any | None:
+    """The deployment's link by id, else by its org-scoped name."""
+    if dep.connection_link_id:
+        row = db(db.connection_links.id == dep.connection_link_id).select().first()
+        if row is not None:
+            return row
+    return db(db.connection_links.name == link_name(dep)).select().first()
+
+
+def _remove_offer(db: Any, dep: Any) -> bool:
+    """Delete the ``model_configs`` offer only when it is vLLM-owned; True when removed."""
+    row = db(db.model_configs.model_name == dep.served_model_name).select().first()
+    if row is not None and list(row.preferred_providers or []) == ["vllm"]:
+        db(db.model_configs.id == row.id).delete()
+        return True
+    return False
+
+
+def _sync(db: Any, dep: Any) -> tuple[int | None, bool, bool]:
+    """Apply ``dep``'s status to its link/offer. Returns (link_id, changed, removed)."""
+    status = int(dep.status)
+    link = _find_link(db, dep)
+    if status in (S.FAILED, S.STOPPED) or not dep.expose_via_proxy:
+        removed = _remove_offer(db, dep)
+        if link is not None and link.enabled:
+            db(db.connection_links.id == link.id).update(enabled=False)
+            return int(link.id), True, removed
+        return (int(link.id) if link is not None else None), False, removed
+    if status not in (S.SERVING, S.DEGRADED):
+        return (int(link.id) if link is not None else None), False, False
+
+    caps = _capabilities(dep)
+    values: dict[str, Any] = {
+        "provider": "vllm",
+        "endpoint_url": dep.endpoint_url or "",
+        "model_list": [dep.served_model_name],
+        "enabled": True,
+        "management_capabilities": caps,
+        "owner_org_id": dep.org_id,
+    }
+    changed = False
+    if link is None:
+        link_id = int(db.connection_links.insert(name=link_name(dep), **values))
+        changed = True
+    else:
+        link_id = int(link.id)
+        current = {k: getattr(link, k, None) for k in values}
+        if any(current[k] != values[k] for k in values):
+            db(db.connection_links.id == link_id).update(**values)
+            changed = True
+    if dep.connection_link_id != link_id:
+        db(db.vllm_deployments.id == dep.id).update(connection_link_id=link_id)
+        dep.connection_link_id = link_id
+    existing = db(db.model_configs.model_name == dep.served_model_name).select().first()
+    if existing is None:
+        db.model_configs.insert(
+            model_name=dep.served_model_name,
+            preferred_providers=["vllm"],
+            cost_per_token={},
+            max_tokens=int(dep.max_model_len),
+            context_length=int(dep.max_model_len),
+            capabilities=[],
+            enabled=True,
+        )
+        changed = True
+    return link_id, changed, False
+
+
+async def sync_deployment_link(db: Any, dep: Any) -> int | None:
+    """Mirror a deployment's state into its connection link and local offer."""
+    link_id, _changed, _removed = await asyncio.to_thread(_sync, db, dep)
+    return link_id
+
+
+def _unlink(db: Any, dep: Any) -> None:
+    """Remove the link, the vLLM-owned offer, and the prefer-local rule id."""
+    link = _find_link(db, dep)
+    if link is not None:
+        db(db.connection_links.id == link.id).delete()
+    _remove_offer(db, dep)
+    prefer = dep.prefer_local
+    if isinstance(prefer, dict) and "rule_id" in prefer:
+        remaining = {k: v for k, v in prefer.items() if k != "rule_id"}
+        db(db.vllm_deployments.id == dep.id).update(prefer_local=remaining)
+
+
+async def unlink_deployment(db: Any, dep: Any) -> None:
+    """Delete-path cleanup: link, vLLM-owned offer, and the recorded prefer-local rule id."""
+    await asyncio.to_thread(_unlink, db, dep)
+
+
+class VllmReconciler:
+    """Reconciles every vLLM deployment of every flag-enabled org on the elected leader."""
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        guard: LeaderGuard,
+        backend_factory: Callable[[Any, Any], Any] = build_backend,
+        prefer_local_fn: PreferLocalFn | None = None,
+        deployment_interval_s: float = 15.0,
+        inventory_interval_s: float = 60.0,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        usage_source: UsageSource | None = None,
+        price_interval_s: float = 86400.0,
+        pull_poller: Callable[[Any, Any, Any], Awaitable[bool]] | None = None,
+    ) -> None:
+        """Wire the loop's collaborators; every time source is injectable for tests."""
+        self.db = db
+        self.guard = guard
+        self.backend_factory = backend_factory
+        self.prefer_local_fn = prefer_local_fn
+        self.deployment_interval_s = deployment_interval_s
+        self.inventory_interval_s = inventory_interval_s
+        self.clock = clock
+        self.sleep = sleep
+        self.usage_source: UsageSource = usage_source or RollupUsageSource()
+        self.price_interval_s = price_interval_s
+        self.pull_poller = pull_poller
+        self._last_reconciled: dict[int, float] = {}
+        self._last_inventory: dict[int, float] = {}
+        self._last_priced: dict[tuple[int, int], float] = {}
+
+    def _select(self, build: Callable[[Any], Any]) -> list[Any]:
+        """Blocking DAL select (run via ``asyncio.to_thread``)."""
+        return list(self.db(build(self.db)).select())
+
+    async def _backend_rows(self) -> list[Any]:
+        """Enabled vllm_ray backends whose org has both flags on."""
+        from ..api.v1.fleet import _vllm_ray_enabled
+
+        rows = await asyncio.to_thread(
+            self._select,
+            lambda db: (
+                (db.fleet_backends.type == "vllm_ray") & (db.fleet_backends.status != "disabled")
+            ),
+        )
+        return [r for r in rows if _vllm_ray_enabled(r.org_id)]
+
+    async def tick(self) -> dict[str, int]:
+        """One reconcile pass; a no-op unless this process is the leader."""
+        counts = dict.fromkeys(_COUNTER_KEYS, 0)
+        if not await self.guard.acquire():
+            return counts
+        for brow in await self._backend_rows():
+            try:
+                backend = self.backend_factory(self.db, brow)
+            except Exception:
+                logger.warning("vllm backend %s could not be built", brow.id, exc_info=True)
+                counts["reconcile_errors"] += 1
+                continue
+            await self._inventory(backend, brow, counts)
+            deps = await asyncio.to_thread(
+                self._select, lambda db, b=brow: db.vllm_deployments.fleet_backend_id == b.id
+            )
+            for dep in deps:
+                await self._one(backend, brow, dep, counts)
+            await self._recompute_local_kinds(brow, counts)
+        return counts
+
+    async def _recompute_local_kinds(self, brow: Any, counts: dict[str, int]) -> None:
+        """Daily AUTO recompute for this org's running Ollama and llama.cpp deployments.
+
+        They price with the org's vllm_ray backend pricing config (one formula for every local
+        kind, AM10); ``apply_pricing`` upserts the per-deployment rate row.
+        """
+        config = brow.config or {}
+        try:
+            inputs, costs = load_pricing_inputs(config)
+        except ValueError:
+            logger.warning("backend %s pricing config invalid", brow.id, exc_info=True)
+            counts["reconcile_errors"] += 1
+            return
+        for kind, table in (
+            (int(LocalDeploymentKind.OLLAMA), "ollama_deployments"),
+            (int(LocalDeploymentKind.LLAMACPP), "llamacpp_deployments"),
+        ):
+            rows = await asyncio.to_thread(
+                self._select,
+                lambda db, t=table: (
+                    (getattr(db, t).status == "running")
+                    & (getattr(db, t).price_mode == int(PriceMode.AUTO_TCO))
+                ),
+            )
+            for row in rows:
+                await self._recompute_local(kind, table, row, inputs, costs, counts)
+
+    async def _recompute_local(
+        self, kind: int, table: str, row: Any, inputs: Any, costs: Any, counts: dict[str, int]
+    ) -> None:
+        """Recompute one Ollama/llama.cpp deployment's AUTO price once per interval."""
+        key = (kind, int(row.id))
+        now = self.clock()
+        last = self._last_priced.get(key)
+        if last is not None and now - last < self.price_interval_s:
+            return
+        self._last_priced[key] = now
+        view = SimpleNamespace(**{k: row[k] for k in row.keys()})
+        observed = await asyncio.to_thread(
+            self.usage_source.p50_output_tps, self.db, kind, int(row.id), 86400
+        )
+        try:
+            await apply_pricing(self.db, kind, view, inputs, costs, observed)
+        except (ValueError, PricingInputsUnavailable):
+            logger.warning("local price recompute failed for %s %s", table, row.id, exc_info=True)
+            counts["reconcile_errors"] += 1
+            return
+
+        def _persist() -> None:
+            self.db(getattr(self.db, table).id == row.id).update(
+                price_input_per_1m=view.price_input_per_1m,
+                price_output_per_1m=view.price_output_per_1m,
+                price_breakdown=view.price_breakdown,
+                observed_tokens_per_s=view.observed_tokens_per_s,
+            )
+
+        await asyncio.to_thread(_persist)
+        counts["prices_recalculated"] += 1
+
+    async def _inventory(self, backend: Any, brow: Any, counts: dict[str, int]) -> None:
+        """Collect GPU inventory when the interval has elapsed (first tick always)."""
+        now = self.clock()
+        last = self._last_inventory.get(brow.id)
+        if last is not None and now - last < self.inventory_interval_s:
+            return
+        self._last_inventory[brow.id] = now
+        try:
+            await backend.collect_inventory()
+            counts["inventory_refreshes"] += 1
+        except Exception:
+            logger.warning("vllm inventory refresh failed for backend %s", brow.id, exc_info=True)
+            counts["reconcile_errors"] += 1
+
+    async def _one(self, backend: Any, brow: Any, dep: Any, counts: dict[str, int]) -> None:
+        """Reconcile, sync, prefer-local and price one deployment; failures are contained."""
+        status = int(dep.status)
+        try:
+            if status in _LIVE:
+                await self._reconcile(backend, dep, counts)
+            elif status in (S.STOPPED, S.FAILED):
+                _lid, _chg, removed = await asyncio.to_thread(_sync, self.db, dep)
+                counts["links_removed"] += int(removed)
+            await self._after_reconcile(backend, brow, dep, counts)
+        except Exception:
+            logger.warning("vllm deployment %s reconcile failed", dep.id, exc_info=True)
+            counts["reconcile_errors"] += 1
+
+    async def _reconcile(self, backend: Any, dep: Any, counts: dict[str, int]) -> None:
+        """Run the backend reconcile when due; finish pulls first."""
+        now = self.clock()
+        last = self._last_reconciled.get(dep.id)
+        if last is not None and now - last < self.deployment_interval_s:
+            return
+        self._last_reconciled[dep.id] = now
+        counts["deployments_examined"] += 1
+        before = int(dep.status)
+        if before in (int(S.PENDING), int(S.PULLING)) and self.pull_poller is not None:
+            if not await self.pull_poller(self.db, backend, dep):
+                return
+        after = int(await backend.reconcile(dep))
+        if after != before:
+            counts["status_changes"] += 1
+
+    async def _after_reconcile(
+        self, backend: Any, brow: Any, dep: Any, counts: dict[str, int]
+    ) -> None:
+        """Sync link/offer, create the prefer-local rule once, and recompute AUTO price."""
+        link_id, changed, removed = await asyncio.to_thread(_sync, self.db, dep)
+        counts["links_upserted"] += int(changed and int(dep.status) in (S.SERVING, S.DEGRADED))
+        counts["links_removed"] += int(removed)
+        if int(dep.status) in (S.SERVING, S.DEGRADED):
+            await self._prefer_local(dep)
+            await self._recompute(brow, dep, counts)
+
+    async def _prefer_local(self, dep: Any) -> None:
+        """Create the prefer-local rule exactly once and persist its id."""
+        prefer = dep.prefer_local
+        if self.prefer_local_fn is None or not isinstance(prefer, dict):
+            return
+        if prefer.get("rule_id") is not None:
+            return
+        rule_id = await self.prefer_local_fn(
+            self.db, dep.org_id, dep, prefer.get("fallback_model"), prefer.get("match") or {}
+        )
+        merged = {**prefer, "rule_id": rule_id}
+
+        def _persist() -> None:
+            self.db(self.db.vllm_deployments.id == dep.id).update(prefer_local=merged)
+
+        await asyncio.to_thread(_persist)
+        dep.prefer_local = merged
+
+    async def _recompute(self, brow: Any, dep: Any, counts: dict[str, int]) -> None:
+        """Daily AUTO price recompute for a SERVING deployment (MANUAL is never touched)."""
+        if int(dep.status) != int(S.SERVING) or dep.price_mode != int(PriceMode.AUTO_TCO):
+            return
+        key = (int(LocalDeploymentKind.VLLM), int(dep.id))
+        now = self.clock()
+        last = self._last_priced.get(key)
+        if last is not None and now - last < self.price_interval_s:
+            return
+        self._last_priced[key] = now
+        try:
+            result = await _recompute_auto_prices(self.db, brow, dep, self.usage_source)
+        except Exception:
+            logger.warning("price recompute failed for deployment %s", dep.id, exc_info=True)
+            counts["reconcile_errors"] += 1
+            return
+        if result is not None:
+            counts["prices_recalculated"] += 1
+            await asyncio.to_thread(_sync, self.db, dep)
+
+    async def run_forever(self) -> None:
+        """``tick`` then sleep; logs every exception and exits cleanly on cancellation."""
+        while True:
+            try:
+                await self.tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("vllm reconcile tick failed", exc_info=True)
+            try:
+                await self.sleep(1)
+            except asyncio.CancelledError:
+                return
+
+
+async def _recompute_auto_prices(
+    db: Any, backend_row: Any, dep: Any, usage_source: UsageSource | None = None
+) -> TcoResult | None:
+    """Recompute and persist one AUTO deployment's price; None (price unchanged) on error."""
+    source = usage_source or RollupUsageSource()
+    observed = await asyncio.to_thread(
+        source.p50_output_tps,
+        db,
+        int(LocalDeploymentKind.VLLM),
+        int(dep.id),
+        86400,
+    )
+    config = backend_row.config or {}
+    try:
+        params_b = await asyncio.to_thread(resolve_params_b, db, dep)
+        result = await _price_row(db, dep, config, observed, params_b)
+    except (ValueError, PricingInputsUnavailable):
+        logger.warning("AUTO price recompute rejected for deployment %s", dep.id, exc_info=True)
+        return None
+    return result
+
+
+async def _price_row(
+    db: Any,
+    dep: Any,
+    config: dict[str, Any],
+    observed: float | None,
+    params_b: float | None,
+) -> TcoResult | None:
+    """Price through the shared helper, persist price columns and write the event."""
+    from shared.fleet.vllm_pricing import price_deployment
+
+    priced = await price_deployment(db, dep, config, observed, params_b)
+
+    def _persist() -> None:
+        values: dict[str, Any] = {
+            "price_input_per_1m": priced.price_input_per_1m,
+            "price_output_per_1m": priced.price_output_per_1m,
+            "price_breakdown": priced.price_breakdown,
+            "updated_at": _now(),
+        }
+        if priced.observed_tokens_per_s is not None:
+            values["observed_tokens_per_s"] = priced.observed_tokens_per_s
+        db(db.vllm_deployments.id == dep.id).update(**values)
+        db.vllm_deployment_events.insert(
+            deployment_id=dep.id, ts=_now(), state=int(dep.status), message=PRICE_RECALCULATED
+        )
+
+    await asyncio.to_thread(_persist)
+    dep.price_input_per_1m = priced.price_input_per_1m
+    dep.price_output_per_1m = priced.price_output_per_1m
+    return priced.result
