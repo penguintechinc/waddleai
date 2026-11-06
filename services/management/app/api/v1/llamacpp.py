@@ -445,6 +445,37 @@ def _llamacpp_row_by_public_id(public_id: str) -> Any:
     return database(database.llamacpp_deployments.public_id == public_id).select().first()
 
 
+def _owner_org_id(dep: Any) -> int | None:
+    """Owning org of a deployment: its fleet backend's org, else its key link's owner org.
+
+    ``llamacpp_deployments`` has no org column; ownership is recorded on the fleet backend
+    (``fleet_backend_id``) or on the ``llamacpp-<public_id>`` connection link minted at create.
+    Returns None for legacy rows with neither (unowned, globally administered).
+    """
+    database = _database()
+    backend_id = getattr(dep, "fleet_backend_id", None)
+    if backend_id is not None:
+        backend = database(database.fleet_backends.id == backend_id).select().first()
+        if backend is not None:
+            return int(backend.org_id)
+    link = database(database.connection_links.name == f"llamacpp-{dep.public_id}").select().first()
+    if link is not None and link.owner_org_id is not None:
+        return int(link.owner_org_id)
+    return None
+
+
+def _visible_to_org(dep: Any, org_id: Any, *, strict: bool = False) -> bool:
+    """True when ``org_id`` may act on ``dep``; another org's deployment is invisible.
+
+    ``strict`` (fleet routes) also refuses unowned rows; legacy admin routes keep acting on
+    unowned legacy rows but never on a row owned by a different org.
+    """
+    owner = _owner_org_id(dep)
+    if owner is None:
+        return not strict
+    return owner == org_id
+
+
 def _llamacpp_update(deployment_id: int, values: dict[str, Any]) -> None:
     """Persist column values on one ``llamacpp_deployments`` row."""
     database = _database()
@@ -483,7 +514,7 @@ async def get_llamacpp_deployment(deployment_id):
     dep = await asyncio.to_thread(
         lambda: db(db.llamacpp_deployments.id == deployment_id).select().first()
     )
-    if not dep:
+    if not dep or not await asyncio.to_thread(_visible_to_org, dep, g.user.get("organization_id")):
         return jsonify({"error": "Deployment not found"}), 404
     return _deployment_to_dict(dep), 200
 
@@ -510,7 +541,7 @@ async def update_llamacpp_deployment(deployment_id):
 
     def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found"
         if dep.status == "running" and not price_only:
             return "running"
@@ -593,7 +624,7 @@ async def delete_llamacpp_deployment(deployment_id):
 
     def _delete():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found"
 
         if dep.status == "running" and not force:
@@ -629,7 +660,7 @@ async def deploy_llamacpp(deployment_id):
 
     def _deploy():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
         mgr = LlamaCppManager(db)
@@ -662,7 +693,7 @@ async def remove_llamacpp(deployment_id):
 
     def _remove():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
         mgr = LlamaCppManager(db)
@@ -696,7 +727,7 @@ async def check_llamacpp_health(deployment_id):
 
     def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
         if not dep.endpoint_url:
@@ -731,7 +762,7 @@ async def export_llamacpp_k8s(deployment_id):
 
     def _export():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return None, None
 
         mgr = LlamaCppManager(db)
@@ -771,7 +802,9 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
     from ...services import fleet_secrets as secrets_svc
 
     dep = await asyncio.to_thread(_llamacpp_row_by_public_id, str(public_id))
-    if dep is None:
+    if dep is None or not await asyncio.to_thread(
+        _visible_to_org, dep, g.user.get("organization_id"), strict=True
+    ):
         return jsonify({"error": "Deployment not found"}), 404
     slug = derive_slug(dep.name, public_id)
     link = await asyncio.to_thread(_llamacpp_link, f"llamacpp-{public_id}")
