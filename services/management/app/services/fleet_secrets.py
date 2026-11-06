@@ -337,14 +337,12 @@ async def _wait_for_reissue(gateway: K8sGateway, spec: _SecretSpec) -> None:
         try:
             data = await asyncio.to_thread(gateway.read_secret, namespace(), spec.secret)
         except Exception:
-            logger.error("tls reissue poll failed for %s", spec.secret)
+            logger.error("ray internal tls reissue poll failed")
             raise SecretWriteFailed("secret read failed", partially_applied=True) from None
         if (data or {}).get(spec.key):
             return
         if loop.time() >= deadline:
-            logger.error(
-                "tls secret %s was not reissued within %ss", spec.secret, _TLS_REISSUE_TIMEOUT_S
-            )
+            logger.error("ray internal tls not reissued within %ss", _TLS_REISSUE_TIMEOUT_S)
             raise SecretWriteFailed("tls reissue timed out", partially_applied=True)
         await asyncio.sleep(_TLS_REISSUE_POLL_S)
 
