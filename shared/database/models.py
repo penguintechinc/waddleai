@@ -372,7 +372,23 @@ def define_tables(db):
         Field("tokens_output_total", "integer", default=0),  # Sum across all LLMs
         Field("request_count", "integer", default=0),
         Field("last_updated", "datetime", default=datetime.utcnow),
+        Field("estimated", "boolean", default=False),
+        # Chargeback snapshot for locally hosted models (migration 028, AM10)
+        Field("local_deployment_kind", "integer"),
+        Field("local_deployment_id", "bigint"),
+        Field("unit_price_input", "decimal(12,6)"),
+        Field("unit_price_output", "decimal(12,6)"),
     )
+
+    # Local deployment rows: only the columns metering reads (the schema authority is Alembic).
+    for _local_table in ("vllm_deployments", "ollama_deployments", "llamacpp_deployments"):
+        _define_table_if_absent(
+            db,
+            _local_table,
+            Field("public_id", "string", length=36),
+            Field("price_input_per_1m", "decimal(12,6)"),
+            Field("price_output_per_1m", "decimal(12,6)"),
+        )
 
     # Real-time Usage Cache (for quota enforcement)
     _define_table_if_absent(

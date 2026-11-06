@@ -4,7 +4,7 @@ from decimal import Decimal
 
 import pytest
 
-from shared.quota.virtual_price import upsert_virtual_rate, virtual_rates
+from shared.quota.virtual_price import upsert_virtual_rate, usage_row_key, virtual_rates
 from tests.conformance._fake_dal import FakeDAL
 
 KEY = "deployment/123e4567-e89b-12d3-a456-426614174000"
@@ -131,3 +131,14 @@ def test_upsert_raises_when_lost_race_leaves_no_row_to_update() -> None:
     with pytest.raises(RuntimeError, match="did not converge"):
         upsert_virtual_rate(_Db(), "vllm", f"deployment/{'0' * 8}-0000-0000-0000-{'0' * 12}",
                             Decimal(2), Decimal(4))  # fmt: skip
+
+
+def test_usage_row_key_distinguishes_kind_id_and_prices() -> None:
+    """The snapshot key differs by deployment, kind and either unit price (new row on change)."""
+    base = usage_row_key(1, 7, "2.0", "4.0")
+    assert base == usage_row_key(1, 7, Decimal("2.000000"), 4)  # same price, any spelling
+    assert base != usage_row_key(1, 7, "3.0", "4.0")
+    assert base != usage_row_key(1, 7, "2.0", "5.0")
+    assert base != usage_row_key(2, 7, "2.0", "4.0")
+    assert base != usage_row_key(1, 8, "2.0", "4.0")
+    assert usage_row_key(None, None, None, None) == (None, None, None, None)

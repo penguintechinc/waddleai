@@ -398,6 +398,16 @@ def connector_visible_to(connector: Any, org_id: int | None) -> bool:
     return org_id is not None and owner == org_id
 
 
+def local_deployment_of(connector: Any) -> tuple[int, int | None] | None:
+    """``(kind, deployment_id)`` for a fleet-managed connector, ``None`` for a commercial one."""
+    if isinstance(connector, VllmConnector):
+        return (connector.local_deployment_kind, connector.local_deployment_id)
+    keys = getattr(connector, "_local_keys", None)
+    if isinstance(keys, dict) and isinstance(keys.get("local_deployment_kind"), int):
+        return (keys["local_deployment_kind"], keys.get("local_deployment_id"))
+    return None
+
+
 def connector_serves_model(connector: Any, model: str) -> bool:
     """True when ``connector`` lists ``model``; an empty list is a wildcard for shared links only.
 

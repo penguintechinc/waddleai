@@ -82,6 +82,7 @@ from shared.utils.llm_connectors import (
     ProviderTimeoutError,
     StreamChunk,
     connector_visible_to,
+    local_deployment_of,
 )
 from shared.utils.metering import MeteringBuffer, MeteringEvent
 from shared.utils.metrics import get_proxy_metrics
@@ -970,6 +971,7 @@ class DispatchStage(Stage):
         upstream_filter: Any = None,
         policy_resolver: Any = None,
         features: Any = None,
+        local_rate_guard: Callable[[int | None, int | None], bool] | None = None,
     ) -> None:
         """Initialize DispatchStage.
 
@@ -978,6 +980,8 @@ class DispatchStage(Stage):
             router: LLMRequestRouter for provider selection
             connectors: Dict mapping provider name to LLMConnector instance
             flag: Optional feature flag to gate this stage
+            local_rate_guard: ``(kind, deployment_id) -> bool``; False refuses a local
+                deployment that has no virtual rate (fail closed, AM27)
             upstream_filter: Optional §8.7 UpstreamFilter (security_v2 only)
             policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
             features: Feature flag helper; when upstream_filter is also
@@ -992,6 +996,7 @@ class DispatchStage(Stage):
         self.upstream_filter = upstream_filter
         self.policy_resolver = policy_resolver
         self.features = features
+        self.local_rate_guard = local_rate_guard
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """Route to provider and dispatch request, fully buffering a streamed response.
@@ -1238,6 +1243,18 @@ class DispatchStage(Stage):
             ctx.status_code = 500
             ctx.block_reason = "no_connector"
             return None
+
+        # AM27: a local deployment with no virtual rate is refused BEFORE any tokens are spent
+        # (never billed at the default rate), and counted.
+        local = local_deployment_of(connector)
+        if local is not None and self.local_rate_guard is not None:
+            has_rate = await asyncio.to_thread(self.local_rate_guard, local[0], local[1])
+            if not has_rate:
+                logger.error("DispatchStage: local deployment %s has no virtual rate", local)
+                ctx.blocked = True
+                ctx.status_code = 503
+                ctx.block_reason = "local_rate_missing"
+                return None
 
         ctx.provider = provider
         ctx.requested_model = ctx.model

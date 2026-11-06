@@ -1355,6 +1355,7 @@ class ProxyServer:
                     router=self.request_router,
                     connectors=connectors_dict,
                     flag=None,
+                    local_rate_guard=self.token_manager.local_rate_present,
                 ),
                 SecurityOutStage(
                     name="security_out",
@@ -2145,6 +2146,9 @@ async def chat_completions():
                     organization_id=user_context.organization_id,
                     actual_input_tokens=usage.get("input_tokens", 0),
                     actual_output_tokens=usage.get("output_tokens", 0),
+                    estimated=usage.get("estimated") is True,
+                    local_deployment_kind=usage.get("local_deployment_kind"),
+                    local_deployment_id=usage.get("local_deployment_id"),
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
@@ -2574,6 +2578,9 @@ async def claude_messages():
                     organization_id=user_context.organization_id,
                     actual_input_tokens=usage_info.get("input_tokens", 0),
                     actual_output_tokens=usage_info.get("output_tokens", 0),
+                    estimated=usage_info.get("estimated") is True,
+                    local_deployment_kind=usage_info.get("local_deployment_kind"),
+                    local_deployment_id=usage_info.get("local_deployment_id"),
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
