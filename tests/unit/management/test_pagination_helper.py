@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from quart import Quart
 
@@ -48,7 +50,7 @@ async def test_from_request_clamps_hostile_limit() -> None:
         page = PageRequest.from_request()
     assert page.limit == MAX_PAGE_SIZE
     assert page.page == 2
-    assert page.limitby == (MAX_PAGE_SIZE, 2 * MAX_PAGE_SIZE)
+    assert page.limitby == (MAX_PAGE_SIZE, MAX_PAGE_SIZE)
 
 
 @pytest.mark.asyncio
@@ -64,7 +66,8 @@ async def test_from_request_rejects_negative_page() -> None:
 def test_limitby_offset_math() -> None:
     """Page 3 at limit 20 starts at offset 40."""
     page = PageRequest(page=3, limit=20)
-    assert page.limitby == (40, 60)
+    assert page.limitby == (40, 20)  # (offset, limit) -- penguin_dal convention
+    assert page.bounds == (40, 60)  # (start, stop) -- list slicing
 
 
 def test_meta_computes_page_count() -> None:
@@ -73,3 +76,34 @@ def test_meta_computes_page_count() -> None:
     assert page.meta(total=41)["pagination"]["pages"] == 3  # 41 -> 3 pages of 20
     assert page.meta()["pagination"]["pages"] is None
     assert page.meta(total=0)["pagination"]["pages"] == 1
+
+
+def _sqlite_db_with_rows(tmp_path: Any, count: int) -> Any:
+    """Real penguin_dal sqlite DB holding *count* ordered rows (no mocks)."""
+    from penguin_dal.db import DB
+    from penguin_dal.field import Field
+
+    db = DB(f"sqlite:///{tmp_path}/page.db", reflect=False)
+    db.define_table("things", Field("name", "string"))
+    for i in range(1, count + 1):
+        db.things.insert(name=f"n{i}")
+    return db
+
+
+@pytest.mark.parametrize(
+    ("page_no", "limit", "expected_ids"),
+    [
+        (1, 10, list(range(1, 11))),
+        (2, 10, list(range(11, 21))),
+        (3, 10, list(range(21, 26))),
+        (2, 7, list(range(8, 15))),
+    ],
+)
+def test_limitby_pages_against_real_penguin_dal(
+    tmp_path: Any, page_no: int, limit: int, expected_ids: list[int]
+) -> None:
+    """regression: page N of 25 rows returns exactly the right window (was over-returning)."""
+    db = _sqlite_db_with_rows(tmp_path, 25)
+    page = PageRequest(page=page_no, limit=limit)
+    rows = db(db.things.id > 0).select(limitby=page.limitby, orderby=db.things.id)
+    assert [r.id for r in rows] == expected_ids
