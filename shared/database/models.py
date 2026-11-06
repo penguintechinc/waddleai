@@ -281,6 +281,8 @@ def define_tables(db):
         Field("enabled", "boolean", default=True),
         Field("tls_config", "json"),
         Field("management_capabilities", "json"),  # For Ollama: pull, remove, list
+        # NULL = shared across orgs; set = owned by that org (migration 028, AM3)
+        Field("owner_org_id", "integer"),
     )
 
     # Ollama Model Registry

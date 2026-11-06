@@ -5,6 +5,7 @@ runtime database operations.
 """
 
 import logging
+import uuid
 from datetime import datetime
 
 from sqlalchemy import (
@@ -19,9 +20,12 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
+    Uuid,
     create_engine,
     func,
     text,
@@ -353,6 +357,102 @@ class FleetBackend(Base):
     __table_args__ = (UniqueConstraint("org_id", "name", name="uq_fleet_backends_org_name"),)
 
 
+class GpuInventory(Base):
+    """One discovered GPU on a fleet node, with vendor/class, VRAM, and schedulability."""
+
+    __tablename__ = "gpu_inventory"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    fleet_backend_id = Column(
+        Integer, ForeignKey("fleet_backends.id", ondelete="CASCADE"), nullable=False
+    )
+    node_uid = Column(String(255), nullable=False)
+    node_name = Column(String(255), nullable=False)
+    gpu_index = Column(Integer, nullable=False)
+    vendor = Column(SmallInteger, nullable=False)  # shared.fleet.enums.GpuVendor
+    gpu_class = Column(String(64), nullable=True)
+    product_name = Column(String(255), nullable=False)
+    vram_total_mb = Column(Integer, nullable=False)
+    vram_used_mb = Column(Integer, nullable=False, default=0, server_default="0")
+    pci_bus_id = Column(String(64), nullable=False)
+    schedulable = Column(Boolean, nullable=False)
+    state = Column(SmallInteger, nullable=False)  # shared.fleet.enums.InventoryState
+    last_seen = Column(DateTime, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "fleet_backend_id", "node_uid", "gpu_index", name="uq_gpu_inventory_backend_node_gpu"
+        ),
+    )
+
+
+class VllmDeployment(Base):
+    """A vLLM-on-Ray Serve deployment: model, layout, status, pricing, and proxy exposure."""
+
+    __tablename__ = "vllm_deployments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    public_id = Column(Uuid, unique=True, nullable=False, default=uuid.uuid4)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    fleet_backend_id = Column(
+        Integer, ForeignKey("fleet_backends.id", ondelete="CASCADE"), nullable=False
+    )
+    name = Column(String(255), nullable=False)
+    slug = Column(String(64), nullable=False)
+    model_ref = Column(String(512), nullable=False)
+    served_model_name = Column(String(255), nullable=False)
+    vendor = Column(SmallInteger, nullable=False)  # shared.fleet.enums.GpuVendor
+    gpu_class = Column(String(64), nullable=False)
+    allow_mixed_class = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    quantization = Column(SmallInteger, nullable=False)  # shared.fleet.enums.Quantization
+    dtype = Column(String(16), nullable=False)
+    tensor_parallel = Column(Integer, nullable=False)
+    pipeline_parallel = Column(Integer, nullable=False)
+    replicas_min = Column(Integer, nullable=False)
+    replicas_max = Column(Integer, nullable=False)
+    max_model_len = Column(Integer, nullable=False)
+    status = Column(SmallInteger, nullable=False)  # shared.fleet.enums.DeploymentStatus
+    status_detail = Column(Text, nullable=True)
+    serve_app_name = Column(String(128), nullable=False)
+    endpoint_url = Column(String(1024), nullable=True)
+    # connection_links is a PyDAL-managed table with no ORM model, so the FK
+    # (ON DELETE SET NULL) lives in migration 028 only, not in ORM metadata.
+    connection_link_id = Column(Integer, nullable=True)
+    expose_via_proxy = Column(Boolean, nullable=False, default=True, server_default=text("true"))
+    prefer_local = Column(JSON, nullable=True)
+    comparison_model = Column(String(255), nullable=False)
+    price_mode = Column(SmallInteger, nullable=False, default=1, server_default="1")  # PriceMode
+    price_breakdown = Column(JSON, nullable=True)
+    observed_tokens_per_s = Column(Numeric(10, 2), nullable=True)
+    price_input_per_1m = Column(Numeric(12, 6), nullable=False)
+    price_output_per_1m = Column(Numeric(12, 6), nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_vllm_deployments_org_name"),
+        UniqueConstraint("org_id", "slug", name="uq_vllm_deployments_org_slug"),
+    )
+
+
+class VllmDeploymentEvent(Base):
+    """A timestamped state/message event in a vLLM deployment's history."""
+
+    __tablename__ = "vllm_deployment_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    deployment_id = Column(
+        Integer,
+        ForeignKey("vllm_deployments.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ts = Column(DateTime, nullable=False)
+    state = Column(SmallInteger, nullable=False)  # shared.fleet.enums.DeploymentStatus
+    message = Column(Text, nullable=False)
+
+
 class OllamaDeployment(Base):
     """A managed or external Ollama instance, its resource limits, and fleet-backend linkage."""
 
@@ -383,6 +483,17 @@ class OllamaDeployment(Base):
     # Kubernetes namespace for daemonset/pool manifests (migration 017)
     namespace = Column(String(255), nullable=False, default="waddleai")
 
+    # Stable external identifier (migration 028)
+    public_id = Column(Uuid, unique=True, nullable=False, default=uuid.uuid4)
+
+    # Local-deployment pricing, shared with vLLM (migration 028, AM10)
+    price_mode = Column(SmallInteger, nullable=False, default=1, server_default="1")
+    price_input_per_1m = Column(Numeric(12, 6), nullable=False, default=0, server_default="0")
+    price_output_per_1m = Column(Numeric(12, 6), nullable=False, default=0, server_default="0")
+    price_breakdown = Column(JSON, nullable=True)
+    observed_tokens_per_s = Column(Numeric(10, 2), nullable=True)
+    comparison_model = Column(String(255), nullable=True)
+
 
 class LlamaCppDeployment(Base):
     """A llama.cpp inference deployment (Kubernetes or remote) with model, GPU, resource config."""
@@ -406,6 +517,23 @@ class LlamaCppDeployment(Base):
     n_ctx = Column(Integer, default=4096)
     n_gpu_layers = Column(Integer, default=-1)  # -1 = all layers on GPU
     gpu_count = Column(Integer, default=1)
+
+    # Multi-node RPC topology (migration 028, Plan F; 1=single node, 2=RPC multi node)
+    topology = Column(Integer, nullable=False, default=1, server_default="1")
+    rpc_workers = Column(JSON)  # [{node_uid, gpu_class, gpu_count, tensor_split_share}]
+    tensor_split = Column(String(255))  # comma-joined 4-dp shares in device order
+    allow_mixed_class = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+
+    # Stable external identifier (migration 028)
+    public_id = Column(Uuid, unique=True, nullable=False, default=uuid.uuid4)
+
+    # Local-deployment pricing, shared with vLLM (migration 028, AM10)
+    price_mode = Column(SmallInteger, nullable=False, default=1, server_default="1")
+    price_input_per_1m = Column(Numeric(12, 6), nullable=False, default=0, server_default="0")
+    price_output_per_1m = Column(Numeric(12, 6), nullable=False, default=0, server_default="0")
+    price_breakdown = Column(JSON, nullable=True)
+    observed_tokens_per_s = Column(Numeric(10, 2), nullable=True)
+    comparison_model = Column(String(255), nullable=True)
 
     # Connection
     endpoint_url = Column(
@@ -522,6 +650,13 @@ class TokenUsage(Base):
     # feature). tokens_saved is 0 for misses and non-cache-aware rows.
     cache_status = Column(String(16), nullable=True)
     tokens_saved = Column(Integer, default=0)
+    # Chargeback snapshot for locally hosted models (migration 028, AM10):
+    # local_deployment_kind is shared.fleet.enums.LocalDeploymentKind; the id is
+    # kind-discriminated so it carries no FK.
+    local_deployment_kind = Column(Integer, nullable=True)
+    local_deployment_id = Column(BigInteger, nullable=True)
+    unit_price_input = Column(Numeric(12, 6), nullable=True)
+    unit_price_output = Column(Numeric(12, 6), nullable=True)
 
 
 class UsageCache(Base):
@@ -589,6 +724,10 @@ class ModelRegistry(Base):
     resolved_digest = Column(String(128), nullable=True)  # sha256, set once resolved at first pull
     is_utility = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    public_id = Column(Uuid, nullable=False, default=uuid.uuid4)  # migration 028
+    params_b = Column(Numeric(8, 2), nullable=True)  # parameter count in billions
+
+    __table_args__ = (UniqueConstraint("public_id", name="uq_model_registry_public_id"),)
 
 
 class RoutingRule(Base):
