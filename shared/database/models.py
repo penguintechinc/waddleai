@@ -402,6 +402,8 @@ def define_tables(db):
             Field("price_input_per_1m", "decimal(12,6)"),
             Field("price_output_per_1m", "decimal(12,6)"),
             Field("comparison_model", "string"),
+            # llama.cpp only: durable owner org (migration 031; NULL = legacy unowned)
+            *([Field("owner_org_id", "bigint")] if _local_table == "llamacpp_deployments" else []),
         )
 
     # Real-time Usage Cache (for quota enforcement)

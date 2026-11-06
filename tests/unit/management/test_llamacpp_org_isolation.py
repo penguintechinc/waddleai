@@ -78,3 +78,45 @@ async def test_cross_org_legacy_routes_404(
     resp = await getattr(client, method)(url, headers=org2_headers, json={"n_ctx": 1})
     assert resp.status_code == 404
     assert priced(priced.llamacpp_deployments.id == created["deployment_id"]).count() == 1
+
+
+def _unowned(db) -> tuple[int, str]:
+    """Insert a legacy row: no owner column, no backend, no key link."""
+    public_id = "11111111-1111-1111-1111-111111111111"
+    row_id = db.llamacpp_deployments.insert(
+        name="legacy", deployment_type="remote", status="stopped", model_name="m",
+        public_id=public_id,
+    )  # fmt: skip
+    db.commit()
+    return row_id, public_id
+
+
+@pytest.fixture
+def system_headers(mint_token, monkeypatch) -> dict[str, str]:
+    """Admin bearer for the configured system org (id=99)."""
+    monkeypatch.setenv("WADDLEAI_SYSTEM_ORG_ID", "99")
+    token = mint_token(role="admin", user_id=31, org_id=99)
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
+async def test_unowned_row_is_404_for_org_admin_visible_to_system_org(
+    client,
+    priced,  # noqa: F811
+    auth_headers,
+    system_headers,
+    monkeypatch,  # noqa: F811
+):
+    """Fail closed: a legacy unowned row is hidden from a normal org admin, shown to system."""
+    row_id, public_id = _unowned(priced)
+    assert (await client.get(f"{LEGACY}/{row_id}", headers=auth_headers)).status_code == 404
+    assert (await client.post(ROTATE.format(public_id), headers=auth_headers)).status_code == 404
+    assert (await client.get(f"{LEGACY}/{row_id}", headers=system_headers)).status_code == 200
+    monkeypatch.delenv("WADDLEAI_SYSTEM_ORG_ID")
+    assert (await client.get(f"{LEGACY}/{row_id}", headers=system_headers)).status_code == 404
+
+
+async def test_create_stamps_owner_org(client, priced, auth_headers):  # noqa: F811
+    """Create records the caller's org durably on the row."""
+    created = await _create(client, auth_headers)
+    row = priced(priced.llamacpp_deployments.id == created["deployment_id"]).select().first()
+    assert row.owner_org_id == 1

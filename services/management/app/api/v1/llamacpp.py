@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -351,6 +352,7 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
             return jsonify({"error": str(exc)}), 400
 
     public_id = str(uuid.uuid4())
+    owner_org_id = g.user.get("organization_id")
 
     def _create():
         mgr = LlamaCppManager(db)
@@ -370,6 +372,7 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
             node_selector=data.node_selector,
             node_affinity=data.node_affinity,
             public_id=public_id,
+            owner_org_id=owner_org_id,
         )
         db.commit()
         return new_id
@@ -446,12 +449,14 @@ def _llamacpp_row_by_public_id(public_id: str) -> Any:
 
 
 def _owner_org_id(dep: Any) -> int | None:
-    """Owning org of a deployment: its fleet backend's org, else its key link's owner org.
+    """Owning org of a deployment: ``owner_org_id`` column, else backend org, else key link.
 
-    ``llamacpp_deployments`` has no org column; ownership is recorded on the fleet backend
-    (``fleet_backend_id``) or on the ``llamacpp-<public_id>`` connection link minted at create.
-    Returns None for legacy rows with neither (unowned, globally administered).
+    The column (migration 031) is authoritative; the backend/link fallbacks cover rows written
+    before it. Returns None for unowned legacy rows (visible to the system org only).
     """
+    owner = getattr(dep, "owner_org_id", None)
+    if owner is not None:
+        return int(owner)
     database = _database()
     backend_id = getattr(dep, "fleet_backend_id", None)
     if backend_id is not None:
@@ -464,15 +469,23 @@ def _owner_org_id(dep: Any) -> int | None:
     return None
 
 
-def _visible_to_org(dep: Any, org_id: Any, *, strict: bool = False) -> bool:
+def _is_system_org(org_id: Any) -> bool:
+    """True when ``org_id`` is the reserved system org (``WADDLEAI_SYSTEM_ORG_ID``).
+
+    Unset or malformed configuration means nobody qualifies (fail closed).
+    """
+    configured = os.environ.get("WADDLEAI_SYSTEM_ORG_ID", "").strip()
+    return configured.isdigit() and org_id == int(configured)
+
+
+def _visible_to_org(dep: Any, org_id: Any) -> bool:
     """True when ``org_id`` may act on ``dep``; another org's deployment is invisible.
 
-    ``strict`` (fleet routes) also refuses unowned rows; legacy admin routes keep acting on
-    unowned legacy rows but never on a row owned by a different org.
+    Fails closed: an unowned legacy row is visible only to the system org.
     """
     owner = _owner_org_id(dep)
     if owner is None:
-        return not strict
+        return _is_system_org(org_id)
     return owner == org_id
 
 
@@ -803,7 +816,7 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
 
     dep = await asyncio.to_thread(_llamacpp_row_by_public_id, str(public_id))
     if dep is None or not await asyncio.to_thread(
-        _visible_to_org, dep, g.user.get("organization_id"), strict=True
+        _visible_to_org, dep, g.user.get("organization_id")
     ):
         return jsonify({"error": "Deployment not found"}), 404
     slug = derive_slug(dep.name, public_id)

@@ -535,6 +535,11 @@ class LlamaCppDeployment(Base):
     observed_tokens_per_s = Column(Numeric(10, 2), nullable=True)
     comparison_model = Column(String(255), nullable=True)
 
+    # Durable owning org (migration 031); NULL = legacy unowned, system-org visible only
+    owner_org_id = Column(
+        Integer, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Connection
     endpoint_url = Column(
         String(512)
