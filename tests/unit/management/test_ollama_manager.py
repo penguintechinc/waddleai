@@ -1538,3 +1538,15 @@ def test_create_deployment_k8s_lookup_failure_fails_closed(manager, db, monkeypa
     result = manager.create_deployment(config)
     assert result["success"] is False
     assert "apiserver down" in result["error"]
+
+
+@pytest.mark.real_node_lookup
+def test_create_deployment_k8s_gpu_refused_with_no_kube_config(manager, monkeypatch, tmp_path):
+    """With no K8s config at all the real guard refuses a K8s GPU deployment (fail closed)."""
+    monkeypatch.setenv("KUBECONFIG", str(tmp_path / "missing"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    config = OllamaDeploymentConfig(name="nocfg", gpu_count=1, deployment_type="kubernetes")
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "Cannot verify the target node(s)" in result["error"]

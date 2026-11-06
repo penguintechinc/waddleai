@@ -964,6 +964,7 @@ def test_create_deployment_no_selector_unaffected_when_flag_on(fleet_manager, mo
     assert fleet_manager.create_deployment(config)["success"] is True
 
 
+@pytest.mark.real_node_lookup
 def test_create_deployment_k8s_lookup_failure_fails_closed(fleet_manager, db):
     """Kubernetes deployment whose node lookup errors is refused with the error."""
     config = LlamaCppDeploymentConfig(name="k", model_name="m", node_selector={"pool": "x"})
@@ -977,6 +978,7 @@ def test_create_deployment_k8s_lookup_failure_fails_closed(fleet_manager, db):
     assert not db._tables.get("llamacpp_deployments")
 
 
+@pytest.mark.real_node_lookup
 def test_create_deployment_selector_resolves_to_renamed_node_refused(fleet_manager, db):
     """A plain-looking selector matching a node with per-class allocatable is refused."""
     node = MagicMock()
@@ -992,3 +994,24 @@ def test_create_deployment_selector_resolves_to_renamed_node_refused(fleet_manag
         result = fleet_manager.create_deployment(config)
     assert result["success"] is False
     core.list_node.assert_called_once_with(label_selector="pool=x")
+
+
+@pytest.mark.real_node_lookup
+def test_create_deployment_k8s_gpu_refused_with_no_kube_config(manager, monkeypatch, tmp_path):
+    """With no K8s config at all the real guard refuses a K8s GPU deployment (fail closed)."""
+    from services.management.app.services.llamacpp_manager import LlamaCppDeploymentConfig
+
+    monkeypatch.setenv("KUBECONFIG", str(tmp_path / "missing"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    config = LlamaCppDeploymentConfig(
+        name="nocfg",
+        model_name="m",
+        model_url="https://example.com/m.gguf",
+        model_filename="m.gguf",
+        gpu_count=1,
+        deployment_type="kubernetes",
+    )
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "Cannot verify the target node(s)" in result["error"]

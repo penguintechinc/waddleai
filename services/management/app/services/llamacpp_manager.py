@@ -68,6 +68,11 @@ def get_k8s_core_client():
     return client.CoreV1Api()
 
 
+def _list_candidate_nodes(node_selector: dict[str, str]) -> list[Any]:
+    """Resolve candidate K8s nodes for the co-tenancy guard (test seam; raises -> fail closed)."""
+    return default_list_nodes(node_selector, get_k8s_core_client())
+
+
 @dataclass(slots=True)
 class LlamaCppDeploymentConfig:
     """Configuration for creating a llama.cpp deployment record.
@@ -373,7 +378,7 @@ class LlamaCppManager(InferenceFleetBackend):
         return refuse_plain_gpu_for_target_nodes(
             dict(config.node_selector or {}),
             config.gpu_count,
-            lambda sel: default_list_nodes(sel, get_k8s_core_client()),
+            _list_candidate_nodes,
             kubernetes=config.deployment_type == "kubernetes",
         )
 
