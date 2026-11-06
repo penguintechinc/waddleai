@@ -1,0 +1,8 @@
+.gpu-fleet-wizard { max-width: 720px; }
+.wizard-stepper { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; list-style: none; padding: 0; }
+.wizard-stepper li[aria-current='step'] { font-weight: 700; text-decoration: underline; }
+.wizard-step label, .chargeback-step label { display: block; margin: 0.75rem 0; }
+.wizard-errors { color: #b45309; }
+.wizard-nav { display: flex; justify-content: space-between; margin-top: 1.5rem; }
+.explain { color: #4b5563; font-size: 0.9rem; }
+.layout-choices label { display: block; margin: 0.5rem 0; }

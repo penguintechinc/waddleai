@@ -15,12 +15,15 @@ vi.mock('react-router-dom', () => ({
   useNavigate: () => mockNavigate,
 }));
 
+vi.mock('../hooks/useVllmFleet', () => ({ useVllmRayEnabled: vi.fn() }));
+
 const mockLogout = vi.fn();
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: vi.fn(),
 }));
 
 import { useAuth } from '../contexts/AuthContext';
+import { useVllmRayEnabled } from '../hooks/useVllmFleet';
 
 describe('Header', () => {
   beforeEach(() => {
@@ -112,5 +115,15 @@ describe('Header', () => {
     useAuth.mockReturnValue({ user: { username: 'admin', role: 'Admin' }, logout: mockLogout });
     render(<Header />);
     expect(screen.getByAltText('WaddleAI Logo')).toBeInTheDocument();
+  });
+  it('shows the GPU Fleet link only when both flags are on', () => {
+    useAuth.mockReturnValue({ user: { username: 'admin', role: 'Admin' }, logout: mockLogout });
+    useVllmRayEnabled.mockReturnValue(true);
+    const { unmount } = render(<Header />);
+    expect(screen.getByText('GPU Fleet').closest('a')).toHaveAttribute('href', '/gpu-fleet');
+    unmount();
+    useVllmRayEnabled.mockReturnValue(false);
+    render(<Header />);
+    expect(screen.queryByText('GPU Fleet')).toBeNull();
   });
 });

@@ -1,0 +1,12 @@
+.gpu-fleet-deployments .page-header { display: flex; justify-content: space-between; align-items: center; }
+.filters { display: flex; flex-wrap: wrap; gap: 1rem; margin: 1rem 0; }
+.deployments-table { width: 100%; border-collapse: collapse; background: #fff; }
+.deployments-table th, .deployments-table td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #e5e7eb; }
+.row-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.row-actions input { width: 4rem; }
+.status-chip { padding: 0.2rem 0.6rem; border-radius: 999px; border: 1px solid #9ca3af; background: #f3f4f6; }
+.chip-serving { background: #dcfce7; border-color: #16a34a; }
+.chip-failed { background: #fee2e2; border-color: #dc2626; }
+.chip-degraded, .chip-unknown { background: #fef3c7; border-color: #d97706; }
+.timeline-drawer { position: fixed; right: 0; top: 0; bottom: 0; width: min(420px, 100vw); background: #fff; padding: 1rem; overflow: auto; box-shadow: -2px 0 8px rgba(0, 0, 0, 0.2); }
+.step-timeline { padding-left: 1.2rem; }

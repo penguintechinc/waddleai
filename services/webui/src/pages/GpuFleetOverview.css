@@ -1,0 +1,18 @@
+.gpu-fleet-overview { padding: 0; }
+.gpu-fleet-overview .page-header { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+.gpu-subnav { display: flex; gap: 1rem; }
+.vendor-group h3 { margin: 1.5rem 0 0.5rem; }
+.node-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.node-card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.gpu-list { list-style: none; margin: 0; padding: 0; }
+.gpu-row { padding: 0.5rem 0; border-top: 1px solid #e5e7eb; }
+.gpu-state.state-3, .gpu-state.state-4 { color: #b45309; font-weight: 600; }
+.vram-track { height: 8px; background: #e5e7eb; border-radius: 4px; overflow: hidden; }
+.vram-fill { height: 100%; background: #3b82f6; }
+.vram-text, .updated-age { font-size: 0.85rem; color: #4b5563; }
+.savings-card { background: #fff; border-radius: 8px; padding: 1rem; margin: 1rem 0; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12); }
+.savings-controls { display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; }
+.savings-headline { font-size: 1.75rem; font-weight: 700; margin: 0.5rem 0; }
+.seg { padding: 0.4rem 0.8rem; border: 1px solid #9ca3af; background: #fff; cursor: pointer; }
+.seg.active { background: #1e3a8a; color: #fff; }
+.empty-state { color: #4b5563; padding: 1rem 0; }

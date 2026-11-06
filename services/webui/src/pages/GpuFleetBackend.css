@@ -1,0 +1,4 @@
+.gpu-fleet-backend { max-width: 900px; }
+.backend-vllm-settings section, .backend-vllm-settings form { background: #fff; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+.cost-form label { display: block; margin: 0.4rem 0; }
+.badge { background: #e0e7ff; padding: 0.1rem 0.5rem; border-radius: 999px; }

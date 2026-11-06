@@ -15,6 +15,10 @@ import Routing from './pages/Routing';
 import Memory from './pages/Memory';
 import Hooks from './pages/Hooks';
 import Integrations from './pages/Integrations';
+import GpuFleetOverview from './pages/GpuFleetOverview';
+import GpuFleetDeployments from './pages/GpuFleetDeployments';
+import GpuFleetDeployWizard from './pages/GpuFleetDeployWizard';
+import GpuFleetBackend from './pages/GpuFleetBackend';
 import './App.css';
 
 function App() {
@@ -45,6 +49,10 @@ function App() {
                         <Route path="/memory" element={<Memory />} />
                         <Route path="/hooks" element={<Hooks />} />
                         <Route path="/integrations" element={<Integrations />} />
+                        <Route path="/gpu-fleet" element={<GpuFleetOverview />} />
+                        <Route path="/gpu-fleet/deployments" element={<GpuFleetDeployments />} />
+                        <Route path="/gpu-fleet/deploy" element={<GpuFleetDeployWizard />} />
+                        <Route path="/gpu-fleet/backend" element={<GpuFleetBackend />} />
                         <Route path="*" element={<Navigate to="/" replace />} />
                       </Routes>
                     </main>

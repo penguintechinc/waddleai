@@ -1,8 +1,52 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
+import { usePriceSuggestion, useVllmRayEnabled } from '../hooks/useVllmFleet';
+import ChargebackStep from '../components/gpu/ChargebackStep';
+import { validateStep } from '../components/gpu/wizard/wizardState';
 import './OllamaDeployments.css';
 
+const NO_PRICING = {
+  priceMode: 1,
+  pricesInput: '',
+  pricesOutput: '',
+  comparisonModel: '',
+  gpuClass: '',
+  paramsB: '',
+};
+const GPU_CLASS_LABEL = 'waddleai.penguintech.io/gpu-classes';
+
+/**
+ * Build the pricing fields of a create body. Empty when the pricing section was
+ * left untouched, so existing creates stay byte-identical.
+ * @param {object} pricing - the pricing section state
+ * @param {{gpu_count:number}} gpuConfig
+ * @returns {object}
+ */
+function pricingBody(pricing, gpuConfig) {
+  if (!pricing.comparisonModel.trim()) return {};
+  const body = {
+    price_mode: pricing.priceMode,
+    comparison_model: pricing.comparisonModel.trim(),
+    gpu_config: {
+      ...gpuConfig,
+      node_selector: { [GPU_CLASS_LABEL]: pricing.gpuClass },
+    },
+  };
+  if (pricing.priceMode === 2) {
+    body.price_input_per_1m = pricing.pricesInput;
+    body.price_output_per_1m = pricing.pricesOutput;
+  }
+  return body;
+}
+
+/**
+ * Ollama deployments page. When the GPU Fleet flags are on, the create form
+ * gains a chargeback section so the deployment gets a virtual price.
+ * @returns {JSX.Element}
+ */
 function OllamaDeployments() {
+  const fleetEnabled = useVllmRayEnabled();
+  const [pricing, setPricing] = useState(NO_PRICING);
   const [deployments, setDeployments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -14,6 +58,21 @@ function OllamaDeployments() {
     gpu_config: { gpu_count: 1 },
     auto_start: true
   });
+
+  const paramsB = Number(pricing.paramsB);
+  const suggestion = usePriceSuggestion(
+    {
+      kind: 2,
+      gpu_class: pricing.gpuClass,
+      count: newDeployment.gpu_config.gpu_count,
+      params_b: paramsB,
+    },
+    { enabled: fleetEnabled && showCreateForm && Boolean(pricing.gpuClass) && paramsB > 0 },
+  );
+  const priceErrors =
+    fleetEnabled && pricing.comparisonModel.trim()
+      ? validateStep(4, pricing).errors.concat(pricing.gpuClass.trim() ? [] : ['Enter the GPU class.'])
+      : [];
 
   useEffect(() => {
     fetchDeployments();
@@ -35,7 +94,11 @@ function OllamaDeployments() {
   const handleCreateDeployment = async (e) => {
     e.preventDefault();
     try {
-      await axios.post('/api/v1/ollama/deployments', newDeployment);
+      await axios.post('/api/v1/ollama/deployments', {
+        ...newDeployment,
+        ...(fleetEnabled ? pricingBody(pricing, newDeployment.gpu_config) : {}),
+      });
+      setPricing(NO_PRICING);
       setShowCreateForm(false);
       setNewDeployment({
         name: '',
@@ -158,8 +221,49 @@ function OllamaDeployments() {
                 </label>
               </div>
 
+              {fleetEnabled && (
+                <div className="pricing-section">
+                  <label>
+                    GPU class (for pricing)
+                    <input
+                      type="text"
+                      value={pricing.gpuClass}
+                      placeholder="nvidia-rtx4090"
+                      onChange={(e) => setPricing({ ...pricing, gpuClass: e.target.value })}
+                    />
+                  </label>
+                  <label>
+                    Model size (billions of parameters, for pricing)
+                    <input
+                      type="number"
+                      min="0"
+                      step="any"
+                      value={pricing.paramsB}
+                      onChange={(e) => setPricing({ ...pricing, paramsB: e.target.value })}
+                    />
+                  </label>
+                  <ChargebackStep
+                    kind={2}
+                    priceMode={pricing.priceMode}
+                    pricesInput={pricing.pricesInput}
+                    pricesOutput={pricing.pricesOutput}
+                    comparisonModel={pricing.comparisonModel}
+                    suggestion={suggestion.data}
+                    suggestionError={suggestion.error?.message}
+                    onChange={(patch) => setPricing({ ...pricing, ...patch })}
+                  />
+                  {priceErrors.length > 0 && (
+                    <ul role="status">
+                      {priceErrors.map((m) => (
+                        <li key={m}>{m}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+
               <div className="form-actions">
-                <button type="submit" className="btn-primary">Create</button>
+                <button type="submit" className="btn-primary" disabled={priceErrors.length > 0}>Create</button>
                 <button type="button" className="btn-secondary" onClick={() => setShowCreateForm(false)}>
                   Cancel
                 </button>
