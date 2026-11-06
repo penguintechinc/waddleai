@@ -571,18 +571,44 @@ async def test_create_refuses_served_name_colliding_with_a_global_offer(
     assert vllm_db(vllm_db.vllm_deployments.id > 0).count() == 0 and fake_backend.calls == []
 
 
-async def test_create_refuses_served_name_owned_by_another_deployment_or_org(
+async def test_create_refuses_served_name_already_offered_in_the_same_org(
     client, ready, auth_headers, vllm_db
 ):
-    """Another deployment's (or org's) offer blocks the name, without revealing whose it is."""
+    """This org's own offer (another deployment's) blocks the name with a generic 409."""
     _offer(
-        vllm_db, "Model-7B", ["vllm"], owner_org_id=2,
+        vllm_db, "Model-7B", ["vllm"], owner_org_id=1,
         deployment_public_id="99999999-9999-9999-9999-999999999999",
     )  # fmt: skip
     resp = await _create(client, auth_headers, ready)
     body = await resp.get_json()
-    assert resp.status_code == 409 and "org" not in body["error"].lower().replace("model offer", "")
-    assert "99999999" not in str(body)
+    assert resp.status_code == 409 and "99999999" not in str(body)
+
+
+async def test_create_allows_a_name_another_org_already_offers(
+    client, ready, auth_headers, vllm_db
+):
+    """Another org's offer of the same name never blocks (and is never revealed)."""
+    _offer(
+        vllm_db, "Model-7B", ["vllm"], owner_org_id=2,
+        deployment_public_id="99999999-9999-9999-9999-999999999999",
+    )  # fmt: skip
+    assert (await _create(client, auth_headers, ready)).status_code == 201
+
+
+async def test_create_allows_a_name_held_only_by_a_global_local_offer(
+    client, ready, auth_headers, vllm_db
+):
+    """A global offer served only by local providers (legacy rows) is not a commercial clash."""
+    _offer(vllm_db, "Model-7B", ["vllm"])
+    assert (await _create(client, auth_headers, ready)).status_code == 201
+
+
+async def test_create_refuses_a_name_held_by_a_mixed_global_offer(
+    client, ready, auth_headers, vllm_db
+):
+    """A global offer with any non-local provider (openai + vllm) counts as commercial."""
+    _offer(vllm_db, "Model-7B", ["openai", "vllm"])
+    assert (await _create(client, auth_headers, ready)).status_code == 409
 
 
 async def test_create_allows_served_name_with_no_offer_even_if_it_matches_a_commercial_name(

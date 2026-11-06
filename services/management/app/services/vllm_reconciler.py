@@ -23,7 +23,7 @@ from shared.fleet.pricing import (
     load_pricing_inputs,
 )
 from shared.fleet.registry import build_backend
-from shared.fleet.vllm_pricing import resolve_params_b
+from shared.fleet.vllm_pricing import LOCAL_PROVIDERS, resolve_params_b
 from shared.fleet.vllm_ray.tco import TcoResult
 
 logger = logging.getLogger(__name__)
@@ -152,22 +152,36 @@ def _find_link(db: Any, dep: Any) -> Any | None:
     return db(db.connection_links.name == link_name(dep)).select().first()
 
 
-def _owns_offer(offer: Any, dep: Any) -> bool:
-    """True when ``offer`` is the one this deployment published (scoped by its public_id)."""
-    owner = getattr(offer, "deployment_public_id", None)
-    return owner is not None and str(owner) == str(dep.public_id)
+def _owns_offer_row(db: Any, dep: Any) -> bool:
+    """True when this deployment has already published its offer."""
+    table = db.model_configs
+    return db(table.deployment_public_id == str(dep.public_id)).count() > 0
 
 
 def _remove_offer(db: Any, dep: Any) -> bool:
     """Delete the ``model_configs`` offer ONLY when this deployment owns it; True if removed.
 
-    An offer another deployment, org or a commercial provider still uses (or any unscoped
-    legacy row) is never touched, whatever its ``preferred_providers`` say.
+    Looked up by ``deployment_public_id``, so an offer another deployment, org or a commercial
+    provider still uses (or any unscoped legacy row) is never touched.
     """
-    row = db(db.model_configs.model_name == dep.served_model_name).select().first()
-    if row is not None and _owns_offer(row, dep):
-        db(db.model_configs.id == row.id).delete()
-        return True
+    table = db.model_configs
+    rows = db(table.deployment_public_id == str(dep.public_id)).select()
+    for row in rows:
+        db(table.id == row.id).delete()
+    return len(rows) > 0
+
+
+def offer_blocked(db: Any, org_id: int, name: str) -> bool:
+    """True when ``name`` is already offered to this org by someone else.
+
+    Blocks on this org's own offer (a different deployment's) or a global offer served by any
+    non-local (commercial) provider. Other orgs' offers never block: offers are per org.
+    """
+    for row in db(db.model_configs.model_name == name).select():
+        if row.owner_org_id == org_id:
+            return True
+        if row.owner_org_id is None and not set(row.preferred_providers or []) <= LOCAL_PROVIDERS:
+            return True
     return False
 
 
@@ -206,26 +220,28 @@ def _sync(db: Any, dep: Any) -> tuple[int | None, bool, bool]:
     if dep.connection_link_id != link_id:
         db(db.vllm_deployments.id == dep.id).update(connection_link_id=link_id)
         dep.connection_link_id = link_id
-    existing = db(db.model_configs.model_name == dep.served_model_name).select().first()
-    if existing is None:
-        db.model_configs.insert(
-            model_name=dep.served_model_name,
-            preferred_providers=["vllm"],
-            cost_per_token={},
-            max_tokens=int(dep.max_model_len),
-            context_length=int(dep.max_model_len),
-            capabilities=[],
-            enabled=True,
-            owner_org_id=dep.org_id,
-            deployment_public_id=str(dep.public_id),
-        )
-        changed = True
-    elif not _owns_offer(existing, dep):
-        logger.warning(
-            "model offer %r already exists and is not owned by deployment %s; not publishing",
-            dep.served_model_name,
-            dep.id,
-        )
+    if not _owns_offer_row(db, dep):
+        if offer_blocked(db, dep.org_id, dep.served_model_name):
+            logger.warning(
+                "model offer %r already exists for org %s and is not owned by deployment %s; "
+                "not publishing",
+                dep.served_model_name,
+                dep.org_id,
+                dep.id,
+            )
+        else:
+            db.model_configs.insert(
+                model_name=dep.served_model_name,
+                preferred_providers=["vllm"],
+                cost_per_token={},
+                max_tokens=int(dep.max_model_len),
+                context_length=int(dep.max_model_len),
+                capabilities=[],
+                enabled=True,
+                owner_org_id=dep.org_id,
+                deployment_public_id=str(dep.public_id),
+            )
+            changed = True
     return link_id, changed, False
 
 

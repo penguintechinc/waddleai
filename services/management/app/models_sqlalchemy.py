@@ -1157,7 +1157,7 @@ class ModelConfig(Base):
     __tablename__ = "model_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    model_name = Column(String(255), unique=True, nullable=False)
+    model_name = Column(String(255), nullable=False)
     preferred_providers = Column(JSON, nullable=False, default=list)
     cost_per_token = Column(JSON, nullable=False, default=dict)
     max_tokens = Column(Integer, nullable=False)
@@ -1169,6 +1169,20 @@ class ModelConfig(Base):
     # offer carries its org and public_id so only that deployment may remove or replace it.
     owner_org_id = Column(Integer, nullable=True)
     deployment_public_id = Column(Uuid, nullable=True, index=True)
+
+    __table_args__ = (
+        # Global offers are unique by name; org-owned offers are unique per (org, name).
+        Index(
+            "uq_model_configs_global_name", "model_name", unique=True,
+            postgresql_where=text("owner_org_id IS NULL"),
+            sqlite_where=text("owner_org_id IS NULL"),
+        ),
+        Index(
+            "uq_model_configs_org_name", "owner_org_id", "model_name", unique=True,
+            postgresql_where=text("owner_org_id IS NOT NULL"),
+            sqlite_where=text("owner_org_id IS NOT NULL"),
+        ),
+    )  # fmt: skip
 
 
 class ModelAlias(Base):

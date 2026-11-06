@@ -53,7 +53,7 @@ from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
 from ...services import fleet_secrets, model_store
-from ...services.vllm_reconciler import sync_deployment_link, unlink_deployment
+from ...services.vllm_reconciler import offer_blocked, sync_deployment_link, unlink_deployment
 from . import api_v1_bp
 from ._pagination import PageRequest
 from ._pricing_body import PriceFieldError, parse_price_fields
@@ -1160,13 +1160,8 @@ async def create_vllm_deployment() -> Any:
     if params_b is None or layout is None:
         return _err(NO_PARAMS_B, 422)
 
-    taken = await asyncio.to_thread(
-        lambda: (
-            database(database.model_configs.model_name == spec.served_model_name).select().first()
-        )
-    )
-    if taken is not None:
-        # Generic on purpose: never say whose offer (another org or deployment) holds the name.
+    if await asyncio.to_thread(offer_blocked, database, org_id, spec.served_model_name):
+        # Generic on purpose: never say whose offer holds the name.
         return _err(
             "A model offer with this served_model_name already exists; "
             "choose a different served_model_name.",

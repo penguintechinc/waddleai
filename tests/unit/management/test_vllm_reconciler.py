@@ -572,3 +572,44 @@ def test_unlink_never_deletes_an_offer_owned_by_someone_else(env) -> None:
     _offer(env, ["vllm"])  # legacy, unscoped
     asyncio.run(unlink_deployment(env, dep))
     assert env(env.model_configs.id > 0).count() == 1
+
+
+def test_two_orgs_serving_the_same_name_each_get_their_own_offer(env) -> None:
+    """Per-org offers: both publish; deleting org 1's deployment leaves org 2's offer."""
+    b1, b2 = seed_backend(env), seed_backend(env, org_id=2, name="o2")
+    one = seed_deployment(env, b1, name="a", status=5, slug="a-1")
+    two = seed_deployment(env, b2, org_id=2, name="b", status=5, slug="b-1")
+    rec, _, _ = _reconciler(env)
+    _tick(rec)
+    offers = {
+        o.owner_org_id: str(o.deployment_public_id) for o in env(env.model_configs.id > 0).select()
+    }
+    assert offers == {1: str(one.public_id), 2: str(two.public_id)}
+    asyncio.run(unlink_deployment(env, one))
+    left = list(env(env.model_configs.id > 0).select())
+    assert [o.owner_org_id for o in left] == [2]
+
+
+def test_global_commercial_offer_blocks_publication_without_being_touched(env, caplog) -> None:
+    """An existing commercial offer of the same name is neither changed nor shadowed."""
+    b = seed_backend(env)
+    seed_deployment(env, b, status=5)
+    _offer(env, ["openai"])
+    rec, _, _ = _reconciler(env)
+    with caplog.at_level(logging.WARNING):
+        _tick(rec)
+    rows = list(env(env.model_configs.id > 0).select())
+    assert len(rows) == 1 and rows[0].preferred_providers == ["openai"]
+    assert "not publishing" in caplog.text
+
+
+def test_db_enforces_one_offer_per_org_and_name(env) -> None:
+    """The ORM-built schema carries the partial unique indexes (org-owned and global)."""
+    from sqlalchemy.exc import IntegrityError
+
+    _offer(env, ["vllm"], owner_org_id=1)
+    _offer(env, ["vllm"], owner_org_id=2)  # other org: fine
+    _offer(env, ["openai"])  # global: fine
+    for org in (1, None):
+        with pytest.raises(IntegrityError):
+            _offer(env, ["vllm"], owner_org_id=org)
