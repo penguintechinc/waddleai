@@ -37,6 +37,10 @@ CNP_PLURAL = "ciliumnetworkpolicies"
 CEC_PLURAL = "ciliumenvoyconfigs"
 CCNP_PLURAL = "ciliumclusterwidenetworkpolicies"
 
+# Policies owned by the Helm chart (the four Ray fleet CNPs, AM25): this reconciler must never
+# create, replace or delete a name under these prefixes, even if a render bug produced one.
+RESERVED_NAME_PREFIXES = ("waddleai-vllm-ray-",)
+
 _ORG_HEADER = "x-waddleai-org-id"
 _CEC_NAME = "waddleai-org-ratelimit"
 _NATIVE_RATE_LIMIT_FLAG = "waddleai.native_rate_limit"
@@ -594,6 +598,11 @@ class CiliumPolicyReconciler:
 
         name = obj["metadata"]["name"]
         namespace = obj["metadata"].get("namespace")
+
+        if name.startswith(RESERVED_NAME_PREFIXES):
+            logger.error("Refusing to manage chart-owned policy %s/%s", plural, name)
+            status.degraded = True
+            return
 
         existing = None
         try:

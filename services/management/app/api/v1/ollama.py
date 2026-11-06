@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
 import yaml
-from quart import Response, current_app, jsonify, request
+from quart import Response, current_app, g, jsonify, request
 from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
+from shared.fleet.enums import LocalDeploymentKind, PriceMode
 
 from ...extensions import db
 from . import api_v1_bp
 from ._pagination import PageRequest
+from ._pricing_body import (
+    PriceFieldError,
+    PricingRefusedError,
+    parse_price_fields,
+    price_local_deployment,
+    pricing_requested,
+)
 from .auth import require_auth, require_scope
 
 _DEFAULT_GPU_CONFIG: dict[str, Any] = {"count": 0, "driver": "nvidia"}
@@ -57,6 +66,11 @@ class OllamaDeploymentSummary:
     auto_start: bool | None
     last_health_check: str | None
     created_at: str | None
+    public_id: str | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -96,6 +110,12 @@ class OllamaDeploymentDetail:
     last_health_check: str | None
     created_at: str | None
     models: list[OllamaModelSummary]
+    public_id: str | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    price_breakdown: dict[str, Any] | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -108,6 +128,10 @@ class CreateOllamaDeploymentRequest:
     gpu_config: dict[str, Any] | None = field(default=None)
     resource_limits: dict[str, Any] | None = field(default=None)
     auto_start: bool | None = True
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -118,6 +142,12 @@ class CreateOllamaDeploymentResponse:
     name: str
     deployment_type: str | None
     message: str
+    public_id: str | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    price_breakdown: dict[str, Any] | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -129,6 +159,10 @@ class UpdateOllamaDeploymentRequest:
     gpu_config: dict[str, Any] | None = field(default=None)
     resource_limits: dict[str, Any] | None = field(default=None)
     auto_start: bool | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -193,6 +227,37 @@ class RemoveOllamaModelResponse:
     message: str
 
 
+def _breakdown(row: Any) -> dict[str, Any] | None:
+    """The stored TCO breakdown when it is a JSON object, else None."""
+    value = None if row is None else row.price_breakdown
+    return value if isinstance(value, dict) else None
+
+
+def _price_fields(row: Any) -> dict[str, Any]:
+    """The pricing columns of a deployment row as response fields (decimals as strings)."""
+
+    def _text(value: Any) -> str | None:
+        return None if value is None else str(value)
+
+    if row is None:
+        return dict.fromkeys(
+            (
+                "public_id",
+                "price_mode",
+                "price_input_per_1m",
+                "price_output_per_1m",
+                "comparison_model",
+            )
+        )
+    return {
+        "public_id": _text(row.public_id),
+        "price_mode": None if row.price_mode is None else int(row.price_mode),
+        "price_input_per_1m": _text(row.price_input_per_1m),
+        "price_output_per_1m": _text(row.price_output_per_1m),
+        "comparison_model": _text(row.comparison_model),
+    }
+
+
 @api_v1_bp.route("/ollama/deployments", methods=["GET"])
 @require_auth
 @require_scope(Permission.OLLAMA_ADMIN)
@@ -228,6 +293,7 @@ async def list_ollama_deployments():
                 if deployment.last_health_check
                 else None,
                 "created_at": deployment.created_at.isoformat() if deployment.created_at else None,
+                **_price_fields(deployment),
             }
         )
 
@@ -268,6 +334,8 @@ async def get_ollama_deployment(deployment_id):
         if deployment.last_health_check
         else None,
         "created_at": deployment.created_at.isoformat() if deployment.created_at else None,
+        **_price_fields(deployment),
+        "price_breakdown": _breakdown(deployment),
         "models": [
             {
                 "id": m.id,
@@ -300,6 +368,22 @@ async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
         resource_limits = _DEFAULT_RESOURCE_LIMITS.copy()
     auto_start = data.auto_start if data.auto_start is not None else True
 
+    price_body = {
+        "price_mode": data.price_mode,
+        "price_input_per_1m": data.price_input_per_1m,
+        "price_output_per_1m": data.price_output_per_1m,
+        "comparison_model": data.comparison_model,
+    }
+    price_fields = None
+    if pricing_requested(price_body):
+        try:
+            price_fields = parse_price_fields(
+                {k: v for k, v in price_body.items() if v is not None},
+                default_mode=PriceMode.AUTO_TCO,
+            )
+        except PriceFieldError as exc:
+            return jsonify({"error": str(exc)}), 400
+
     # Generate docker-compose config if type is docker
     docker_compose_config = None
     if deployment_type == "docker":
@@ -322,6 +406,7 @@ async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
             status="unknown",
             auto_start=auto_start,
             created_at=datetime.utcnow(),
+            public_id=str(uuid.uuid4()),
         )
         db.commit()
         return "ok", new_id
@@ -331,12 +416,60 @@ async def create_ollama_deployment(data: CreateOllamaDeploymentRequest):
     if result == "name_conflict":
         return jsonify({"error": "Deployment name already exists"}), 409
 
+    row = await asyncio.to_thread(_ollama_row, deployment_id)
+    price_extra: dict[str, Any] = {}
+    if price_fields is not None:
+        try:
+            price_extra = await price_local_deployment(
+                db,
+                int(LocalDeploymentKind.OLLAMA),
+                g.user.get("organization_id"),
+                row,
+                price_fields,
+                data.comparison_model,
+            )
+        except PricingRefusedError as exc:
+            await asyncio.to_thread(_discard_ollama, deployment_id)
+            return jsonify({"error": str(exc)}), 422
+
+        await asyncio.to_thread(_ollama_update, deployment_id, price_extra)
+        row = await asyncio.to_thread(_ollama_row, deployment_id)
+
     return {
         "id": deployment_id,
         "name": data.name,
         "deployment_type": deployment_type,
         "message": "Deployment created successfully",
+        **_price_fields(row),
+        "price_breakdown": _breakdown(row),
     }, 201
+
+
+def _database() -> Any:
+    """The process-wide penguin-dal handle (narrowed away from ``None``)."""
+    if db is None:
+        raise RuntimeError("database not initialized")
+    return db
+
+
+def _ollama_row(deployment_id: int) -> Any:
+    """Fetch one ``ollama_deployments`` row (None when absent)."""
+    database = _database()
+    return database(database.ollama_deployments.id == deployment_id).select().first()
+
+
+def _ollama_update(deployment_id: int, values: dict[str, Any]) -> None:
+    """Persist column values on one ``ollama_deployments`` row."""
+    database = _database()
+    database(database.ollama_deployments.id == deployment_id).update(**values)
+    database.commit()
+
+
+def _discard_ollama(deployment_id: int) -> None:
+    """Remove a just-created deployment whose pricing was refused (no half-priced rows)."""
+    database = _database()
+    database(database.ollama_deployments.id == deployment_id).delete()
+    database.commit()
 
 
 @api_v1_bp.route("/ollama/deployments/<int:deployment_id>", methods=["PUT"])
@@ -351,6 +484,34 @@ async def update_ollama_deployment(deployment_id, data: UpdateOllamaDeploymentRe
     partial update -- the typed request model erases the pre-audit
     raw-dict-truthiness ``if not data`` 400, matching keys.py.
     """
+    price_body = {
+        "price_mode": data.price_mode,
+        "price_input_per_1m": data.price_input_per_1m,
+        "price_output_per_1m": data.price_output_per_1m,
+        "comparison_model": data.comparison_model,
+    }
+    price_update: dict[str, Any] = {}
+    if pricing_requested(price_body):
+        current = await asyncio.to_thread(_ollama_row, deployment_id)
+        if not current:
+            return jsonify({"error": "Deployment not found"}), 404
+        try:
+            fields = parse_price_fields(
+                {k: v for k, v in price_body.items() if v is not None},
+                default_mode=PriceMode(int(current.price_mode or 1)),
+            )
+            price_update = await price_local_deployment(
+                db,
+                int(LocalDeploymentKind.OLLAMA),
+                g.user.get("organization_id"),
+                current,
+                fields,
+                data.comparison_model or current.comparison_model,
+            )
+        except PriceFieldError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except PricingRefusedError as exc:
+            return jsonify({"error": str(exc)}), 422
 
     def _update():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -358,7 +519,7 @@ async def update_ollama_deployment(deployment_id, data: UpdateOllamaDeploymentRe
         if not deployment:
             return "not_found"
 
-        update_fields: dict[str, Any] = {}
+        update_fields: dict[str, Any] = dict(price_update)
 
         if data.name is not None:
             existing = (

@@ -368,6 +368,7 @@ ROUTE_MODULES = [
     "services.management.app.api.v1.hook_rules",
     "services.management.app.api.v1.hook_metrics",
     "services.management.app.api.v1.fleet",
+    "services.management.app.api.v1.fleet_vllm",
     "services.management.app.api.v1.proxy_keys",
     "services.management.app.api.v1.teams",
 ]
@@ -846,3 +847,77 @@ def rbac_manager(mock_db):
     from shared.auth.rbac import RBACManager
 
     return RBACManager(mock_db)
+
+
+@pytest.fixture
+def vllm_db(tmp_path, monkeypatch):
+    """A real sqlite penguin-dal DB patched into every fleet route module."""
+    from tests.unit.management.vllm_harness import build_db
+
+    database = build_db(tmp_path)
+    for module in (
+        "services.management.app.api.v1.fleet_vllm",
+        "services.management.app.api.v1.fleet",
+        "services.management.app.api.v1.llamacpp",
+        "services.management.app.api.v1.ollama",
+    ):
+        monkeypatch.setattr(f"{module}.db", database)
+    return database
+
+
+@pytest.fixture
+def both_flags(monkeypatch):
+    """Turn on `waddleai.fleet_v2` and `waddleai.fleet-vllm-ray`."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", "1")
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+
+
+@pytest.fixture
+def fake_k8s():
+    """In-memory Kubernetes gateway installed as the fleet gateway for one test."""
+    from services.management.app.services import fleet_secrets
+    from tests.unit.management.vllm_harness import FakeK8s
+
+    gateway = FakeK8s()
+    fleet_secrets.set_gateway(gateway)
+    yield gateway
+    fleet_secrets.set_gateway(None)
+
+
+@pytest.fixture
+def running_engine(tmp_path):
+    """Fake vLLM and llama-server ASGI engines guarded by the real bearer-key middleware.
+
+    ``engine.client(kind)`` returns an httpx client; ``engine.set_token(kind, token)`` rewrites the
+    key file (vLLM re-reads per request; the llama-server fake loads it only on ``restart``).
+    """
+    from tests.unit.management.vllm_harness import RunningEngine
+
+    return RunningEngine(tmp_path)
+
+
+@pytest.fixture
+def fake_backend(monkeypatch):
+    """A ``FakeBackend`` returned by ``build_backend`` in the vLLM routes."""
+    from tests.unit.management.vllm_harness import FakeBackend
+
+    backend = FakeBackend()
+    monkeypatch.setattr(
+        "services.management.app.api.v1.fleet_vllm.build_backend", lambda _db, _row: backend
+    )
+    return backend
+
+
+@pytest.fixture
+def license_tier(monkeypatch):
+    """Patch the license client: ``license_tier("enterprise")`` sets the org tier."""
+
+    def _set(tier: str = "enterprise") -> None:
+        client = MagicMock()
+        client.validate.return_value = MagicMock(tier=tier)
+        monkeypatch.setattr(
+            "services.management.app.api.v1.fleet_vllm._get_license_client", lambda: client
+        )
+
+    _set("enterprise")
+    return _set
