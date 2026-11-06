@@ -112,16 +112,8 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show
 
-      - name: Cache cargo registry and build artifacts
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            rust/target
-          key: ${{ runner.os }}-cargo-waddleai-proxy-${{ hashFiles('rust/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-waddleai-proxy-
+      # No actions/cache here: this workflow also runs on v* tag pushes, so a
+      # restored/saved cache is a cache-poisoning vector (zizmor cache-poisoning).
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
