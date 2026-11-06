@@ -251,3 +251,26 @@ def test_ensure_imported_swallows_missing_optional_module(caplog) -> None:
 def test_new_cloud_types_have_lazy_module_entries(backend_type: BackendType, module: str) -> None:
     """New cloud targets are lazy-loaded rather than imported with the core registry."""
     assert fleet_registry._MODULE_MAP[backend_type] == module
+
+
+def test_build_backend_vllm_ray_decrypts_credentials_without_logging_secret(caplog) -> None:
+    """vllm_ray: ``credentials_ref`` decrypts to the Ray token; plaintext never reaches logs."""
+    from shared.fleet.vllm_ray.backend import VllmRayBackend
+    from shared.fleet.vllm_ray.ray_client import HttpRayServeClient
+
+    fleet_registry._REGISTRY[BackendType.VLLM_RAY] = VllmRayBackend
+    row = _Row(
+        id=7,
+        type="vllm_ray",
+        management_scope="full_lifecycle",
+        config={"head_url": "http://h:8265", "serve_base_url": "http://h:8000"},
+        credentials_ref="enc:xyz",
+    )
+    with patch.object(fleet_registry, "decrypt_credential", return_value="SECRET-RAY-TOKEN-9999"):
+        with caplog.at_level("DEBUG"):
+            backend = fleet_registry.build_backend(db=None, row=row)
+
+    assert isinstance(backend, VllmRayBackend)
+    assert backend.fleet_backend_id == 7
+    assert isinstance(backend._client(), HttpRayServeClient)
+    assert "SECRET-RAY-TOKEN" not in caplog.text

@@ -27,7 +27,9 @@ from shared.fleet.bedrock import BedrockFleetBackend
 from shared.fleet.exo import ExoFleetBackend
 from shared.fleet.ollama_cloud import OllamaCloudFleetBackend
 from shared.fleet.vertex_ai import VertexAIFleetBackend
+from shared.fleet.vllm_ray.backend import VllmRayBackend
 from tests.conformance._fake_dal import FakeDAL
+from tests.conformance._fake_ray import FakeRayServeClient
 
 
 @pytest.fixture
@@ -108,6 +110,17 @@ def ollama_cloud_backend() -> OllamaCloudFleetBackend:
     )
 
 
+@pytest.fixture
+def vllm_ray_backend() -> VllmRayBackend:
+    """A fresh ``VllmRayBackend`` over an empty ``FakeDAL`` and an in-memory Ray client."""
+    return VllmRayBackend(
+        FakeDAL(),
+        config={"head_url": "http://head:8265", "serve_base_url": "http://head:8000", "org_id": 1},
+        credentials=None,
+        client=FakeRayServeClient(),
+    )
+
+
 # BACKENDS: (fixture_name, expected BackendType) — every public registry type
 # (§10.1) is represented, including the professional cloud targets.
 BACKENDS = [
@@ -118,6 +131,7 @@ BACKENDS = [
     ("bedrock_backend", BackendType.BEDROCK),
     ("azure_ai_backend", BackendType.AZURE_AI),
     ("ollama_cloud_backend", BackendType.OLLAMA_CLOUD),
+    ("vllm_ray_backend", BackendType.VLLM_RAY),
 ]
 
 
