@@ -298,7 +298,11 @@ class VllmReconciler:
                 continue
             await self._inventory(backend, brow, counts)
             deps = await asyncio.to_thread(
-                self._select, lambda db, b=brow: db.vllm_deployments.fleet_backend_id == b.id
+                self._select,
+                lambda db, b=brow: (
+                    (db.vllm_deployments.fleet_backend_id == b.id)
+                    & (db.vllm_deployments.org_id == b.org_id)
+                ),
             )
             for dep in deps:
                 await self._one(backend, brow, dep, counts)
@@ -306,11 +310,28 @@ class VllmReconciler:
         return counts
 
     async def _recompute_local_kinds(self, brow: Any, counts: dict[str, int]) -> None:
-        """Daily AUTO recompute for this org's running Ollama and llama.cpp deployments.
+        """Daily AUTO recompute for THIS org's running Ollama and llama.cpp deployments.
 
-        They price with the org's vllm_ray backend pricing config (one formula for every local
-        kind, AM10); ``apply_pricing`` upserts the per-deployment rate row.
+        They price with the org's own vllm_ray backend pricing config (one formula for every
+        local kind, AM10); ``apply_pricing`` upserts the per-deployment rate row. Ownership is
+        derived only through ``fleet_backend_id -> fleet_backends.org_id``: a row with no
+        derivable owning org is skipped with a warning and never priced with another org's
+        config. Only the org's lowest-id vllm_ray backend runs this, so each row is priced once.
         """
+        first = await asyncio.to_thread(
+            self._select,
+            lambda db: (
+                (db.fleet_backends.org_id == brow.org_id) & (db.fleet_backends.type == "vllm_ray")
+            ),
+        )
+        if not first or min(int(r.id) for r in first) != int(brow.id):
+            return
+        owned_ids = {
+            int(r.id)
+            for r in await asyncio.to_thread(
+                self._select, lambda db: db.fleet_backends.org_id == brow.org_id
+            )
+        }
         config = brow.config or {}
         try:
             inputs, costs = load_pricing_inputs(config)
@@ -330,6 +351,14 @@ class VllmReconciler:
                 ),
             )
             for row in rows:
+                owner = row.fleet_backend_id
+                if owner is None:
+                    logger.warning(
+                        "%s %s has no owning backend; skipping price recompute", table, row.id
+                    )
+                    continue
+                if int(owner) not in owned_ids:
+                    continue  # another org's deployment: never priced with this org's config
                 await self._recompute_local(kind, table, row, inputs, costs, counts)
 
     async def _recompute_local(
@@ -453,9 +482,11 @@ class VllmReconciler:
             logger.warning("price recompute failed for deployment %s", dep.id, exc_info=True)
             counts["reconcile_errors"] += 1
             return
-        if result is not None:
-            counts["prices_recalculated"] += 1
-            await asyncio.to_thread(_sync, self.db, dep)
+        if result is None:
+            counts["reconcile_errors"] += 1
+            return
+        counts["prices_recalculated"] += 1
+        await asyncio.to_thread(_sync, self.db, dep)
 
     async def run_forever(self) -> None:
         """``tick`` then sleep; logs every exception and exits cleanly on cancellation."""
