@@ -9,7 +9,7 @@ import logging
 import random
 import threading
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -288,6 +288,8 @@ class LLMConnector(ABC):
         self.endpoint_url = config.get("endpoint_url")
         self.api_key = config.get("api_key")
         self.model_list = config.get("model_list", [])
+        # connection_links.owner_org_id (AM3): None = shared; set = visible to that org only.
+        self.owner_org_id: int | None = config.get("owner_org_id")
 
     @abstractmethod
     async def chat_completion(
@@ -322,6 +324,94 @@ class LLMConnector(ABC):
     async def health_check(self) -> dict[str, Any]:
         """Check provider health."""
         pass
+
+
+USAGE_COUNT_CAP = 1_048_576  # generous ceiling for an engine-reported token count
+
+
+def validate_token_count(value: Any, cap: int) -> int | None:
+    """An engine-reported count is trusted only if it is a non-bool int in ``[0, cap]``.
+
+    Engines (and anything impersonating one) are untrusted input to quota debiting: a negative,
+    absurd, boolean, float or non-numeric count returns ``None`` so the caller estimates instead.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= cap else None
+
+
+def usage_count_caps(
+    config: dict[str, Any], request_kwargs: dict[str, Any] | None = None
+) -> tuple[int, int]:
+    """``(input_cap, output_cap)``: context length bounds input; output adds the request limit."""
+    caps = config.get("management_capabilities") or {}
+    ctx = validate_token_count(caps.get("max_model_len"), USAGE_COUNT_CAP) or USAGE_COUNT_CAP
+    kwargs = request_kwargs or {}
+    limit = validate_token_count(
+        kwargs.get("max_tokens", kwargs.get("max_completion_tokens")), USAGE_COUNT_CAP
+    )
+    return ctx, min(USAGE_COUNT_CAP, ctx + (limit or 0))
+
+
+async def resolve_reported_counts(
+    raw_in: Any,
+    raw_out: Any,
+    caps: tuple[int, int],
+    estimate_in: Callable[[], Awaitable[int]],
+    estimate_out: Callable[[], Awaitable[int]],
+) -> tuple[int, int, bool]:
+    """Validated counts; each invalid/missing field is estimated and the row flagged.
+
+    Returns ``(input_tokens, output_tokens, estimated)``. A field is "real" only when the engine
+    reported a valid value for it; nothing ever defaults to 0 on a row marked not-estimated.
+    """
+    in_t = validate_token_count(raw_in, caps[0])
+    out_t = validate_token_count(raw_out, caps[1])
+    estimated = in_t is None or out_t is None
+    if in_t is None:
+        in_t = max(0, await estimate_in())
+    if out_t is None:
+        out_t = max(0, await estimate_out())
+    return in_t, out_t, estimated
+
+
+def _count_missing(reason: str, provider: str | None = None) -> None:
+    """Bump the missing-usage counter; telemetry failure never reaches the request."""
+    try:
+        from shared.observability.vllm_metrics import usage_missing_counter
+
+        attrs = {"reason": reason} if provider is None else {"reason": reason, "provider": provider}
+        usage_missing_counter().add(1, attrs)
+    except Exception:  # noqa: BLE001 -- a dead exporter never breaks a request
+        logger.debug("usage-missing counter emission failed", exc_info=True)
+
+
+def connector_visible_to(connector: Any, org_id: int | None) -> bool:
+    """True when ``connector`` may serve a request from ``org_id`` (AM3 org isolation).
+
+    A shared connector (no owner) is visible to everyone. An owned connector is visible ONLY to
+    its owner org; an unknown org (``None``) never sees an owned connector (fail closed).
+    """
+    owner = getattr(connector, "owner_org_id", None)
+    if isinstance(owner, bool) or not isinstance(owner, int):
+        return True
+    return org_id is not None and owner == org_id
+
+
+def connector_serves_model(connector: Any, model: str) -> bool:
+    """True when ``connector`` lists ``model``; an empty list is a wildcard for shared links only.
+
+    Owned links and fleet (vLLM) links never wildcard: an empty ``model_list`` matches nothing,
+    so a deployment can never silently answer for a model it does not serve.
+    """
+    models = getattr(connector, "model_list", None) or []
+    if model in models:
+        return True
+    if models:
+        return False
+    owner = getattr(connector, "owner_org_id", None)
+    owned = isinstance(owner, int) and not isinstance(owner, bool)
+    return not (owned or isinstance(connector, VllmConnector))
 
 
 class OpenAIConnector(LLMConnector):
@@ -378,6 +468,25 @@ class OpenAIConnector(LLMConnector):
         """Hook to annotate a usage dict before it leaves the connector (identity by default)."""
         return usage_info
 
+    async def _validate_usage(
+        self,
+        usage_info: dict[str, Any],
+        reason: str,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Hook to validate engine-reported counts; OpenAI proper trusts its own API.
+
+        Only normalizes a missing count to 0 (the long-standing behaviour for that provider).
+        """
+        return {
+            **usage_info,
+            "input_tokens": usage_info.get("input_tokens") or 0,
+            "output_tokens": usage_info.get("output_tokens") or 0,
+        }
+
     async def _finalize_stream_usage(
         self,
         usage: dict[str, Any] | None,
@@ -426,6 +535,9 @@ class OpenAIConnector(LLMConnector):
             cached_tokens = getattr(details, "cached_tokens", 0) if details else 0
             usage_info["cached_tokens"] = cached_tokens if isinstance(cached_tokens, int) else 0
 
+            usage_info = await self._validate_usage(
+                usage_info, "non_stream", model, messages, content, kwargs
+            )
             return content, self._stamp_usage(usage_info)
 
         except openai.APITimeoutError as e:
@@ -498,12 +610,15 @@ class OpenAIConnector(LLMConnector):
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage:
                     usage = {
-                        "input_tokens": getattr(chunk_usage, "prompt_tokens", 0),
-                        "output_tokens": getattr(chunk_usage, "completion_tokens", 0),
+                        "input_tokens": getattr(chunk_usage, "prompt_tokens", None),
+                        "output_tokens": getattr(chunk_usage, "completion_tokens", None),
                         "provider": self.provider_label,
                         "model": model,
                     }
-            usage = await self._finalize_stream_usage(usage, model, messages, "".join(text_parts))
+            text = "".join(text_parts)
+            if usage is not None:
+                usage = await self._validate_usage(usage, "stream", model, messages, text, kwargs)
+            usage = await self._finalize_stream_usage(usage, model, messages, text)
             if usage is not None:
                 usage = self._stamp_usage(usage)
             yield StreamChunk(delta="", usage=usage, done=True)
@@ -633,7 +748,6 @@ class VllmConnector(OpenAIConnector):
         self.unit_price_input: Decimal | None = _opt_decimal(caps.get("unit_price_input"))
         self.unit_price_output: Decimal | None = _opt_decimal(caps.get("unit_price_output"))
         self.fleet_status: int | None = caps.get("fleet_status")
-        self.owner_org_id: int | None = config.get("owner_org_id")
 
     @property
     def is_routable(self) -> bool:
@@ -670,30 +784,50 @@ class VllmConnector(OpenAIConnector):
     async def _estimate(
         self, model: str, messages: list[dict[str, str]], content: str, reason: str
     ) -> dict[str, Any]:
-        """Estimate token counts locally, count the gap, and warn (no prompt/response content)."""
-        from shared.observability.vllm_metrics import usage_missing_counter
-
-        prompt = "\n".join(str(m.get("content", "")) for m in messages)
-        in_tokens = await self.count_tokens(prompt, model)
-        out_tokens = await self.count_tokens(content, model)
-        try:
-            usage_missing_counter().add(1, {"reason": reason})
-        except Exception:  # noqa: BLE001 -- a dead exporter never breaks a request
-            logger.debug("usage-missing counter emission failed", exc_info=True)
-        logger.warning(
-            "vllm deployment %s reported no usage (%s); estimated %d in / %d out tokens",
-            self.local_deployment_id,
+        """Estimate BOTH counts locally (no usage at all), count the gap, warn (no content)."""
+        usage = await self._validate_usage(
+            {"input_tokens": None, "output_tokens": None},
             reason,
-            in_tokens,
-            out_tokens,
+            model,
+            messages,
+            content,
+            {},
         )
-        return {
-            "input_tokens": in_tokens,
-            "output_tokens": out_tokens,
-            "total_tokens": in_tokens + out_tokens,
-            "provider": "vllm",
-            "estimated": True,
+        return {**usage, "provider": "vllm"}
+
+    async def _validate_usage(
+        self,
+        usage_info: dict[str, Any],
+        reason: str,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate reported counts; estimate + flag + count every missing/garbage field."""
+        prompt = "\n".join(str(m.get("content", "")) for m in messages)
+        in_t, out_t, estimated = await resolve_reported_counts(
+            usage_info.get("input_tokens"),
+            usage_info.get("output_tokens"),
+            usage_count_caps(self.config, request_kwargs),
+            lambda: self.count_tokens(prompt, model),
+            lambda: self.count_tokens(text, model),
+        )
+        out = {
+            **usage_info,
+            "input_tokens": in_t,
+            "output_tokens": out_t,
+            "total_tokens": in_t + out_t,
         }
+        if estimated:
+            out["estimated"] = True
+            _count_missing(reason)
+            logger.warning(
+                "vllm deployment %s reported missing/invalid usage (%s); estimated counts",
+                self.local_deployment_id,
+                reason,
+            )
+        return out
 
     async def _handle_missing_usage(
         self, model: str, messages: list[dict[str, str]], content: str
@@ -1707,6 +1841,23 @@ class OllamaConnector(LLMConnector):
         # Use OpenAI tokenizer for estimation
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
         self._local_keys = _local_usage_keys(config)
+        self._fleet_managed = self._local_keys["local_deployment_kind"] is not None
+        self._headers: dict[str, str] = {}
+        if config.get("api_key"):
+            self._headers["Authorization"] = f"Bearer {config['api_key']}"
+
+    def _require_fleet_key(self, model: str) -> None:
+        """Fail closed when a fleet-managed link has no per-deployment api key (AM11).
+
+        NOTE: Ollama itself does not validate this header; server-side enforcement needs an auth
+        layer in front of fleet Ollama pods (tracked follow-up, DEVIATIONS-C-proxy.md).
+        """
+        if self._fleet_managed and "Authorization" not in self._headers:
+            raise ProviderServerError(
+                provider="ollama",
+                model=model,
+                message="ollama fleet link has no per-deployment api key",
+            )
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -1721,7 +1872,7 @@ class OllamaConnector(LLMConnector):
         real one — turning a unit test into an outbound HTTP call.
         """
         if self._session is None or getattr(self._session, "closed", False) is True:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(headers=self._headers or None)
         return self._session
 
     @session.setter
@@ -1738,6 +1889,7 @@ class OllamaConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate Ollama chat completion."""
+        self._require_fleet_key(model)
         try:
             payload: dict[str, Any] = {
                 "model": model,
@@ -1782,20 +1934,17 @@ class OllamaConnector(LLMConnector):
                 result = await response.json()
                 content = result["message"]["content"]
 
-                # Estimate token usage
-                input_text = " ".join([msg["content"] for msg in messages])
-                input_tokens = len(self.token_estimator.encode(input_text))
-                output_tokens = len(self.token_estimator.encode(content))
-
-                usage_info = {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "model": model,
-                    "finish_reason": result.get("done_reason", "stop"),
-                    "provider": "ollama",
-                    **self._local_keys,
-                }
+                # Real counts when the engine reported valid ones; else a flagged estimate.
+                usage_info = await self._usage_from_counts(
+                    result.get("prompt_eval_count"),
+                    result.get("eval_count"),
+                    model,
+                    messages,
+                    content,
+                    "non_stream",
+                    kwargs,
+                )
+                usage_info["finish_reason"] = result.get("done_reason", "stop")
 
                 return content, usage_info
 
@@ -1890,26 +2039,35 @@ class OllamaConnector(LLMConnector):
             logger.error(f"Failed to remove Ollama model {model}: {e}")
             return {"status": "error", "error": str(e)}
 
-    def _stream_usage(
+    async def _usage_from_counts(
         self,
-        reported: dict[str, int] | None,
+        raw_in: Any,
+        raw_out: Any,
         model: str,
         messages: list[dict[str, str]],
         text: str,
+        reason: str,
+        request_kwargs: dict[str, Any],
     ) -> dict[str, Any]:
-        """Final-chunk usage: the engine's real counts, else a flagged tiktoken estimate."""
-        if reported is None:
-            prompt = " ".join(str(m.get("content", "")) for m in messages)
-            reported = {
-                "input_tokens": len(self.token_estimator.encode(prompt)),
-                "output_tokens": len(self.token_estimator.encode(text)),
-            }
-            estimated = True
-        else:
-            estimated = False
+        """Usage dict from engine counts: each invalid/missing field estimated, row flagged."""
+        prompt = " ".join(str(m.get("content", "")) for m in messages)
+
+        async def est_in() -> int:
+            return len(self.token_estimator.encode(prompt))
+
+        async def est_out() -> int:
+            return len(self.token_estimator.encode(text))
+
+        in_t, out_t, estimated = await resolve_reported_counts(
+            raw_in, raw_out, usage_count_caps(self.config, request_kwargs), est_in, est_out
+        )
+        if estimated:
+            _count_missing(reason, "ollama")
+            logger.warning("ollama reported missing/invalid usage (%s); estimated counts", reason)
         return {
-            **reported,
-            "total_tokens": reported["input_tokens"] + reported["output_tokens"],
+            "input_tokens": in_t,
+            "output_tokens": out_t,
+            "total_tokens": in_t + out_t,
             "model": model,
             "provider": "ollama",
             "estimated": estimated,
@@ -1920,6 +2078,7 @@ class OllamaConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream Ollama chat completion using NDJSON streaming."""
+        self._require_fleet_key(model)
         try:
             payload = {
                 "model": model,
@@ -1953,7 +2112,7 @@ class OllamaConnector(LLMConnector):
                         )
 
                 # Read NDJSON stream line by line
-                reported: dict[str, int] | None = None
+                reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
                 async for line in response.content:
                     if not line:
@@ -1967,16 +2126,15 @@ class OllamaConnector(LLMConnector):
                             if content:
                                 text_parts.append(content)
                                 yield StreamChunk(delta=content, done=False)
-                        if chunk.get("done") and "eval_count" in chunk:
-                            reported = {
-                                "input_tokens": int(chunk.get("prompt_eval_count", 0)),
-                                "output_tokens": int(chunk["eval_count"]),
-                            }
+                        if chunk.get("done"):
+                            reported = (chunk.get("prompt_eval_count"), chunk.get("eval_count"))
                     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                         continue
 
-                # The final NDJSON object carries real counts; without it, estimate (flagged).
-                usage = self._stream_usage(reported, model, messages, "".join(text_parts))
+                # The final NDJSON object carries counts; invalid/missing ones are estimated.
+                usage = await self._usage_from_counts(
+                    reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
+                )
                 yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
@@ -2059,6 +2217,40 @@ class LlamaCppConnector(LLMConnector):
                 message="llamacpp fleet link has no per-deployment api key",
             )
 
+    async def _usage_from_counts(
+        self,
+        raw_in: Any,
+        raw_out: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        reason: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """A fresh usage dict from validated counts; invalid/missing fields estimated + flagged."""
+        prompt = " ".join(str(m.get("content", "")) for m in messages)
+        in_t, out_t, estimated = await resolve_reported_counts(
+            raw_in,
+            raw_out,
+            usage_count_caps(self.config, request_kwargs),
+            lambda: self.count_tokens(prompt, model),
+            lambda: self.count_tokens(text, model),
+        )
+        if estimated:
+            _count_missing(reason, "llamacpp")
+            logger.warning("llamacpp reported missing/invalid usage (%s); estimated counts", reason)
+        return {
+            "input_tokens": in_t,
+            "output_tokens": out_t,
+            "prompt_tokens": in_t,
+            "completion_tokens": out_t,
+            "total_tokens": in_t + out_t,
+            "model": model,
+            "provider": "llamacpp",
+            "estimated": estimated,
+            **self._local_keys,
+        }
+
     def _get_session(self) -> aiohttp.ClientSession:
         """The HTTP session, opened on first use.
 
@@ -2108,13 +2300,17 @@ class LlamaCppConnector(LLMConnector):
                         message="llama-server returned empty choices",
                     )
                 content = data["choices"][0]["message"]["content"]
-                usage = data.get("usage", {})
-                usage["provider"] = "llamacpp"
-                usage["model"] = model
-                # OpenAI-style usage names; the proxy meters input_tokens/output_tokens.
-                usage.setdefault("input_tokens", usage.get("prompt_tokens", 0))
-                usage.setdefault("output_tokens", usage.get("completion_tokens", 0))
-                usage.update(self._local_keys)
+                raw = data.get("usage")
+                raw = raw if isinstance(raw, dict) else {}
+                usage = await self._usage_from_counts(
+                    raw.get("prompt_tokens"),
+                    raw.get("completion_tokens"),
+                    model,
+                    messages,
+                    content,
+                    "non_stream",
+                    kwargs,
+                )
                 return content, usage
         except ProviderError:
             raise
@@ -2213,7 +2409,7 @@ class LlamaCppConnector(LLMConnector):
                         )
 
                 # Read SSE stream
-                reported: dict[str, int] | None = None
+                reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
                 async for line in response.content:
                     if not line:
@@ -2234,31 +2430,18 @@ class LlamaCppConnector(LLMConnector):
                                 text_parts.append(delta["content"])
                                 yield StreamChunk(delta=delta["content"], done=False)
                         chunk_usage = chunk.get("usage")
-                        if chunk_usage:
-                            reported = {
-                                "input_tokens": int(chunk_usage.get("prompt_tokens", 0)),
-                                "output_tokens": int(chunk_usage.get("completion_tokens", 0)),
-                            }
+                        if isinstance(chunk_usage, dict):
+                            reported = (
+                                chunk_usage.get("prompt_tokens"),
+                                chunk_usage.get("completion_tokens"),
+                            )
                     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                         continue
 
-                # Real counts from the include_usage chunk, else a flagged estimate.
-                text = "".join(text_parts)
-                estimated = reported is None
-                if reported is None:
-                    prompt = " ".join(str(m.get("content", "")) for m in messages)
-                    reported = {
-                        "input_tokens": await self.count_tokens(prompt, model),
-                        "output_tokens": await self.count_tokens(text, model),
-                    }
-                usage = {
-                    **reported,
-                    "total_tokens": reported["input_tokens"] + reported["output_tokens"],
-                    "model": model,
-                    "provider": "llamacpp",
-                    "estimated": estimated,
-                    **self._local_keys,
-                }
+                # Counts from the include_usage chunk; invalid/missing ones are estimated.
+                usage = await self._usage_from_counts(
+                    reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
+                )
                 yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
@@ -2745,14 +2928,23 @@ class LLMConnectionManager:
         self.connectors.clear()
         self._load_connectors()
 
-    def get_connector(self, name: str) -> LLMConnector | None:
-        """Get connector by name."""
-        return self.connectors.get(name)
+    def get_connector(self, name: str, org_id: int | None = None) -> LLMConnector | None:
+        """Get a connector by name; an owned connector is returned only to its owner org."""
+        connector = self.connectors.get(name)
+        if connector is None or not connector_visible_to(connector, org_id):
+            return None
+        return connector
 
-    def get_connector_for_model(self, model: str) -> LLMConnector | None:
-        """Get connector that supports the specified model."""
+    def get_connector_for_model(self, model: str, org_id: int | None = None) -> LLMConnector | None:
+        """Get a connector supporting ``model`` that is visible to ``org_id`` (AM3).
+
+        Owned connectors are skipped unless ``org_id`` is their owner; owned and fleet links
+        never match through an empty ``model_list``.
+        """
         for connector in self.connectors.values():
-            if model in connector.model_list or not connector.model_list:
+            if not connector_visible_to(connector, org_id):
+                continue
+            if connector_serves_model(connector, model):
                 return connector
         return None
 
@@ -2762,11 +2954,13 @@ class LLMConnectionManager:
             conn for conn in self.connectors.values() if conn.config.get("provider") == provider
         ]
 
-    async def list_all_models(self) -> list[dict[str, Any]]:
-        """List models from all connectors."""
+    async def list_all_models(self, org_id: int | None = None) -> list[dict[str, Any]]:
+        """List models from every connector visible to ``org_id`` (owned links: owner only)."""
         all_models = []
 
         for connector in self.connectors.values():
+            if not connector_visible_to(connector, org_id):
+                continue
             try:
                 models = await connector.list_models()
                 all_models.extend(models)

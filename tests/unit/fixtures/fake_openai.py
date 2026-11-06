@@ -21,6 +21,7 @@ class FakeOpenAIServer:
     mode: str = "json_usage"
     requests: list[dict[str, Any]] = field(default_factory=list)
     headers: list[dict[str, str]] = field(default_factory=list)
+    usage_override: dict[str, Any] | None = None
     app: Quart = field(default_factory=lambda: Quart("fake_openai"))
 
     def sdk_client(self, api_key: str = "test-key") -> openai.AsyncOpenAI:
@@ -42,7 +43,11 @@ def _build() -> FakeOpenAIServer:
         body = await request.get_json()
         server.requests.append(body)
         server.headers.append(dict(request.headers))
-        usage = {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+        usage = server.usage_override or {
+            "prompt_tokens": 11,
+            "completion_tokens": 7,
+            "total_tokens": 18,
+        }
         base = {"id": "c1", "created": 1, "model": "m"}
         if server.mode.startswith("json"):
             payload: dict[str, Any] = {

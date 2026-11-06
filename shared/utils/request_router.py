@@ -119,13 +119,39 @@ class LLMRequestRouter:
             if provider_name not in self.round_robin_counters:
                 self.round_robin_counters[provider_name] = 0
 
-    def _get_available_providers(self, model: str) -> list[str]:
-        """Get list of available providers for a model."""
-        available = []
+    def _get_available_providers(
+        self, model: str, org_id: int | None = None, destination: str | None = None
+    ) -> list[str]:
+        """Get list of available providers for a model, as seen by ``org_id``.
 
-        for provider_name, connector in self.llm_manager.connectors.items():
+        Owned connectors (``owner_org_id`` set) are visible only to their owner (AM3); a fleet
+        (vLLM) connector is skipped when its deployment is not SERVING, and also when a
+        non-local connector lists the same model unless it is the explicit ``destination``.
+        """
+        from shared.utils.llm_connectors import (
+            VllmConnector,
+            connector_serves_model,
+            connector_visible_to,
+        )
+
+        available = []
+        connectors = self.llm_manager.connectors
+        commercial_serves = any(
+            connector_serves_model(c, model) and not self._is_local_connector(c)
+            for c in connectors.values()
+            if connector_visible_to(c, org_id)
+        )
+
+        for provider_name, connector in connectors.items():
+            if not connector_visible_to(connector, org_id):
+                continue
+            if isinstance(connector, VllmConnector):
+                if not connector.is_routable:
+                    continue
+                if commercial_serves and provider_name != destination:
+                    continue
             # Check if provider supports the model
-            if model in connector.model_list or not connector.model_list:
+            if connector_serves_model(connector, model):
                 # Check if provider is healthy
                 stats = self.provider_stats.get(provider_name, ProviderStats())
 
@@ -369,6 +395,8 @@ class LLMRequestRouter:
         model: str,
         strategy: RoutingStrategy | None = None,
         preferred_backend: str | None = None,
+        destination: str | None = None,
+        org_id: int | None = None,
     ) -> tuple[str, str] | None:
         """Pick a healthy provider for a model.
 
@@ -391,9 +419,14 @@ class LLMRequestRouter:
             (provider_name, model) or None when no provider can serve the model.
 
         """
-        available = self._get_available_providers(model)
+        available = self._get_available_providers(model, org_id, destination)
         if not available:
             return None
+
+        # An explicit destination (prefer-local rule) wins over strategy, but only from the
+        # availability-filtered set: never over the breaker, routability or org isolation.
+        if destination and destination in available:
+            return destination, model
 
         if (
             preferred_backend
@@ -409,10 +442,17 @@ class LLMRequestRouter:
 
     def _is_affinity_eligible(self, provider_name: str) -> bool:
         """True if `provider_name`'s connector is Ollama/llama.cpp-family."""
-        from shared.utils.llm_connectors import LlamaCppConnector, OllamaConnector
+        from shared.utils.llm_connectors import LlamaCppConnector, OllamaConnector, VllmConnector
 
         connector = self.llm_manager.connectors.get(provider_name)
-        return isinstance(connector, (OllamaConnector, LlamaCppConnector))
+        return isinstance(connector, (OllamaConnector, LlamaCppConnector, VllmConnector))
+
+    @staticmethod
+    def _is_local_connector(connector: Any) -> bool:
+        """True for connectors that serve from the local fleet (``LOCAL_PROVIDERS`` types)."""
+        from shared.utils.llm_connectors import LlamaCppConnector, OllamaConnector, VllmConnector
+
+        return isinstance(connector, (OllamaConnector, LlamaCppConnector, VllmConnector))
 
     def get_provider_stats(self) -> dict[str, dict[str, Any]]:
         """Get current provider statistics."""

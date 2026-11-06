@@ -1221,7 +1221,7 @@ class TestListModels:
     async def test_non_empty_model_list_is_passed_through_unchanged(self, running_app, monkeypatch):
         """A non-empty models list skips the `models = []` reset and is returned as-is."""
 
-        async def fake_list_all_models():
+        async def fake_list_all_models(**_kw):
             return [{"id": "fake-model-1"}, {"id": "fake-model-2"}]
 
         monkeypatch.setattr(
@@ -1236,7 +1236,7 @@ class TestListModels:
     async def test_list_all_models_exception_returns_500(self, running_app, monkeypatch):
         """A list_all_models() exception maps to a 500 server_error envelope."""
 
-        async def raising_list_all_models():
+        async def raising_list_all_models(**_kw):
             raise RuntimeError("connector unreachable")
 
         monkeypatch.setattr(
@@ -1665,7 +1665,7 @@ class TestCountTokensEndpoint:
         monkeypatch.setattr(
             proxy_main.proxy_server.request_router,
             "select_provider",
-            lambda model: ("stub", model),
+            lambda model, **_kw: ("stub", model),
         )
         client = running_app.test_client()
         resp = await client.post(
@@ -1685,7 +1685,7 @@ class TestCountTokensEndpoint:
         monkeypatch.setattr(
             proxy_main.proxy_server.request_router,
             "select_provider",
-            lambda model: ("no-such-provider", model),
+            lambda model, **_kw: ("no-such-provider", model),
         )
         client = running_app.test_client()
         resp = await client.post(
@@ -1760,7 +1760,7 @@ class TestReleaseAudit20260923Handlers:
         monkeypatch.setattr(
             proxy_main.proxy_server.request_router,
             "select_provider",
-            lambda model: ("stub", model),
+            lambda model, **_kw: ("stub", model),
         )
 
         captured: dict = {}

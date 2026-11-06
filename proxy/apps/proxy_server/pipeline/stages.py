@@ -70,6 +70,7 @@ from shared.routing.aliases import explicit_tool_type
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
 from shared.routing.heuristics import HeuristicRule, RequestSignals
+from shared.routing.providers import LOCAL_PROVIDERS, foreign_only_models
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
 from shared.utils.llm_connectors import (
@@ -80,6 +81,7 @@ from shared.utils.llm_connectors import (
     ProviderServerError,
     ProviderTimeoutError,
     StreamChunk,
+    connector_visible_to,
 )
 from shared.utils.metering import MeteringBuffer, MeteringEvent
 from shared.utils.metrics import get_proxy_metrics
@@ -922,10 +924,13 @@ class RoutingStage(Stage):
         rows = await asyncio.to_thread(
             lambda: self.db(self.db.model_configs.enabled == True).select()  # noqa: E712
         )
+        hidden = await foreign_only_models(self.db, org_id) if org_id is not None else set()
         offers: list[ModelOffer] = []
         for row in rows:
+            if row.model_name in hidden:
+                continue
             providers = row.preferred_providers or []
-            is_local = any(p in ("ollama", "llamacpp") for p in providers)
+            is_local = any(p in LOCAL_PROVIDERS for p in providers)
             location = "local" if is_local else "commercial"
             costs = list((row.cost_per_token or {}).values())
             avg_cost = sum(costs) / len(costs) if costs else 0.0
@@ -1186,11 +1191,12 @@ class DispatchStage(Stage):
         # falsy or raised -- this is the chaos-failover path, not a general
         # retry loop; DispatchStage still calls the router exactly once per
         # candidate model.
+        request_org_id = getattr(ctx.user, "organization_id", None)
         try:
             model = ctx.model or "gpt-4"
             try:
                 selection = self.router.select_provider(
-                    model, preferred_backend=ctx.preferred_backend
+                    model, preferred_backend=ctx.preferred_backend, org_id=request_org_id
                 )
             except Exception as e:
                 # A primary-selection failure still leaves the chaos-failover
@@ -1203,7 +1209,7 @@ class DispatchStage(Stage):
                 selection = None
             if not selection:
                 for fallback_model in ctx.fallback_chain:
-                    selection = self.router.select_provider(fallback_model)
+                    selection = self.router.select_provider(fallback_model, org_id=request_org_id)
                     if selection:
                         model = fallback_model
                         break
@@ -1222,6 +1228,10 @@ class DispatchStage(Stage):
             return None
 
         connector = self.connectors.get(provider)
+        # Defence in depth (AM3): even a selected name never resolves to another org's link.
+        if connector is not None and not connector_visible_to(connector, request_org_id):
+            logger.error("DispatchStage: connector %s is not visible to this org", provider)
+            connector = None
         if not connector:
             logger.error("DispatchStage: no connector for provider %s", provider)
             ctx.blocked = True

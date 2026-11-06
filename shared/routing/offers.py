@@ -27,18 +27,18 @@ import asyncio
 from typing import TYPE_CHECKING, Any
 
 from shared.routing.capability import ModelOffer
+from shared.routing.providers import LOCAL_PROVIDERS, foreign_only_models
 
 if TYPE_CHECKING:
     from shared.fleet.base import InferenceFleetBackend
     from shared.fleet.placement import PlacementEngine
-
-_LOCAL_PROVIDERS = frozenset({"ollama", "llamacpp"})
 
 
 async def load_offers_from_model_configs(
     db: Any,
     placement: "PlacementEngine | None" = None,
     backends: "list[InferenceFleetBackend] | None" = None,
+    org_id: int | None = None,
 ) -> list[ModelOffer]:
     """Build the candidate ``ModelOffer`` universe from ``model_configs``.
 
@@ -52,6 +52,8 @@ async def load_offers_from_model_configs(
             existed.
         backends: The org's registered ``InferenceFleetBackend`` instances,
             required (and only consulted) when ``placement`` is given.
+        org_id: The requesting org. When given, a model served only by connection links owned
+            by a DIFFERENT org is never offered (AM3 org isolation).
 
     Returns:
         One ``ModelOffer`` per enabled ``model_configs`` row.
@@ -60,10 +62,13 @@ async def load_offers_from_model_configs(
     rows = await asyncio.to_thread(
         lambda: db(db.model_configs.enabled == True).select()  # noqa: E712
     )
+    hidden = await foreign_only_models(db, org_id) if org_id is not None else set()
     offers: list[ModelOffer] = []
     for row in rows:
+        if row.model_name in hidden:
+            continue
         providers = row.preferred_providers or []
-        is_local = any(p in _LOCAL_PROVIDERS for p in providers)
+        is_local = any(p in LOCAL_PROVIDERS for p in providers)
         location = "local" if is_local else "commercial"
         costs = list((row.cost_per_token or {}).values())
         avg_cost = sum(costs) / len(costs) if costs else 0.0

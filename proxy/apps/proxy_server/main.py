@@ -2326,10 +2326,13 @@ async def chat_completions():
 @app.route("/v1/models", methods=["GET"])
 async def list_models():
     """List available models."""
-    await get_current_user()  # Authentication check
+    user_context = await get_current_user()  # Authentication check
     try:
-        # Get actual available models from connection links
-        models = await proxy_server.llm_manager.list_all_models()
+        # Get actual available models from connection links visible to the caller's org
+        # (a link owned by another org is never listed, AM3).
+        models = await proxy_server.llm_manager.list_all_models(
+            org_id=getattr(user_context, "organization_id", None)
+        )
 
         # If no models available, return empty list
         if not models:
@@ -2807,7 +2810,9 @@ async def count_tokens():
 
         # Try to use connector's count_tokens if available
         try:
-            provider, target_model = proxy_server.request_router.select_provider(model)
+            provider, target_model = proxy_server.request_router.select_provider(
+                model, org_id=getattr(user_context, "organization_id", None)
+            )
             connector = (
                 proxy_server.llm_manager.connectors.get(provider)
                 if hasattr(proxy_server.llm_manager, "connectors")

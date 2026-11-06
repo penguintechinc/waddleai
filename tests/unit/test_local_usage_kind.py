@@ -87,7 +87,8 @@ async def test_ollama_usage_stamps_kind_and_id_from_link() -> None:
     server = await _serve({"/api/chat": _ollama_chat})
     try:
         conn = OllamaConnector(
-            "o", {"endpoint_url": str(server.make_url("")).rstrip("/"), **_caps(2, 9)}
+            "o",
+            {"endpoint_url": str(server.make_url("")).rstrip("/"), "api_key": "k", **_caps(2, 9)},
         )
         _text, usage = await conn.chat_completion(MSGS, "m")
         await conn.close()
@@ -119,7 +120,7 @@ async def test_stream_usage_stamps_kind_and_real_counts() -> None:
     server = await _serve({"/api/chat": _ollama_chat, "/v1/chat/completions": _llama_chat})
     url = str(server.make_url("")).rstrip("/")
     try:
-        oll = OllamaConnector("o", {"endpoint_url": url, **_caps(2, 9)})
+        oll = OllamaConnector("o", {"endpoint_url": url, "api_key": "k", **_caps(2, 9)})
         llm = LlamaCppConnector("l", {"endpoint_url": url, "api_key": "k", **_caps(3, 4)})
         o_final = await _collect(oll.stream_chat_completion(MSGS, "m"))
         l_final = await _collect(llm.stream_chat_completion(MSGS, "m"))
