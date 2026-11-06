@@ -6,10 +6,13 @@ Manages llama-server instances in two modes:
 """
 
 import asyncio
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 import yaml
@@ -24,11 +27,14 @@ from shared.fleet.base import (
     NodeInfo,
     ProvisionSpec,
 )
+from shared.fleet.enums import LlamaCppTopology
+from shared.fleet.llamacpp_rpc import RPC_AUTH_REFUSAL, RpcLayout, RpcRefused
 from shared.fleet.registry import register
 from shared.fleet.vllm_ray.coexistence import (
     default_list_nodes,
     refuse_plain_gpu_for_target_nodes,
 )
+from shared.fleet.vllm_ray.slug import derive_slug
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,95 @@ LLAMACPP_IMAGE: str = (
 CURL_DOWNLOADER_IMAGE: str = (
     "curlimages/curl@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13"
 )
+
+# --- Multi-node RPC topology (Plan F) -------------------------------------------------------
+RPC_PORT: int = 50052
+RPC_SERVER_BIN = "/usr/local/bin/rpc-server"
+LLAMA_SERVER_BIN = "/usr/local/bin/llama-server"
+# Device names as llama.cpp's rpc-server addresses them; verified per image by F4 spike S1.
+RPC_DEVICE_BY_VENDOR: dict[int, str] = {1: "CUDA0", 2: "ROCm0", 3: "SYCL0"}
+# AMD / Intel device-plugin resources; NVIDIA is per class (see ``resource_for``).
+RPC_RESOURCE_BY_VENDOR: dict[int, str] = {2: "amd.com/gpu", 3: "gpu.intel.com/i915"}
+_NVIDIA = 1
+_ROLE_LABEL = "waddleai.penguintech.io/llamacpp-role"
+_DEPLOYMENT_LABEL = "waddleai.penguintech.io/llamacpp-deployment"
+_KEYS_DIR = "/secrets/deployment-keys"
+_MAX_RPC_BASE_NAME = 48  # <base>-rpc-<i>-<ordinal> must stay a valid 63-char pod hostname
+_WAIT_ATTEMPTS = 600  # x 2 s: a worker that never comes up fails the head loudly (~20 min)
+_RPC_WAIT_SCRIPT = (
+    "set -eu\n"
+    "for w in $WORKERS; do\n"
+    "  n=0\n"
+    '  until curl -sS --connect-timeout 2 "telnet://$w" </dev/null >/dev/null 2>&1; do\n'
+    "    n=$((n+1))\n"
+    f'    if [ "$n" -ge {_WAIT_ATTEMPTS} ]; then\n'
+    '      echo "worker $w never became reachable" >&2; exit 1\n'
+    "    fi\n"
+    "    sleep 2\n"
+    "  done\n"
+    "done"
+)
+_RPC_DEFAULT_PROXY_SELECTOR = {
+    "app.kubernetes.io/name": "waddleai",
+    "app.kubernetes.io/component": "proxy",
+}
+_RPC_DEFAULT_MANAGEMENT_SELECTOR = {
+    "app.kubernetes.io/name": "waddleai",
+    "app.kubernetes.io/component": "management",
+}
+
+
+def resource_for(vendor: int, gpu_class: str) -> str:
+    """Kubernetes extended-resource name for one GPU of ``gpu_class`` (AI nodes are per class).
+
+    NVIDIA AI nodes advertise ``nvidia.com/<class without vendor prefix>`` (nvidia-rtx4090 ->
+    nvidia.com/rtx4090); AMD and Intel use their plugin's single resource.
+    """
+    if vendor == _NVIDIA:
+        short = gpu_class.removeprefix("nvidia-")
+        if not short or short == gpu_class:
+            raise ValueError(f"cannot derive an NVIDIA GPU resource from class {gpu_class!r}")
+        return f"nvidia.com/{short}"
+    try:
+        return RPC_RESOURCE_BY_VENDOR[vendor]
+    except KeyError:
+        raise ValueError(f"unknown GPU vendor {vendor}") from None
+
+
+def _topology_selector(key: str, default: dict[str, str]) -> dict[str, str]:
+    """A pod selector from the chart's CILIUM_TOPOLOGY JSON, else the shipped default."""
+    try:
+        parsed = json.loads(os.environ.get("CILIUM_TOPOLOGY", "") or "{}")
+        selector = parsed.get("selectors", {}).get(key)
+    except (ValueError, AttributeError):
+        selector = None
+    return dict(selector) if isinstance(selector, dict) and selector else dict(default)
+
+
+def _mutual_auth_from_env() -> bool:
+    """``WADDLEAI_FLEET_MUTUAL_AUTH`` as set by the chart; anything but ``true`` fails closed."""
+    return os.environ.get("WADDLEAI_FLEET_MUTUAL_AUTH", "").strip().lower() == "true"
+
+
+def _hardened_container_security() -> dict[str, Any]:
+    """Container securityContext shared by every RPC pod (rootless, read-only rootfs)."""
+    return {
+        "runAsNonRoot": True,
+        "runAsUser": 1000,
+        "allowPrivilegeEscalation": False,
+        "readOnlyRootFilesystem": True,
+        "capabilities": {"drop": ["ALL"]},
+    }
+
+
+def _pod_security() -> dict[str, Any]:
+    """Pod securityContext meeting Pod Security Admission ``restricted``."""
+    return {
+        "fsGroup": 1000,
+        "runAsNonRoot": True,
+        "runAsUser": 1000,
+        "seccompProfile": {"type": "RuntimeDefault"},
+    }
 
 
 def get_k8s_apps_client():
@@ -66,6 +161,19 @@ def get_k8s_core_client():
         logger.debug("Not running in-cluster, falling back to kubeconfig")
         k8s_config.load_kube_config()
     return client.CoreV1Api()
+
+
+def get_k8s_custom_client():
+    """Return a configured CustomObjectsApi client (CiliumNetworkPolicy objects)."""
+    from kubernetes import client  # type: ignore[import]
+    from kubernetes import config as k8s_config
+
+    try:
+        k8s_config.load_incluster_config()
+    except Exception:
+        logger.debug("Not running in-cluster, falling back to kubeconfig")
+        k8s_config.load_kube_config()
+    return client.CustomObjectsApi()
 
 
 def _list_candidate_nodes(node_selector: dict[str, str]) -> list[Any]:
@@ -118,6 +226,11 @@ class LlamaCppManager(InferenceFleetBackend):
         # accepted for interface uniformity and currently unused.
         self.config = config or {}
         self.credentials = credentials
+        # Fail closed: only an explicit True (config, else the chart's env) enables RPC layouts.
+        configured = self.config.get("mutual_auth_enabled")
+        self.mutual_auth_enabled: bool = (
+            _mutual_auth_from_env() if configured is None else configured is True
+        )
 
     def _daemonset_name(self, deployment_name: str) -> str:
         """Generate a K8s-safe DaemonSet name from a deployment name."""
@@ -338,6 +451,10 @@ class LlamaCppManager(InferenceFleetBackend):
                 f"Deployment '{deployment.name}' is running. Pass force=True to remove it."
             )
 
+        if getattr(deployment, "topology", None) == LlamaCppTopology.RPC_MULTI_NODE:
+            self.remove_rpc(deployment)
+            return
+
         namespace = deployment.k8s_namespace or "waddleai"
         ds_name = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
 
@@ -350,6 +467,510 @@ class LlamaCppManager(InferenceFleetBackend):
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(status="stopped")
         logger.info(f"Removed llama.cpp DaemonSet {ds_name}")
+
+    # --- Multi-node RPC topology (Plan F, F3) ------------------------------------------------
+
+    def _rpc_names(self, deployment) -> tuple[str, str]:
+        """``(base name, namespace)`` for an RPC deployment, refusing names that overflow DNS."""
+        base = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
+        if len(base) > _MAX_RPC_BASE_NAME:
+            raise ValueError(
+                f"deployment name too long for an RPC layout: '{base}' is {len(base)} characters; "
+                f"shorten the name so the object name stays within {_MAX_RPC_BASE_NAME}."
+            )
+        return base, deployment.k8s_namespace or "waddleai"
+
+    @staticmethod
+    def _rpc_worker_groups(layout: RpcLayout) -> list[tuple[str, str, int]]:
+        """Worker StatefulSet groups ``(node_uid, gpu_class, replicas)`` in stable order."""
+        counts: dict[tuple[str, str], int] = {}
+        for worker in layout.workers:
+            key = (worker.node_uid, worker.gpu_class)
+            counts[key] = counts.get(key, 0) + 1
+        return [(uid, cls, n) for (uid, cls), n in sorted(counts.items())]
+
+    def export_rpc_manifests(
+        self,
+        deployment,
+        layout: RpcLayout,
+        hostnames: dict[str, str],
+        image: str,
+        n_ctx: int,
+    ) -> list[dict]:
+        """Render the head Deployment, worker StatefulSets, Services and per-deployment CNP.
+
+        One rpc-server pod per planned GPU (a StatefulSet per worker node/class, all behind one
+        headless Service) and one pinned llama-server head. Refuses before rendering anything when
+        mutual auth is off, the split does not match the devices, or the image is not digest-pinned.
+        """
+        if not self.mutual_auth_enabled:
+            raise RpcRefused(RPC_AUTH_REFUSAL)
+        devices = len(layout.workers) + layout.head_gpus
+        if len(layout.tensor_split) != devices:
+            raise ValueError(
+                f"tensor_split length {len(layout.tensor_split)} must equal device count {devices}"
+            )
+        if "@sha256:" not in image:
+            raise ValueError("RPC image must be pinned by digest (name@sha256:...)")
+        base, namespace = self._rpc_names(deployment)
+        missing = {layout.head_node_uid, *(w.node_uid for w in layout.workers)} - set(hostnames)
+        if missing:
+            raise ValueError(f"no Kubernetes hostname for node(s) {sorted(missing)}")
+
+        groups = self._rpc_worker_groups(layout)
+        group_index = {(uid, cls): i for i, (uid, cls, _n) in enumerate(groups)}
+        next_ordinal: dict[tuple[str, str], int] = {}
+        fqdns: list[str] = []
+        for worker in layout.workers:  # device order: --rpc must follow tensor_split order
+            key = (worker.node_uid, worker.gpu_class)
+            ordinal = next_ordinal.get(key, 0)
+            next_ordinal[key] = ordinal + 1
+            pod = f"{base}-rpc-{group_index[key]}-{ordinal}"
+            fqdns.append(f"{pod}.{base}-rpc.{namespace}.svc:{RPC_PORT}")
+
+        slug = derive_slug(deployment.name, deployment.public_id)
+        objects: list[dict] = [
+            self._rpc_head_service(base, namespace),
+            self._rpc_worker_service(base, namespace),
+        ]
+        for index, (node_uid, gpu_class, replicas) in enumerate(groups):
+            objects.append(
+                self._rpc_worker_statefulset(
+                    base, namespace, index, node_uid, gpu_class, replicas, layout, hostnames, image
+                )
+            )
+        objects.append(
+            self._rpc_head_deployment(
+                deployment, base, namespace, layout, hostnames, image, n_ctx, fqdns, slug
+            )
+        )
+        objects.append(self._rpc_worker_policy(base, namespace))
+        objects.append(self._rpc_head_policy(deployment, base, namespace))
+        return objects
+
+    @staticmethod
+    def _rpc_labels(base: str, role: str) -> dict[str, str]:
+        """Pod/Service selector labels for one role of an RPC deployment."""
+        return {_DEPLOYMENT_LABEL: base, _ROLE_LABEL: role}
+
+    def _rpc_head_service(self, base: str, namespace: str) -> dict:
+        """ClusterIP Service in front of the head (the endpoint the proxy routes to)."""
+        return {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": f"{base}-svc", "namespace": namespace},
+            "spec": {
+                "type": "ClusterIP",
+                "selector": self._rpc_labels(base, "head"),
+                "ports": [{"port": 8080, "targetPort": 8080}],
+            },
+        }
+
+    def _rpc_worker_service(self, base: str, namespace: str) -> dict:
+        """Headless Service giving every rpc-server pod a stable DNS name."""
+        return {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": f"{base}-rpc", "namespace": namespace},
+            "spec": {
+                "clusterIP": "None",
+                "publishNotReadyAddresses": True,
+                "selector": self._rpc_labels(base, "worker"),
+                "ports": [{"port": RPC_PORT, "targetPort": RPC_PORT, "name": "rpc"}],
+            },
+        }
+
+    def _rpc_worker_statefulset(
+        self,
+        base: str,
+        namespace: str,
+        index: int,
+        node_uid: str,
+        gpu_class: str,
+        replicas: int,
+        layout: RpcLayout,
+        hostnames: dict[str, str],
+        image: str,
+    ) -> dict:
+        """One StatefulSet of single-GPU rpc-server pods pinned to one node (and class)."""
+        resource = resource_for(layout.vendor, gpu_class)
+        labels = self._rpc_labels(base, "worker")
+        container = {
+            "name": "rpc-server",
+            "image": image,
+            "command": [RPC_SERVER_BIN],
+            "args": [
+                "-H",
+                "0.0.0.0",  # nosec B104 # noqa: S104 -- pod-netns listen address; Cilium mutual auth + CNP admit only the head
+                "-p",
+                str(RPC_PORT),
+                "-d",
+                RPC_DEVICE_BY_VENDOR[layout.vendor],
+            ],
+            "ports": [{"name": "rpc", "containerPort": RPC_PORT, "protocol": "TCP"}],
+            "securityContext": _hardened_container_security(),
+            "resources": {
+                "requests": {"cpu": "500m", "memory": "2Gi", resource: "1"},
+                "limits": {"cpu": "2000m", "memory": "8Gi", resource: "1"},
+            },
+            "readinessProbe": {
+                "tcpSocket": {"port": RPC_PORT},
+                "initialDelaySeconds": 5,
+                "periodSeconds": 10,
+            },
+            "volumeMounts": [{"name": "tmp", "mountPath": "/tmp"}],  # nosec B108 # noqa: S108 -- pod volumeMount path in a generated manifest
+        }
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "StatefulSet",
+            "metadata": {"name": f"{base}-rpc-{index}", "namespace": namespace, "labels": labels},
+            "spec": {
+                "serviceName": f"{base}-rpc",
+                "replicas": replicas,
+                "podManagementPolicy": "Parallel",
+                "selector": {
+                    "matchLabels": {**labels, "waddleai.penguintech.io/rpc-group": str(index)}
+                },
+                "template": {
+                    "metadata": {
+                        "labels": {**labels, "waddleai.penguintech.io/rpc-group": str(index)}
+                    },
+                    "spec": {
+                        "securityContext": _pod_security(),
+                        "nodeSelector": {"kubernetes.io/hostname": hostnames[node_uid]},
+                        "containers": [container],
+                        "volumes": [{"name": "tmp", "emptyDir": {}}],
+                    },
+                },
+            },
+        }
+
+    def _rpc_head_deployment(
+        self,
+        deployment,
+        base: str,
+        namespace: str,
+        layout: RpcLayout,
+        hostnames: dict[str, str],
+        image: str,
+        n_ctx: int,
+        fqdns: list[str],
+        slug: str,
+    ) -> dict:
+        """The llama-server head: pinned to its planned node, key file from the shared Secret."""
+        from services.management.app.services.fleet_secrets import DEPLOYMENT_KEYS_SECRET
+
+        labels = {
+            **self._rpc_labels(base, "head"),
+            "app.kubernetes.io/component": "llamacpp",  # admitted by waddleai-allow-fleet-ingress
+        }
+        head_resource = resource_for(layout.vendor, layout.head_gpu_class)
+        claim = getattr(deployment, "model_cache_claim", None)
+        model_volume: dict = (
+            {"name": "llamacpp-models", "persistentVolumeClaim": {"claimName": claim}}
+            if claim
+            else {"name": "llamacpp-models", "emptyDir": {}}
+        )
+        if not claim:
+            logger.warning(
+                "No model_cache_claim set for RPC deployment %s; model caching is disabled.",
+                deployment.name,
+            )
+        tmp_mount = {"name": "tmp", "mountPath": "/tmp"}  # nosec B108 # noqa: S108 -- pod volumeMount path in a generated manifest
+        download = {
+            "name": "download-model",
+            "image": CURL_DOWNLOADER_IMAGE,
+            "env": [
+                {"name": "MODEL_URL", "value": deployment.model_url},
+                {"name": "MODEL_FILE", "value": deployment.model_filename},
+            ],
+            "command": [
+                "/bin/sh",
+                "-c",
+                'set -eu\nif [ -f "/models/$MODEL_FILE" ]; then\n'
+                '  echo "$MODEL_FILE already cached, skipping download"\nelse\n'
+                '  curl -fsSL -o "/models/$MODEL_FILE" "$MODEL_URL"\nfi',
+            ],
+            "securityContext": _hardened_container_security(),
+            "volumeMounts": [{"name": "llamacpp-models", "mountPath": "/models"}, tmp_mount],
+        }
+        wait_workers = {
+            "name": "wait-workers",
+            "image": CURL_DOWNLOADER_IMAGE,
+            "env": [{"name": "WORKERS", "value": " ".join(fqdns)}],
+            "command": ["/bin/sh", "-c", _RPC_WAIT_SCRIPT],
+            "securityContext": _hardened_container_security(),
+        }
+        server = {
+            "name": "llama-server",
+            "image": image,
+            "command": [LLAMA_SERVER_BIN],
+            "args": [
+                "--model",
+                f"/models/{deployment.model_filename}",
+                "--n-gpu-layers",
+                "999",
+                "--ctx-size",
+                str(n_ctx),
+                "--port",
+                "8080",
+                "--host",
+                "0.0.0.0",  # nosec B104 # noqa: S104 -- pod-netns listen address; reach is governed by Service + CiliumNetworkPolicy
+                "--rpc",
+                ",".join(fqdns),
+                "--tensor-split",
+                ",".join(str(share) for share in layout.tensor_split),
+                "--api-key-file",
+                f"{_KEYS_DIR}/{slug}",
+            ],
+            "ports": [{"name": "http", "containerPort": 8080, "protocol": "TCP"}],
+            "securityContext": _hardened_container_security(),
+            "resources": {
+                "requests": {
+                    "cpu": getattr(deployment, "cpu_request", None) or "2000m",
+                    "memory": getattr(deployment, "memory_request", None) or "8Gi",
+                    head_resource: str(layout.head_gpus),
+                },
+                "limits": {
+                    "cpu": getattr(deployment, "cpu_limit", None) or "4000m",
+                    "memory": getattr(deployment, "memory_limit", None) or "16Gi",
+                    head_resource: str(layout.head_gpus),
+                },
+            },
+            "livenessProbe": {
+                "httpGet": {"path": "/health", "port": 8080},
+                "initialDelaySeconds": 120,
+                "periodSeconds": 30,
+                "timeoutSeconds": 15,
+                "failureThreshold": 5,
+            },
+            "readinessProbe": {
+                "httpGet": {"path": "/health", "port": 8080},
+                "initialDelaySeconds": 30,
+                "periodSeconds": 10,
+                "timeoutSeconds": 5,
+                "failureThreshold": 3,
+            },
+            "volumeMounts": [
+                {"name": "llamacpp-models", "mountPath": "/models"},
+                {"name": "deployment-key", "mountPath": _KEYS_DIR, "readOnly": True},
+                tmp_mount,
+            ],
+        }
+        return {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": base, "namespace": namespace, "labels": labels},
+            "spec": {
+                "replicas": 1,
+                "strategy": {"type": "Recreate"},  # one head owns the GPUs; never two at once
+                "selector": {"matchLabels": self._rpc_labels(base, "head")},
+                "template": {
+                    "metadata": {"labels": labels},
+                    "spec": {
+                        "securityContext": _pod_security(),
+                        "nodeSelector": {"kubernetes.io/hostname": hostnames[layout.head_node_uid]},
+                        "initContainers": [download, wait_workers],
+                        "containers": [server],
+                        "volumes": [
+                            model_volume,
+                            {"name": "tmp", "emptyDir": {}},
+                            {
+                                # only THIS deployment's key (items), never the whole shared Secret
+                                "name": "deployment-key",
+                                "secret": {
+                                    "secretName": DEPLOYMENT_KEYS_SECRET,
+                                    "items": [{"key": slug, "path": slug}],
+                                },
+                            },
+                        ],
+                    },
+                },
+            },
+        }
+
+    def _rpc_head_policy(self, deployment, base: str, namespace: str) -> dict:
+        """Head CNP: ingress from the proxy and management only; egress to DNS, workers, source.
+
+        Every allowed flow requires Cilium mutual auth. The default-deny egress would otherwise
+        leave the head unable to resolve its workers, reach them, or fetch the model.
+        """
+        auth = {"mode": "required"}
+        proxy = _topology_selector("aiproxy", _RPC_DEFAULT_PROXY_SELECTOR)
+        management = _topology_selector("management", _RPC_DEFAULT_MANAGEMENT_SELECTOR)
+        head_labels = self._rpc_labels(base, "head")
+        worker_labels = self._rpc_labels(base, "worker")
+        head_egress: list[dict[str, Any]] = [
+            {
+                "toEndpoints": [
+                    {
+                        "matchLabels": {
+                            "k8s:io.kubernetes.pod.namespace": "kube-system",
+                            "k8s-app": "kube-dns",
+                        }
+                    }
+                ],
+                "toPorts": [
+                    {
+                        "ports": [{"port": "53", "protocol": "ANY"}],
+                        "rules": {"dns": [{"matchPattern": "*"}]},
+                    }
+                ],
+            },
+            {
+                "toEndpoints": [{"matchLabels": worker_labels}],
+                "authentication": auth,
+                "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
+            },
+        ]
+        host = urlsplit(deployment.model_url or "").hostname
+        if host:
+            fqdns = [{"matchName": host}]
+            if host.endswith("huggingface.co"):
+                fqdns.append({"matchPattern": "*.hf.co"})  # HF redirects weights to its CDN
+            head_egress.append(
+                {"toFQDNs": fqdns, "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]}
+            )
+        return {
+            "apiVersion": "cilium.io/v2",
+            "kind": "CiliumNetworkPolicy",
+            "metadata": {"name": f"{base}-head-allow", "namespace": namespace},
+            "spec": {
+                "description": "llama.cpp RPC head: proxy/management in, workers and model out",
+                "endpointSelector": {"matchLabels": head_labels},
+                "ingress": [
+                    {
+                        "fromEndpoints": [{"matchLabels": proxy}, {"matchLabels": management}],
+                        "authentication": auth,
+                        "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
+                    }
+                ],
+                "egress": head_egress,
+            },
+        }
+
+    def _rpc_worker_policy(self, base: str, namespace: str) -> dict:
+        """Worker CNP: the RPC port admits only this deployment's head (rpc-server has no auth)."""
+        auth = {"mode": "required"}
+        return {
+            "apiVersion": "cilium.io/v2",
+            "kind": "CiliumNetworkPolicy",
+            "metadata": {"name": f"{base}-rpc-allow", "namespace": namespace},
+            "spec": {
+                "description": "rpc-server pods: no auth/TLS of their own, so only the head",
+                "endpointSelector": {"matchLabels": self._rpc_labels(base, "worker")},
+                "ingress": [
+                    {
+                        "fromEndpoints": [{"matchLabels": self._rpc_labels(base, "head")}],
+                        "authentication": auth,
+                        "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
+                    }
+                ],
+            },
+        }
+
+    def deploy_rpc(
+        self, deployment, layout: RpcLayout, hostnames: dict[str, str], image: str
+    ) -> None:
+        """Create the RPC objects (policies first, head last); roll everything back on failure.
+
+        Refuses on disabled mutual auth before any Kubernetes client is built. Policies go in
+        first so no pod ever starts without its network policy.
+        """
+        if not self.mutual_auth_enabled:
+            raise RpcRefused(RPC_AUTH_REFUSAL)
+        manifests = self.export_rpc_manifests(
+            deployment, layout, hostnames, image, int(deployment.n_ctx or 4096)
+        )
+        base, namespace = self._rpc_names(deployment)
+        order = {"CiliumNetworkPolicy": 0, "Service": 1, "StatefulSet": 2, "Deployment": 3}
+        manifests.sort(key=lambda doc: order[doc["kind"]])
+        apps, core, custom = get_k8s_apps_client(), get_k8s_core_client(), get_k8s_custom_client()
+        created: list[dict] = []
+        try:
+            for doc in manifests:
+                kind, name = doc["kind"], doc["metadata"]["name"]
+                if kind == "CiliumNetworkPolicy":
+                    custom.create_namespaced_custom_object(
+                        "cilium.io", "v2", namespace, "ciliumnetworkpolicies", doc
+                    )
+                elif kind == "Service":
+                    core.create_namespaced_service(namespace=namespace, body=doc)
+                elif kind == "StatefulSet":
+                    apps.create_namespaced_stateful_set(namespace=namespace, body=doc)
+                else:
+                    apps.create_namespaced_deployment(namespace=namespace, body=doc)
+                created.append(doc)
+                logger.info("created %s %s for RPC deployment %s", kind, name, base)
+        except Exception:
+            logger.error("RPC deploy of %s failed; rolling back %d objects", base, len(created))
+            self._rpc_delete_objects(apps, core, custom, namespace, created)
+            raise
+
+        shares = [round(w.tensor_split_share, 4) for w in layout.workers]
+        del shares  # the persisted per-worker split is written by the API layer with the layout
+        db = self.db
+        db(db.llamacpp_deployments.id == deployment.id).update(
+            status="deploying",
+            endpoint_url=f"http://{base}-svc.{namespace}:8080",
+            k8s_daemonset_name=base,
+            tensor_split=",".join(str(share) for share in layout.tensor_split),
+        )
+        logger.info("Deployed llama.cpp RPC deployment %s in %s", base, namespace)
+
+    @staticmethod
+    def _rpc_delete_objects(apps, core, custom, namespace: str, docs: list[dict]) -> list[str]:
+        """Delete ``docs`` in reverse creation order; log each failure, return the failed names."""
+        failed: list[str] = []
+        for doc in reversed(docs):
+            kind, name = doc["kind"], doc["metadata"]["name"]
+            try:
+                if kind == "CiliumNetworkPolicy":
+                    custom.delete_namespaced_custom_object(
+                        "cilium.io", "v2", namespace, "ciliumnetworkpolicies", name
+                    )
+                elif kind == "Service":
+                    core.delete_namespaced_service(name=name, namespace=namespace)
+                elif kind == "StatefulSet":
+                    apps.delete_namespaced_stateful_set(name=name, namespace=namespace)
+                else:
+                    apps.delete_namespaced_deployment(name=name, namespace=namespace)
+            except Exception as exc:
+                if getattr(exc, "status", None) == 404:
+                    continue
+                logger.error("failed to delete %s %s: %s", kind, name, exc)
+                failed.append(f"{kind}/{name}")
+        return failed
+
+    def remove_rpc(self, deployment) -> None:
+        """Delete every Kubernetes object of an RPC deployment and mark it stopped.
+
+        Worker StatefulSets are found by label (their count is a layout detail), the rest by
+        name. Every deletion is attempted; a non-404 failure raises after the rest completed.
+        """
+        base, namespace = self._rpc_names(deployment)
+        apps, core, custom = get_k8s_apps_client(), get_k8s_core_client(), get_k8s_custom_client()
+        selector = f"{_DEPLOYMENT_LABEL}={base}"
+        statefulsets = apps.list_namespaced_stateful_set(
+            namespace=namespace, label_selector=selector
+        )
+        docs: list[dict] = [
+            {"kind": "CiliumNetworkPolicy", "metadata": {"name": f"{base}-head-allow"}},
+            {"kind": "CiliumNetworkPolicy", "metadata": {"name": f"{base}-rpc-allow"}},
+            {"kind": "Service", "metadata": {"name": f"{base}-svc"}},
+            {"kind": "Service", "metadata": {"name": f"{base}-rpc"}},
+            *(
+                {"kind": "StatefulSet", "metadata": {"name": sts.metadata.name}}
+                for sts in statefulsets.items
+            ),
+            {"kind": "Deployment", "metadata": {"name": base}},
+        ]
+        failed = self._rpc_delete_objects(apps, core, custom, namespace, docs)
+        if failed:
+            raise RuntimeError(f"could not delete {', '.join(failed)}")
+        db = self.db
+        db(db.llamacpp_deployments.id == deployment.id).update(status="stopped")
+        logger.info("Removed llama.cpp RPC deployment %s", base)
 
     def register_remote(self, deployment) -> None:
         """Register a remote llama-server endpoint after verifying it is reachable."""
