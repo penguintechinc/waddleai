@@ -151,6 +151,10 @@ Companion to `2026-11-05-vllm-ray-gpu-fleet-00-master.md`. Entries here override
 #       (provider=<"vllm"|"ollama"|"llamacpp">, model=f"deployment/{public_id}"). upsert_virtual_rate never forces enabled=True on an existing row and
 #       refuses to touch a row whose model key isn't the deployment/<uuid> form. Plan C C4/C4b: local connectors meter usage with that key (they know
 #       local_deployment_id via their connection link), so the quota engine's existing lookup charges the right deployment. Test: two orgs, same served name → independent rates.
+#   AM27 (security review) Plan C read side: TokenManager/QuotaEngine rate lookup for provider in {vllm,ollama,llamacpp} uses model=rate_model_key(deployment)
+#       resolved from the request's local_deployment_id; a lookup MISS for a local provider FAILS CLOSED (request refused with a clear 503-style error + counter
+#       waddleai_local_rate_missing_total), never the default rate. End-to-end test: apply_pricing → route a request to that deployment → TokenManager charges exactly the virtual price.
+#       No served-name local rate rows were ever shipped, so no cleanup migration.
 #   AM14 llama.cpp deployments are created through the GPU Fleet wizard's "Engine" choice (Plan F F7), so the shared ChargebackStep covers llama.cpp pricing in the UI;
 #       the legacy API-only llama.cpp create path (C2b) keeps accepting the price fields. Ollama pricing UI lives in pages/OllamaDeployments.jsx (D4b).
 ```
