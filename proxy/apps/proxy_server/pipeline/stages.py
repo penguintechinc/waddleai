@@ -170,6 +170,9 @@ class PipelineContext:
     # lets routing report the actually-served model rather than the requested one.
     provider: str | None = None
     requested_model: str | None = None
+    # Connector name chosen by a prefer-local rule (RouteDecision.destination); DispatchStage
+    # passes it to select_provider, which honours it only from the org-visible routable set.
+    destination: str | None = None
     finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
     reservation_id: str | None = None
@@ -888,7 +891,7 @@ class RoutingStage(Stage):
             explicit_tool_type=explicit,
             requested_model=ctx.model,
             signals=signals,
-            rules=self.rules,
+            rules=[*self.rules, *await self._load_prefer_local_rules(org_id)],
             offers=offers,
             pii_detected=ctx.pii_detected,
             explicit_escalate_hint=ctx.escalate_hint,
@@ -905,7 +908,45 @@ class RoutingStage(Stage):
         ctx.model = decision.model
         ctx.fallback_chain = decision.fallback_chain
         ctx.routed_from = decision.routed_from
+        ctx.destination = decision.destination
         return ctx
+
+    async def _load_prefer_local_rules(self, org_id: int) -> list[HeuristicRule]:
+        """The org's enabled prefer-local rules (``action.route``) from ``routing_rules_v2``.
+
+        Only route-action rows are loaded: plain tool-type heuristic rules were never fed to
+        the engine here and stay that way. A load failure is logged and yields no rules (the
+        request routes as if no prefer-local rule existed); it never breaks dispatch.
+        """
+        db = self.db
+        if not org_id or not hasattr(db, "routing_rules_v2"):
+            return []
+
+        def _select() -> list[Any]:
+            table = db.routing_rules_v2
+            return list(
+                db((table.enabled == True) & (table.organization_id == org_id)).select()  # noqa: E712
+            )
+
+        try:
+            rows = await asyncio.to_thread(_select)
+        except Exception as exc:  # noqa: BLE001 -- rule loading must never break routing
+            logger.warning("RoutingStage: prefer-local rule load failed: %s", exc)
+            return []
+        rules: list[HeuristicRule] = []
+        for row in rows:
+            action = getattr(row, "action", None)
+            match = getattr(row, "match", None)
+            if isinstance(action, dict) and "route" in action and isinstance(match, dict):
+                rules.append(
+                    HeuristicRule(
+                        priority=int(getattr(row, "priority", 100)),
+                        match=match,
+                        action=action,
+                        name=str(getattr(row, "name", "")),
+                    )
+                )
+        return rules
 
     async def _load_offers(self, org_id: int | None = None) -> list[ModelOffer]:
         """Build the candidate ModelOffer universe from model_configs (penguin-dal).
@@ -1200,8 +1241,9 @@ class DispatchStage(Stage):
         try:
             model = ctx.model or "gpt-4"
             try:
+                extra: dict[str, Any] = {"destination": ctx.destination} if ctx.destination else {}
                 selection = self.router.select_provider(
-                    model, preferred_backend=ctx.preferred_backend, org_id=request_org_id
+                    model, preferred_backend=ctx.preferred_backend, org_id=request_org_id, **extra
                 )
             except Exception as e:
                 # A primary-selection failure still leaves the chaos-failover

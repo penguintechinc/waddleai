@@ -70,7 +70,8 @@ def test_router_skips_non_routable_vllm_connector() -> None:
 
 def test_router_vllm_not_implicit_when_commercial_serves_same_model() -> None:
     """Same served name as a commercial model: vLLM only through an explicit destination."""
-    router = _router({"vllm-1-x": _vllm("vllm-1-x", ["m"]), "openai": _openai()})
+    # commercial listed FIRST so strategy selection alone would pick it
+    router = _router({"openai": _openai(), "vllm-1-x": _vllm("vllm-1-x", ["m"])})
     assert router.select_provider("m", org_id=1) == ("openai", "m")
     assert router.select_provider("m", org_id=1, destination="vllm-1-x") == ("vllm-1-x", "m")
 
