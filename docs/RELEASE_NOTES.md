@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Added — llama.cpp multi-node serving over RPC (vLLM-on-Ray fleet plan F)
+
+`POST /api/v1/llamacpp/deployments` accepts `topology: 2`: a pinned `llama-server` head plus one
+`rpc-server` pod per remaining GPU, planned from the org's GPU inventory, priced (distinct-node TCO),
+metered and routed like other local deployments. Requires Cilium mutual auth and the GPU Fleet flags
+(default off). Migration `032_llamacpp_rpc_head`. The llama.cpp deployment list is now scoped to the
+caller's organization (it previously listed every org's rows) and supports `topology`/`status`
+filters. See `administration/llamacpp-rpc.md`.
+
 ### Added — Elastic pooled token quota (design: `docs/superpowers/specs/2026-10-14-elastic-pooled-quota-design.md`)
 
 Tenants get a credit pool split across teams and users: per-user guaranteed reservations, an

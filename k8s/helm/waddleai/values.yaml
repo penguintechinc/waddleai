@@ -980,6 +980,14 @@ fleet:
     autoscaler: { idleTimeoutSeconds: 300 }
     rayInternalTls: true # AM11: Ray TLS envs + cert-manager certs (A2b); default on
     restartGeneration: 1 # bumps pod-template annotation waddleai.penguintech.io/restart-generation (A2b)
+  # llama.cpp multi-node (RPC) images (Plan F, F4): one llama.cpp commit per vendor image, built by CI
+  # (services/llamacpp-rpc). The digest is only known after that build, so it MUST be supplied per
+  # environment; an empty digest leaves the vendor unconfigured and RPC deployments on it are refused.
+  llamacpp:
+    images:
+      cuda: { repository: ghcr.io/penguintechinc/waddleai/llamacpp-rpc, tag: "cuda", digest: "" }
+      rocm: { repository: ghcr.io/penguintechinc/waddleai/llamacpp-rpc, tag: "rocm", digest: "" }
+      sycl: { repository: ghcr.io/penguintechinc/waddleai/llamacpp-rpc, tag: "sycl", digest: "" }
   security: # AM11/AM15
     mutualAuth: true # Cilium mutual auth (SPIRE) on fleet CNPs (A5)
     wireguard: true # PREREQUISITE: Cilium WireGuard encryption; documented, not rendered

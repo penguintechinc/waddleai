@@ -148,6 +148,14 @@ spec:
                   key: fernet
             - name: WADDLEAI_VLLM_RAY_BACKEND_CONFIG
               value: /etc/waddleai/vllm-ray/backend-config.json
+            {{- /* llama.cpp RPC (Plan F): digest-pinned per-vendor image refs; unset digest = vendor unavailable (fail loud, no fallback) */}}
+            {{- range $vendor, $env := dict "cuda" "WADDLEAI_LLAMACPP_RPC_IMAGE_CUDA" "rocm" "WADDLEAI_LLAMACPP_RPC_IMAGE_ROCM" "sycl" "WADDLEAI_LLAMACPP_RPC_IMAGE_SYCL" }}
+            {{- $img := index $.Values.fleet.llamacpp.images $vendor }}
+            {{- if $img.digest }}
+            - name: {{ $env }}
+              value: {{ printf "%s:%s@%s" $img.repository $img.tag $img.digest | quote }}
+            {{- end }}
+            {{- end }}
             {{- end }}
           {{- if .Values.management.livenessProbe.enabled }}
           livenessProbe:

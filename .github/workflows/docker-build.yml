@@ -1356,6 +1356,98 @@ jobs:
         fi
         docker buildx imagetools create "${TAG_ARGS[@]}" "${IMAGE}@${DIGEST}"
 
+  # llama.cpp RPC images (services/llamacpp-rpc): llama-server + rpc-server from ONE commit per GPU
+  # vendor (Plan F, F4). amd64 only. PRs / non-push tiers validate-build only (cacheonly; the images
+  # are large); pushing tiers push one run-unique tag, run the container contract tests on the pulled
+  # digest and gate on Trivy by digest.
+  build-llamacpp-rpc-images:
+    needs: [determine-tier, test, dependency-security, lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [cuda, rocm, sycl]
+    timeout-minutes: 360
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Free runner disk space
+      run: |
+        set -euo pipefail
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL \
+          /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+        docker system prune -af
+        df -h /
+
+    - name: Read the pinned llama.cpp commit
+      id: commit
+      run: |
+        set -euo pipefail
+        sha="$(tr -d '[:space:]' < services/llamacpp-rpc/LLAMACPP_COMMIT)"
+        [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::LLAMACPP_COMMIT is not a 40-hex sha"; exit 1; }
+        echo "sha=$sha" >> "$GITHUB_OUTPUT"
+        echo "short=${sha:0:7}" >> "$GITHUB_OUTPUT"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+
+    - name: Log in to Container Registry
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Build llamacpp-rpc-${{ matrix.image }}
+      id: build
+      uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+      with:
+        context: ./services/llamacpp-rpc
+        file: ./services/llamacpp-rpc/Dockerfile
+        target: runtime-${{ matrix.image }}
+        build-args: LLAMACPP_COMMIT=${{ steps.commit.outputs.sha }}
+        platforms: linux/amd64
+        push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
+        outputs: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') && 'type=cacheonly' || '' }}
+        provenance: false
+        sbom: false
+        tags: ${{ env.REGISTRY }}/${{ github.repository }}/llamacpp-rpc:${{ matrix.image }}-${{ steps.commit.outputs.short }}-${{ github.run_id }}
+        cache-from: type=gha,scope=llamacpp-rpc-${{ matrix.image }}
+        cache-to: type=gha,scope=llamacpp-rpc-${{ matrix.image }},mode=max
+
+    - name: Container contract test (pushed digest)
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      env:
+        REF: ${{ env.REGISTRY }}/${{ github.repository }}/llamacpp-rpc@${{ steps.build.outputs.digest }}
+        VENDOR: ${{ matrix.image }}
+      run: |
+        set -euo pipefail
+        [[ "$REF" != *@ ]] || { echo "::error::empty build digest"; exit 1; }
+        docker pull "$REF"
+        python3 -m pip install --quiet pytest
+        export "LLAMACPP_RPC_IMAGE_${VENDOR^^}=$REF"
+        python3 -m pytest tests/container/test_llamacpp_rpc_image.py -k "$VENDOR" -m container \
+          --no-cov -p no:cacheprovider -o addopts=""
+
+    - name: Trivy vulnerability gate
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      with:
+        image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/llamacpp-rpc@${{ steps.build.outputs.digest }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        ignore-unfixed: true
+        exit-code: '1'
+        version: 'v0.69.3'
+
   # vLLM-on-Ray worker images (images/vllm-ray-<vendor>). amd64 only (owner directive).
   # cuda wraps rayproject/ray-llm; rocm and xpu build vLLM 0.29.0 from source (AM20: no rocm/vllm tag
   # pairs vLLM 0.29 with py3.12; oneAPI 2026.0.x does not exist, 2025.3.2 is used). Their builds compile
