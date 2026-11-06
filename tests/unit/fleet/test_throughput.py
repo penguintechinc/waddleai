@@ -201,16 +201,53 @@ def test_absurd_samples_and_aggregate_are_dropped_and_counted(db, monkeypatch) -
     monkeypatch.setattr(
         throughput, "_count_dropped", lambda reason, n: counted.append((reason, n)) if n else None
     )
-    _traffic(db, users=10, buckets=6)
-    _sample(db, 8, 3_600_000, user=900, at=_bucket_time(0))  # ~0.002 tok/s: below absolute floor
-    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=200.0) == (
+    _traffic(db, users=10, buckets=6)  # 200 tok/s aggregate
+    _bulk(db, [_row(1, 7, 8, 3_600_000, TIMING_PROXY, 900, _bucket_time(0))])  # ~0.002 tok/s
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=100.0) == (
         pytest.approx(200.0)
     )
     assert counted == [("implausible_rate", 1)]
     counted.clear()
     assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=10.0) is None
     assert counted[-1] == ("implausible_aggregate", 1)
-    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=1e5) is None
+
+
+def test_observed_never_lowers_throughput_below_the_estimate(db) -> None:
+    """Demand is not capacity: an aggregate at or under the estimate is ignored (None).
+
+    throughput_for_pricing = max(estimate, observed): a 5-principal trickle (or any
+    sub-estimate load) can never raise the price above the estimate-based price, while a
+    genuinely saturated deployment above the estimate is reported (and so lowers the price).
+    """
+    _traffic(db, users=5, buckets=6, per_user=6)  # trickle: 5 x 6 x 200 / 300 s = 20 tok/s
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=100.0) is None
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=20.0) is None
+    assert observed_aggregate_tokens_per_s(db, 1, 7, estimate_aggregate_tokens_per_s=10.0) == (
+        pytest.approx(20.0)
+    )
+    _traffic(db, users=10, buckets=6, dep=8)  # saturated: 200 tok/s
+    assert observed_aggregate_tokens_per_s(db, 1, 8, estimate_aggregate_tokens_per_s=100.0) == (
+        pytest.approx(200.0)
+    )
+
+
+def test_flood_cannot_evict_other_principals_from_the_aggregate(db) -> None:
+    """One user's 100k rows cannot evict 5 other users' contributions (SQL-side aggregation)."""
+    rows = [
+        _row(1, 7, 200, 10_000, TIMING_PROXY, u, _bucket_time(k, i, 30))
+        for k in range(6)
+        for u in range(1, 6)  # five ordinary users, 30 requests per bucket
+        for i in range(30)
+    ]
+    rows += [
+        _row(1, 7, 1, 1000, TIMING_PROXY, 99, _bucket_time(i % 6, i, 100_000))
+        for i in range(100_000)  # the flooder: 100k newest rows (below MIN_OUTPUT_TOKENS-ish)
+    ]
+    _bulk(db, rows)
+    # ordinary users: 6000 tokens/bucket each; the flooder's ~16.7k tokens are cut to the c with
+    # c = 0.2 * (30000 + c) = 7500
+    got = observed_aggregate_tokens_per_s(db, 1, 7)
+    assert got is not None and got == pytest.approx((5 * 6000 + 7500) / BUCKET_S, rel=0.02)
 
 
 def test_dropped_counter_emits_the_named_metric(metric_reader) -> None:

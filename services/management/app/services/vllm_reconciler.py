@@ -128,7 +128,8 @@ class SampleUsageSource:
 
     Delegates to ``shared.fleet.throughput.observed_aggregate_tokens_per_s`` (a deployment
     TOTAL, never a per-request rate), which enforces the principal/busy-bucket thresholds and
-    rejects a rate outside 0.01x..10x the deployment-total estimate; ``None`` keeps the estimate.
+    ignores a rate at/below the deployment-total estimate (observed may only lower the price)
+    and rejects one above 10x it; ``None`` keeps the estimate.
     """
 
     def observed_aggregate_tps(

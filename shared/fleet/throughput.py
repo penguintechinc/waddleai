@@ -13,8 +13,10 @@ rate the deployment delivered (compute_tco treats it as the deployment TOTAL):
   alone do not qualify); each principal's tokens are capped at 20% of a bucket's tokens (a bucket
   dominated by fewer than 5 principals contributes nothing); at least ``MIN_PRINCIPALS`` distinct
   principals and ``MIN_BUSY_BUCKETS`` busy buckets are required, else None (keep the estimate);
-* individually absurd per-request samples are dropped, and an aggregate outside 0.01x..10x the
-  supplied aggregate estimate is rejected (both counted).
+* aggregation happens in SQL (``GROUP BY bucket, user, source``) so no row limit can be flooded;
+* individually absurd per-request samples are dropped and counted; observed demand is NOT
+  capacity, so ``max(estimate, observed)`` applies: an aggregate at or below the supplied
+  estimate is ignored (None, the estimate stays), one above 10x the estimate is rejected.
 """
 
 from __future__ import annotations
@@ -22,7 +24,7 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import sqlalchemy as sa
@@ -54,8 +56,8 @@ MAX_SHARE_PER_PRINCIPAL = 0.2
 MIN_PRINCIPALS = 5  # = 1 / MAX_SHARE_PER_PRINCIPAL: fewer users cannot satisfy the share cap
 ABSOLUTE_MAX_TOKENS_PER_S = 100_000.0
 ABSOLUTE_MIN_TOKENS_PER_S = 0.01
-_ESTIMATE_HIGH, _ESTIMATE_LOW = 10.0, 0.01
-MAX_SAMPLES_READ = 200_000  # bound on rows read (newest first)
+_ESTIMATE_HIGH = 10.0
+MAX_GROUPS = 100_000  # (bucket, user, source) groups; ~288 buckets x principals
 
 
 def _valid_int(value: Any) -> bool:
@@ -119,34 +121,66 @@ _SAMPLES = sa.table(
     sa.column("created_at", sa.DateTime),
 )
 
-_Row = tuple[
-    datetime, int, float, int | None
-]  # (completed_at, output_tokens, per-request rate, user)
+# (bucket, user_id, timing_source, sane tokens, absurd-rate rows) -- one aggregated SQL group
+_Group = tuple[int, int, int, int, int]
 
 
-def _read_samples(db: Any, kind: int, deployment_id: int, since: datetime) -> dict[int, list[_Row]]:
-    """Window samples grouped by timing source; newest ``MAX_SAMPLES_READ`` rows only."""
+def _bucket_expr(db: Any) -> Any:
+    """``floor(epoch(created_at) / 300)`` as a portable SQL expression (sqlite and postgres)."""
     t = _SAMPLES.c
+    if db.engine.dialect.name == "sqlite":
+        epoch = sa.cast(sa.func.strftime("%s", t.created_at), sa.BigInteger)
+    else:
+        epoch = sa.cast(sa.func.extract("epoch", t.created_at), sa.BigInteger)
+    return epoch // BUCKET_S
+
+
+def _read_groups(db: Any, kind: int, deployment_id: int, since: datetime) -> list[_Group]:
+    """Aggregate the window in SQL: ``(bucket, user, source) -> SUM(tokens)``.
+
+    Aggregating in the database means no row ``LIMIT`` exists that one principal's flood could
+    use to evict everyone else; the group count is bounded by buckets x principals and the
+    result is ordered by bucket (newest first), so if ``MAX_GROUPS`` ever truncates it drops the
+    OLDEST bucket (discarded whole, never partially) regardless of who produced the rows.
+    Rows whose own per-request rate is absurd are excluded from the sums and counted instead.
+    """
+    t = _SAMPLES.c
+    bucket = _bucket_expr(db).label("bucket")
+    user = sa.func.coalesce(t.user_id, -1).label("uid")
+    rate_ok = (
+        (t.generation_ms > 0)
+        & (t.output_tokens * 1000 >= ABSOLUTE_MIN_TOKENS_PER_S * t.generation_ms)
+        & (t.output_tokens * 1000 <= ABSOLUTE_MAX_TOKENS_PER_S * t.generation_ms)
+    )
     stmt = (
-        sa.select(t.created_at, t.output_tokens, t.generation_ms, t.timing_source, t.user_id)
+        sa.select(
+            bucket,
+            user,
+            t.timing_source,
+            sa.func.sum(sa.case((rate_ok, t.output_tokens), else_=0)),
+            sa.func.sum(sa.case((rate_ok, 0), else_=1)),
+        )
         .where(
             (t.local_deployment_kind == kind)
             & (t.local_deployment_id == deployment_id)
             & (t.created_at >= since)
         )
-        .order_by(t.id.desc())
-        .limit(MAX_SAMPLES_READ)
+        .group_by(bucket, user, t.timing_source)
+        .order_by(bucket.desc(), user, t.timing_source)
+        .limit(MAX_GROUPS)
     )
     with db.engine.connect() as conn:
-        rows = conn.execute(stmt).all()
-    out: dict[int, list[_Row]] = {TIMING_ENGINE: [], TIMING_PROXY: []}
-    for created, tokens, ms, source, user in rows:
-        if tokens and ms and ms > 0 and int(source) in out:
-            out[int(source)].append((created, int(tokens), tokens * 1000.0 / ms, user))
-    return out
+        rows = [
+            (int(b), int(u), int(s), int(tok or 0), int(bad or 0))
+            for b, u, s, tok, bad in conn.execute(stmt)
+        ]
+    if len(rows) >= MAX_GROUPS:
+        oldest = min(r[0] for r in rows)
+        rows = [r for r in rows if r[0] != oldest]
+    return rows
 
 
-def _cap_bucket(by_user: dict[int | None, int]) -> float:
+def _cap_bucket(by_user: dict[int, int]) -> float:
     """Total tokens of one bucket after capping each principal at 20% of the capped total.
 
     Solves ``c = 0.2 * sum(min(t_u, c))`` by monotone fixed-point iteration from the largest
@@ -164,13 +198,14 @@ def _cap_bucket(by_user: dict[int | None, int]) -> float:
     return float(sum(min(v, cap) for v in by_user.values()))
 
 
-def _aggregate_rate(rows: list[_Row]) -> float | None:
+def _aggregate_rate(groups: list[_Group]) -> float | None:
     """p90 over busy 5-minute buckets of capped tokens / 300 s; None when under-evidenced."""
-    buckets: dict[int, dict[int | None, int]] = defaultdict(lambda: defaultdict(int))
-    principals: set[int | None] = set()
-    for created, tokens, _rate, user in rows:
-        buckets[int(created.replace(tzinfo=UTC).timestamp()) // BUCKET_S][user] += tokens
-        principals.add(user)
+    buckets: dict[int, dict[int, int]] = defaultdict(lambda: defaultdict(int))
+    principals: set[int] = set()
+    for bucket, user, _source, tokens, _bad in groups:
+        if tokens > 0:
+            buckets[bucket][user] += tokens
+            principals.add(user)
     if len(principals) < MIN_PRINCIPALS:
         return None
     rates = sorted(
@@ -193,28 +228,30 @@ def observed_aggregate_tokens_per_s(
     This is a deployment TOTAL across all concurrent requests (NOT a per-request decode rate),
     the quantity ``compute_tco`` expects. See the module docstring for the bucketing, the p90 of
     busy buckets, and the anti-manipulation rules; ``estimate_aggregate_tokens_per_s`` is the
-    deployment-total GPU-class estimate used to reject an aggregate outside 0.01x..10x of it.
+    deployment-total GPU-class estimate: a result at or below it is ignored (None -- observed can
+    only LOWER the price) and one above 10x is rejected as implausible.
     """
     if window_hours <= 0:
         raise ValueError("window_hours must be positive")
     if not hasattr(db, "local_generation_samples") or not hasattr(db, "engine"):
         return None
     since = datetime.utcnow() - timedelta(hours=window_hours)
-    by_source = _read_samples(db, kind, deployment_id, since)
+    groups = _read_groups(db, kind, deployment_id, since)
+    _count_dropped("implausible_rate", sum(g[4] for g in groups))
     result: float | None = None
     for source in (TIMING_ENGINE, TIMING_PROXY):
-        rows = by_source[source]
-        sane = [r for r in rows if ABSOLUTE_MIN_TOKENS_PER_S <= r[2] <= ABSOLUTE_MAX_TOKENS_PER_S]
-        _count_dropped("implausible_rate", len(rows) - len(sane))
-        result = _aggregate_rate(sane)
+        result = _aggregate_rate([g for g in groups if g[2] == source])
         if result is not None:
             break
     if result is None:
         return None
     est = estimate_aggregate_tokens_per_s
-    if est is not None and est > 0 and not (est * _ESTIMATE_LOW <= result <= est * _ESTIMATE_HIGH):
-        _count_dropped("implausible_aggregate", 1)
-        return None
+    if est is not None and est > 0:
+        if result > est * _ESTIMATE_HIGH:
+            _count_dropped("implausible_aggregate", 1)
+            return None
+        if result <= est:
+            return None  # demand is not capacity: observed may only LOWER the price
     return result
 
 
