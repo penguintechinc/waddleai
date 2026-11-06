@@ -455,3 +455,62 @@ def test_rpc_observe_reports_terminal_failures(monkeypatch):
         head_conditions=[SimpleNamespace(reason="ProgressDeadlineExceeded")],
     )
     assert seen.failed_message == "ProgressDeadlineExceeded on waddleai-llamacpp-qwen-rpc"
+
+
+async def test_write_is_conditional_on_the_observed_status(world):
+    """M5 regression: a row removed while we observed must not be resurrected by a stale write."""
+    row_id = world.make_row(status="running")
+
+    def observer_that_races(dep: Any) -> RpcObservation:
+        """Observe 'degraded' while a concurrent /remove stops the row."""
+        world.db(world.db.llamacpp_deployments.id == row_id).update(status="stopped")
+        world.db.commit()
+        return obs(up=2, down=["pod-1"])
+
+    rec, _ = world.reconciler(observer_that_races)
+    counts = await rec.tick()
+    assert world.row(row_id).status == "stopped"  # not overwritten with 'degraded'
+    assert counts["status_changes"] == 0 and counts["reconcile_errors"] == 0
+
+
+async def test_apply_failure_is_counted_and_never_aborts_the_tick(world, monkeypatch):
+    """M5 regression: one row whose write/link sync blows up cannot abort the pass."""
+    first = world.make_row(status="deploying")
+    second = world.make_row(
+        status="deploying",
+        name="other",
+        k8s_daemonset_name="waddleai-llamacpp-other",
+        public_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    )
+    rec, _ = world.reconciler(Observed(obs()))
+    real = rec._sync_link
+
+    def flaky(dep: Any, serving: bool) -> bool:
+        """Fail for the first row only."""
+        if int(dep.id) == first:
+            raise RuntimeError("link table locked")
+        return real(dep, serving)
+
+    monkeypatch.setattr(rec, "_sync_link", flaky)
+    counts = await rec.tick()
+    assert counts["reconcile_errors"] == 1 and counts["deployments_examined"] == 2
+    assert world.row(second).status == "running"  # the next row was still reconciled
+
+
+async def test_missing_head_deployment_is_error_status_and_disables_link(world):
+    """M7 regression: 'head deployment missing' -> status error, link stops routing."""
+    row_id = world.make_row(status="running")
+    world.db(world.db.connection_links.id > 0).update(enabled=True)
+    rec, _ = world.reconciler(Observed(obs(up=3, head=False, failed="head deployment missing")))
+    counts = await rec.tick()
+    row = world.row(row_id)
+    assert (row.status, row.status_message) == ("error", "head deployment missing")
+    assert counts["status_changes"] == 1 and world.link(row_id).enabled is False
+
+
+async def test_recovery_restart_refuses_a_row_without_an_object_name(world):
+    """L8 regression: no name-only guess for the head restart target; counted, nothing bumped."""
+    world.make_row(status="degraded", k8s_daemonset_name=None)
+    rec, restarts = world.reconciler(Observed(obs()))
+    counts = await rec.tick()
+    assert restarts.calls == [] and counts["reconcile_errors"] >= 1 and counts["head_restarts"] == 0

@@ -114,6 +114,9 @@ async def test_llamacpp_rotate_restart_failure_keeps_link_in_step_and_says_resta
 ):
     """Secret + link already moved; only the restart is pending -> distinct, retryable error."""
     created = await (await client.post(LLAMA, headers=auth_headers, json=_llama())).get_json()
+    # only a live deployment has pods to roll (a pending one skips the restart)
+    priced(priced.llamacpp_deployments.id == created["deployment_id"]).update(status="running")
+    priced.commit()
     fake_k8s.fail_next_restart = True
     resp = await client.post(
         f"/api/v1/fleet/llamacpp/deployments/{created['public_id']}/rotate-token",

@@ -133,12 +133,18 @@ class LlamaCppRpcReconciler:
         )
         return list(self.db(query).select())
 
-    def _write(self, dep: Any, health: RpcHealth) -> None:
-        """Persist a status change on the row (blocking)."""
-        self.db(self.db.llamacpp_deployments.id == dep.id).update(
+    def _write(self, dep: Any, health: RpcHealth) -> bool:
+        """Persist a status change only if the row still has the status we observed (blocking).
+
+        The snapshot is seconds old; an unconditional write could resurrect a deployment that was
+        removed or redeployed meanwhile. Returns False when the row moved on (nothing written).
+        """
+        table = self.db.llamacpp_deployments
+        changed = self.db((table.id == dep.id) & (table.status == dep.status)).update(
             status=health.status, status_message=health.message
         )
         self.db.commit()
+        return bool(changed)
 
     def _sync_link(self, dep: Any, serving: bool) -> bool:
         """Point the key link at the head when serving, disable it otherwise; True if changed."""
@@ -206,12 +212,18 @@ class LlamaCppRpcReconciler:
             head_gpus=int(dep.gpu_count or 0),
             nodes=nodes,
         )
-        await self._apply(dep, health, counts)
+        try:
+            await self._apply(dep, health, counts)
+        except Exception:
+            counts["reconcile_errors"] += 1
+            logger.warning("rpc reconcile apply failed for %s", dep.public_id, exc_info=True)
 
     async def _restart_head(self, dep: Any, counts: dict[str, int]) -> bool:
         """Bump the head's restart generation so it reloads with every worker; True if bumped."""
-        base = dep.k8s_daemonset_name or dep.name
+        base = dep.k8s_daemonset_name
         try:
+            if not base:
+                raise RuntimeError("RPC deployment has no k8s object name recorded")
             await self.restarter("Deployment", str(base))
         except Exception:
             counts["reconcile_errors"] += 1
@@ -228,7 +240,9 @@ class LlamaCppRpcReconciler:
         dep_id = int(dep.id)
         changed = health.status != dep.status or health.message != dep.status_message
         if changed:
-            await asyncio.to_thread(self._write, dep, health)
+            if not await asyncio.to_thread(self._write, dep, health):
+                logger.info("llamacpp.rpc.status skipped: %s changed concurrently", dep.public_id)
+                return
             counts["status_changes"] += 1
             logger.info(
                 "llamacpp.rpc.status deployment=%s %s -> %s: %s",

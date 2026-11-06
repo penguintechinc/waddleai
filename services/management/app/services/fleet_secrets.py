@@ -428,7 +428,7 @@ class KubernetesGateway:
         _core, apps, _batch, custom = self._clients()
         if kind == "RayCluster":
             return self._bump_raycluster(custom, namespace, name)
-        if kind in ("StatefulSet", "Deployment"):
+        if kind in ("StatefulSet", "Deployment", "DaemonSet"):
             return self._bump_workload(apps, namespace, kind, name)
         raise ValueError(f"unsupported restart target kind {kind}")
 
@@ -436,16 +436,10 @@ class KubernetesGateway:
     def _bump_workload(apps: object, namespace: str, kind: str, name: str) -> int:
         """Increment the restart annotation on a StatefulSet or Deployment pod template."""
         api: Any = apps
-        read = (
-            api.read_namespaced_stateful_set
-            if kind == "StatefulSet"
-            else api.read_namespaced_deployment
-        )
-        patch = (
-            api.patch_namespaced_stateful_set
-            if kind == "StatefulSet"
-            else api.patch_namespaced_deployment
-        )
+        read, patch = {
+            "StatefulSet": (api.read_namespaced_stateful_set, api.patch_namespaced_stateful_set),
+            "DaemonSet": (api.read_namespaced_daemon_set, api.patch_namespaced_daemon_set),
+        }.get(kind, (api.read_namespaced_deployment, api.patch_namespaced_deployment))
         workload = read(name, namespace)
         annotations = dict(workload.spec.template.metadata.annotations or {})
         generation = int(annotations.get(RESTART_ANNOTATION, "0")) + 1

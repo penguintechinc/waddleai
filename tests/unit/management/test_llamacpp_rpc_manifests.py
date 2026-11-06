@@ -35,7 +35,10 @@ def layout() -> RpcLayout:
 @pytest.fixture
 def mgr():
     """A manager with mutual auth on."""
-    return LlamaCppManager(db=MagicMock(), config={"mutual_auth_enabled": True})
+    manager = LlamaCppManager(db=MagicMock(), config={"mutual_auth_enabled": True})
+    manager.pod_drain_timeout_s = 0.05  # bounded wait for terminating pods, kept tiny in tests
+    manager._sleep = lambda _seconds: None
+    return manager
 
 
 @pytest.fixture
@@ -44,7 +47,7 @@ def dep():
     return SimpleNamespace(
         id=7, name="qwen-rpc", k8s_namespace="waddleai", model_filename="m.gguf",
         model_url="https://h.example/m.gguf", n_ctx=8192, status="pending",
-        public_id=PUBLIC_ID, k8s_daemonset_name=None, topology=2,
+        public_id=PUBLIC_ID, k8s_daemonset_name="waddleai-llamacpp-qwen-rpc", topology=2,
     )  # fmt: skip
 
 
@@ -260,7 +263,7 @@ def test_missing_hostname_and_long_name_refused(mgr, dep):
     """A node with no hostname mapping and an over-long name are both refused up front."""
     with pytest.raises(ValueError, match="no Kubernetes hostname"):
         mgr.export_rpc_manifests(dep, layout(), {"n1": "gpu-a1"}, IMG, 8192)
-    dep.name = "x" * 40
+    dep.k8s_daemonset_name = "x" * 60  # the object name (not the display name) is what is bounded
     with pytest.raises(ValueError, match="too long"):
         mgr.export_rpc_manifests(dep, layout(), HOSTS, IMG, 8192)
 
@@ -314,6 +317,7 @@ def test_resource_for_rejects_unknown():
 def _clients(**overrides):
     """Patch all three Kubernetes client factories; returns the mocks."""
     apps, core, crd = MagicMock(), MagicMock(), MagicMock()
+    core.list_namespaced_pod.return_value = SimpleNamespace(items=[])  # no pods left terminating
     for key, value in overrides.items():
         {"apps": apps, "core": core, "crd": crd}[key].configure_mock(**value)
     return apps, core, crd
@@ -358,8 +362,8 @@ def test_deploy_rollback_on_failure(mgr, dep):
     mgr.db.return_value.update.assert_not_called()
 
 
-def test_rollback_logs_and_continues_past_delete_failures(mgr, dep, caplog):
-    """A failing rollback delete is logged and the remaining deletes still run."""
+def test_rollback_surfaces_leftovers_and_keeps_policies(mgr, dep, caplog):
+    """H2: a rollback that cannot delete a Service reports it, and the CNPs are left in place."""
     apps, core, crd = _clients()
     apps.create_namespaced_stateful_set.side_effect = RuntimeError("quota")
     core.delete_namespaced_service.side_effect = RuntimeError("api down")
@@ -368,10 +372,84 @@ def test_rollback_logs_and_continues_past_delete_failures(mgr, dep, caplog):
         patch(f"{MGR}.get_k8s_core_client", return_value=core),
         patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
     ):
-        with pytest.raises(RuntimeError, match="quota"):
+        with pytest.raises(RuntimeError, match="rollback left Service/") as raised:
             mgr.deploy_rpc(dep, layout(), HOSTS, IMG)
+    assert "quota" in str(raised.value.__cause__)  # the original failure stays chained
     assert "failed to delete Service" in caplog.text
-    assert crd.delete_namespaced_custom_object.call_count == 2
+    crd.delete_namespaced_custom_object.assert_not_called()  # fail closed: policies outlive pods
+
+
+def test_remove_rpc_waits_for_pods_to_terminate_before_services_and_policies(mgr, dep):
+    """H2: the workload delete returns before pods are gone; Services/CNPs wait for the drain."""
+    apps, core, crd = _clients()
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(items=[])
+    polls = iter([[object()], [object()], []])  # two Terminating polls, then empty
+    core.list_namespaced_pod.side_effect = lambda **_kw: SimpleNamespace(items=next(polls))
+    order = MagicMock()
+    order.attach_mock(apps.delete_namespaced_deployment, "head")
+    order.attach_mock(core.list_namespaced_pod, "poll")
+    order.attach_mock(core.delete_namespaced_service, "svc")
+    order.attach_mock(crd.delete_namespaced_custom_object, "cnp")
+    mgr.pod_drain_timeout_s = 5.0
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
+    ):
+        mgr.remove_rpc(dep)
+    names = [c[0] for c in order.mock_calls]
+    assert names == ["head", "poll", "poll", "poll", "svc", "svc", "cnp", "cnp"]
+
+
+def test_remove_rpc_drain_timeout_raises_and_keeps_services_and_policies(mgr, dep):
+    """H2: pods that never terminate raise and leave the Services and CNPs (and the row) alone."""
+    apps, core, crd = _clients()
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(items=[])
+    core.list_namespaced_pod.return_value = SimpleNamespace(items=[object()])
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
+    ):
+        with pytest.raises(RuntimeError, match="pods/"):
+            mgr.remove_rpc(dep)
+    core.delete_namespaced_service.assert_not_called()
+    crd.delete_namespaced_custom_object.assert_not_called()
+    mgr.db.return_value.update.assert_not_called()
+
+
+def test_rpc_names_refuse_a_row_without_an_object_name(mgr, dep):
+    """L8: never fall back to the name-only base (not unique across orgs)."""
+    dep.k8s_daemonset_name = None
+    with pytest.raises(ValueError, match="no k8s object name"):
+        mgr.remove_rpc(dep)
+    with pytest.raises(ValueError, match="no k8s object name"):
+        mgr.export_rpc_manifests(dep, layout(), HOSTS, IMG, 8192)
+
+
+def test_rpc_observe_head_404_is_an_error_status_not_an_exception(mgr, dep):
+    """M7: a deleted head Deployment is reported as 'head deployment missing', never raised."""
+    apps, core, _crd = _clients()
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(items=[])
+    core.list_namespaced_pod.return_value = SimpleNamespace(items=[])
+    gone = RuntimeError("not found")
+    gone.status = 404
+    apps.read_namespaced_deployment.side_effect = gone
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+    ):
+        seen = mgr.rpc_observe(dep)
+    assert seen.failed_message == "head deployment missing" and seen.head_ready is False
+    boom = RuntimeError("apiserver")
+    boom.status = 500
+    apps.read_namespaced_deployment.side_effect = boom
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        pytest.raises(RuntimeError, match="apiserver"),
+    ):
+        mgr.rpc_observe(dep)
 
 
 def test_remove_rpc_deletes_everything_and_stops_row(mgr, dep):

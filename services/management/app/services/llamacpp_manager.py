@@ -10,6 +10,9 @@ import json
 import logging
 import os
 import re
+import sys
+import time
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -243,6 +246,10 @@ class LlamaCppManager(InferenceFleetBackend):
         # accepted for interface uniformity and currently unused.
         self.config = config or {}
         self.credentials = credentials
+        # bounded wait for terminating pods before Services/policies are removed (injectable)
+        self.pod_drain_timeout_s: float = 120.0
+        self.pod_drain_poll_s: float = 2.0
+        self._sleep = time.sleep
         # Fail closed: only an explicit True (config, else the chart's env) enables RPC layouts.
         configured = self.config.get("mutual_auth_enabled")
         self.mutual_auth_enabled: bool = (
@@ -254,6 +261,25 @@ class LlamaCppManager(InferenceFleetBackend):
         sanitised = re.sub(r"[^a-z0-9-]", "-", deployment_name.lower())
         sanitised = re.sub(r"-+", "-", sanitised).strip("-")
         return f"waddleai-llamacpp-{sanitised}"
+
+    @staticmethod
+    def single_node_object_name(name: str, public_id: Any) -> str:
+        """DaemonSet base name embedding the public id, so two orgs may reuse a display name."""
+        return f"waddleai-llamacpp-{derive_slug(name[:20], public_id)}"
+
+    def _owned(self, *conditions):
+        """DAL query over this backend's own org's deployments (fail closed without an org).
+
+        The fleet-interface methods are reachable from any org's backend row; without the
+        ``owner_org_id`` filter one org could list, route to, or delete another org's rows.
+        """
+        table = self.db.llamacpp_deployments
+        if self.org_id is None:
+            raise RuntimeError("llama.cpp fleet backend is not bound to an organization")
+        query = table.owner_org_id == self.org_id
+        for condition in conditions:
+            query = query & condition
+        return query
 
     def export_k8s_manifest(self, deployment) -> str:
         """Return DaemonSet + Service YAML for the given deployment.
@@ -478,8 +504,15 @@ class LlamaCppManager(InferenceFleetBackend):
         apps_client = get_k8s_apps_client()
         core_client = get_k8s_core_client()
 
-        apps_client.delete_namespaced_daemon_set(name=ds_name, namespace=namespace)
-        core_client.delete_namespaced_service(name=f"{ds_name}-svc", namespace=namespace)
+        for delete, name in (
+            (apps_client.delete_namespaced_daemon_set, ds_name),
+            (core_client.delete_namespaced_service, f"{ds_name}-svc"),
+        ):
+            try:
+                delete(name=name, namespace=namespace)
+            except Exception as exc:
+                if getattr(exc, "status", None) != 404:  # already gone is the goal state
+                    raise
 
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(status="stopped")
@@ -489,7 +522,10 @@ class LlamaCppManager(InferenceFleetBackend):
 
     def _rpc_names(self, deployment) -> tuple[str, str]:
         """``(base name, namespace)`` for an RPC deployment, refusing names that overflow DNS."""
-        base = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
+        base = deployment.k8s_daemonset_name
+        if not base:
+            # never guess a name-only object name: it is not unique across orgs
+            raise ValueError("RPC deployment has no k8s object name recorded")
         if len(base) > _MAX_RPC_BASE_NAME:
             raise ValueError(
                 f"deployment name too long for an RPC layout: '{base}' is {len(base)} characters; "
@@ -934,7 +970,14 @@ class LlamaCppManager(InferenceFleetBackend):
                 logger.info("created %s %s for RPC deployment %s", kind, name, base)
         except Exception:
             logger.error("RPC deploy of %s failed; rolling back %d objects", base, len(created))
-            self._rpc_delete_objects(apps, core, custom, namespace, created)
+            leftover = self._rpc_teardown(
+                apps, core, custom, namespace, created, f"{_DEPLOYMENT_LABEL}={base}"
+            )
+            if leftover:
+                logger.error("RPC rollback of %s left %s behind", base, ", ".join(leftover))
+                raise RuntimeError(
+                    f"deploy failed and rollback left {', '.join(leftover)} behind"
+                ) from sys.exc_info()[1]
             raise
 
         shares = [round(w.tensor_split_share, 4) for w in layout.workers]
@@ -949,28 +992,63 @@ class LlamaCppManager(InferenceFleetBackend):
         logger.info("Deployed llama.cpp RPC deployment %s in %s", base, namespace)
 
     @staticmethod
-    def _rpc_delete_objects(apps, core, custom, namespace: str, docs: list[dict]) -> list[str]:
-        """Delete ``docs`` in reverse creation order; log each failure, return the failed names."""
-        failed: list[str] = []
-        for doc in reversed(docs):
-            kind, name = doc["kind"], doc["metadata"]["name"]
-            try:
-                if kind == "CiliumNetworkPolicy":
-                    custom.delete_namespaced_custom_object(
-                        "cilium.io", "v2", namespace, "ciliumnetworkpolicies", name
+    def _rpc_delete_one(apps, core, custom, namespace: str, doc: dict) -> str | None:
+        """Delete one object; return ``Kind/name`` on a non-404 failure, else None."""
+        kind, name = doc["kind"], doc["metadata"]["name"]
+        try:
+            if kind == "CiliumNetworkPolicy":
+                custom.delete_namespaced_custom_object(
+                    "cilium.io", "v2", namespace, "ciliumnetworkpolicies", name
+                )
+            elif kind == "Service":
+                core.delete_namespaced_service(name=name, namespace=namespace)
+            elif kind == "StatefulSet":
+                apps.delete_namespaced_stateful_set(name=name, namespace=namespace)
+            else:
+                apps.delete_namespaced_deployment(name=name, namespace=namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) == 404:
+                return None
+            logger.error("failed to delete %s %s: %s", kind, name, exc)
+            return f"{kind}/{name}"
+        return None
+
+    def _rpc_wait_pods_gone(self, core, namespace: str, selector: str) -> bool:
+        """Poll until no pod matches ``selector`` (bounded); False on timeout."""
+        deadline = time.monotonic() + self.pod_drain_timeout_s
+        while True:
+            if not core.list_namespaced_pod(namespace=namespace, label_selector=selector).items:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            self._sleep(self.pod_drain_poll_s)
+
+    def _rpc_teardown(
+        self, apps, core, custom, namespace: str, docs: list[dict], selector: str
+    ) -> list[str]:
+        """Delete ``docs`` fail-closed: StatefulSets, head, WAIT for pods, Services, then CNPs.
+
+        A policy is only deleted once no pod it protects can still be running. Stops at the first
+        failing phase and returns every failed ``Kind/name`` (a drain timeout is reported as
+        ``pods/<selector>``); an empty list means the whole set is gone.
+        """
+        has_workloads = any(d["kind"] in ("StatefulSet", "Deployment") for d in docs)
+        for kinds in (("StatefulSet",), ("Deployment",), ("Service",), ("CiliumNetworkPolicy",)):
+            if kinds == ("Service",) and has_workloads:
+                if not self._rpc_wait_pods_gone(core, namespace, selector):
+                    logger.error(
+                        "pods for %s did not terminate; keeping services and policies", selector
                     )
-                elif kind == "Service":
-                    core.delete_namespaced_service(name=name, namespace=namespace)
-                elif kind == "StatefulSet":
-                    apps.delete_namespaced_stateful_set(name=name, namespace=namespace)
-                else:
-                    apps.delete_namespaced_deployment(name=name, namespace=namespace)
-            except Exception as exc:
-                if getattr(exc, "status", None) == 404:
-                    continue
-                logger.error("failed to delete %s %s: %s", kind, name, exc)
-                failed.append(f"{kind}/{name}")
-        return failed
+                    return [f"pods/{selector}"]
+            batch = [d for d in docs if d["kind"] in kinds]
+            failed = [
+                f
+                for doc in reversed(batch)
+                if (f := self._rpc_delete_one(apps, core, custom, namespace, doc)) is not None
+            ]
+            if failed:
+                return failed
+        return []
 
     def rpc_observe(self, deployment) -> RpcObservation:
         """Read worker and head readiness (and any terminal pod failure) for an RPC deployment.
@@ -1007,7 +1085,18 @@ class LlamaCppManager(InferenceFleetBackend):
                 waiting = getattr(getattr(status, "state", None), "waiting", None)
                 if waiting is not None and waiting.reason in _FAILED_WAITING and failed is None:
                     failed = f"{waiting.reason} on {name}"
-        head = apps.read_namespaced_deployment(name=base, namespace=namespace)
+        try:
+            head = apps.read_namespaced_deployment(name=base, namespace=namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                raise
+            return RpcObservation(
+                workers_total=len(expected),
+                workers_up=len(ready_workers & set(expected)),
+                workers_down=sorted(set(expected) - ready_workers),
+                head_ready=False,
+                failed_message="head deployment missing",
+            )
         for cond in (head.status.conditions or []) if head.status else []:
             if cond.reason == "ProgressDeadlineExceeded" and failed is None:
                 failed = f"ProgressDeadlineExceeded on {base}"
@@ -1044,13 +1133,10 @@ class LlamaCppManager(InferenceFleetBackend):
             ),
             {"kind": "Deployment", "metadata": {"name": base}},
         ]
-        # fail closed, strictly ordered: workers -> head -> Services -> policies. Stop at the first
-        # failing batch so the CNPs are only ever deleted once nothing they protect is left.
-        for kinds in (("StatefulSet",), ("Deployment",), ("Service",), ("CiliumNetworkPolicy",)):
-            batch = [d for d in docs if d["kind"] in kinds]
-            failed = self._rpc_delete_objects(apps, core, custom, namespace, batch)
-            if failed:
-                raise RuntimeError(f"could not delete {', '.join(failed)}; later objects kept")
+        # fail closed, strictly ordered: workers -> head -> (pods gone) -> Services -> policies
+        failed = self._rpc_teardown(apps, core, custom, namespace, docs, selector)
+        if failed:
+            raise RuntimeError(f"could not delete {', '.join(failed)}; later objects kept")
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(status="stopped")
         logger.info("Removed llama.cpp RPC deployment %s", base)
@@ -1093,9 +1179,10 @@ class LlamaCppManager(InferenceFleetBackend):
         refusal = self._refuse_plain_gpu_on_ai_node(config)
         if refusal:
             return {"success": False, "error": refusal}
-        existing = db(db.llamacpp_deployments.name == config.name).select().first()
-        if existing:
+        table = db.llamacpp_deployments
+        if db(self._owned(table.name == config.name)).select().first():
             return {"success": False, "error": "Deployment with this name already exists"}
+        public_id = str(uuid.uuid4())
 
         deployment_id = db.llamacpp_deployments.insert(
             name=config.name,
@@ -1109,9 +1196,11 @@ class LlamaCppManager(InferenceFleetBackend):
             gpu_count=config.gpu_count,
             endpoint_url=config.endpoint_url,
             k8s_namespace=config.k8s_namespace,
-            k8s_daemonset_name=self._daemonset_name(config.name),
+            k8s_daemonset_name=self.single_node_object_name(config.name, public_id),
             node_selector=config.node_selector,
             node_affinity=config.node_affinity,
+            public_id=public_id,
+            owner_org_id=self.org_id,
         )
         db.commit()
         logger.info(f"Created llama.cpp deployment: {config.name}")
@@ -1120,7 +1209,8 @@ class LlamaCppManager(InferenceFleetBackend):
     def delete_deployment(self, deployment_id: int, force: bool = False) -> dict[str, Any]:
         """Delete a deployment, tearing down its DaemonSet first if running and forced."""
         db = self.db
-        deployment = db(db.llamacpp_deployments.id == deployment_id).select().first()
+        table = db.llamacpp_deployments
+        deployment = db(self._owned(table.id == deployment_id)).select().first()
         if not deployment:
             return {"success": False, "error": "Deployment not found"}
 
@@ -1134,7 +1224,9 @@ class LlamaCppManager(InferenceFleetBackend):
                 try:
                     self.remove_daemonset(deployment, force=True)
                 except Exception as exc:
-                    logger.warning(f"Error during forced removal of {deployment.name}: {exc}")
+                    # keep the row: deleting it would orphan whatever the removal left behind
+                    logger.error(f"Forced removal of {deployment.name} failed: {exc}")
+                    return {"success": False, "error": "removal failed; deployment kept"}
 
         db(db.llamacpp_deployments.id == deployment_id).delete()
         db.commit()
@@ -1213,10 +1305,12 @@ class LlamaCppManager(InferenceFleetBackend):
 
         def _deprovision() -> None:
             db = self.db
-            deployment = db(db.llamacpp_deployments.name == node_id).select().first()
+            deployment = db(self._owned(db.llamacpp_deployments.name == node_id)).select().first()
             if deployment is None:
                 return
-            self.delete_deployment(deployment.id, force=True)
+            result = self.delete_deployment(deployment.id, force=True)
+            if not result.get("success"):
+                raise RuntimeError(result.get("error") or "deprovision failed")
 
         await asyncio.to_thread(_deprovision)
 
@@ -1225,7 +1319,7 @@ class LlamaCppManager(InferenceFleetBackend):
 
         def _health() -> FleetHealth:
             db = self.db
-            deployments = db(db.llamacpp_deployments.id > 0).select()
+            deployments = db(self._owned(db.llamacpp_deployments.id > 0)).select()
             total = 0
             healthy_count = 0
             for deployment in deployments:
@@ -1246,7 +1340,7 @@ class LlamaCppManager(InferenceFleetBackend):
 
         def _list() -> list[NodeInfo]:
             db = self.db
-            deployments = db(db.llamacpp_deployments.id > 0).select()
+            deployments = db(self._owned(db.llamacpp_deployments.id > 0)).select()
             return [self._node_info_from_deployment(d) for d in deployments]
 
         return await asyncio.to_thread(_list)
@@ -1260,7 +1354,9 @@ class LlamaCppManager(InferenceFleetBackend):
 
         def _place() -> ModelPlacement:
             db = self.db
-            deployment = db(db.llamacpp_deployments.model_name == model).select().first()
+            deployment = (
+                db(self._owned(db.llamacpp_deployments.model_name == model)).select().first()
+            )
             if deployment is None:
                 raise RuntimeError(f"No llama.cpp deployment serving model {model!r}")
             status = "placed" if deployment.status == "running" else "pulling"
@@ -1273,7 +1369,7 @@ class LlamaCppManager(InferenceFleetBackend):
 
         def _endpoints() -> list[Endpoint]:
             db = self.db
-            deployments = db(db.llamacpp_deployments.model_name == model).select()
+            deployments = db(self._owned(db.llamacpp_deployments.model_name == model)).select()
             return [
                 Endpoint(
                     url=d.endpoint_url,

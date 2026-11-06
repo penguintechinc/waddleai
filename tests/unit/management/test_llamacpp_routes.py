@@ -166,6 +166,7 @@ class TestUpdateDeployment:
         """A stopped deployment accepts config updates (n_ctx, n_gpu_layers) and returns 200."""
         dep = _mock_deployment(status="stopped")
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         payload = {"n_ctx": 8192, "n_gpu_layers": 32}
         resp = await client.patch(
             "/api/v1/llamacpp/deployments/1",
@@ -243,6 +244,7 @@ class TestDeployRoute:
         """A pending kubernetes deployment calls LlamaCppManager.deploy_daemonset exactly once."""
         dep = _mock_deployment(status="pending", deployment_type="kubernetes")
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
             mock_mgr = MagicMock()
             mock_mgr_class.return_value = mock_mgr
@@ -255,6 +257,7 @@ class TestDeployRoute:
         dep = _mock_deployment(status="pending", deployment_type="remote")
         dep.endpoint_url = "http://192.168.1.50:8080"
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
             mock_mgr = MagicMock()
             mock_mgr_class.return_value = mock_mgr
@@ -272,6 +275,7 @@ class TestDeployRoute:
         """A manager exception during deploy is translated into a 503, not a 500 or a crash."""
         dep = _mock_deployment(status="pending")
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
             mock_mgr = MagicMock()
             mock_mgr.deploy_daemonset.side_effect = Exception("K8s API error")
@@ -621,6 +625,7 @@ class TestUpdateDeploymentModelValidation:
         """An empty-string model_url in the PATCH body is falsy, so validation is skipped."""
         dep = _mock_deployment(status="stopped")
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         resp = await client.patch(
             "/api/v1/llamacpp/deployments/1",
             headers=auth_headers,
@@ -634,6 +639,7 @@ class TestUpdateDeploymentModelValidation:
         """An empty-string model_filename in the PATCH body is falsy, so validation is skipped."""
         dep = _mock_deployment(status="stopped")
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         resp = await client.patch(
             "/api/v1/llamacpp/deployments/1",
             headers=auth_headers,
@@ -643,12 +649,12 @@ class TestUpdateDeploymentModelValidation:
 
 
 class TestDeleteDeploymentForceErrorHandling:
-    """DELETE ...?force=true -- a manager exception during forced removal is swallowed."""
+    """DELETE ...?force=true -- a failed forced removal must keep the row (H1)."""
 
-    async def test_force_delete_manager_exception_still_deletes_row(
+    async def test_force_delete_manager_exception_keeps_row(
         self, client, app_mock_db, auth_headers
     ):
-        """remove_daemonset raising on a forced delete is logged, not fatal -- row is deleted."""
+        """remove_daemonset raising on a forced delete returns 502 and deletes nothing."""
         dep = _mock_deployment(status="running", deployment_type="kubernetes")
         app_mock_db.return_value.select.return_value.first.return_value = dep
         with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
@@ -658,8 +664,9 @@ class TestDeleteDeploymentForceErrorHandling:
             resp = await client.delete(
                 "/api/v1/llamacpp/deployments/1?force=true", headers=auth_headers
             )
-        assert resp.status_code == 200
-        app_mock_db.return_value.delete.assert_called_once()
+        assert resp.status_code == 502
+        assert "k8s unreachable" not in (await resp.get_json())["error"]
+        app_mock_db.return_value.delete.assert_not_called()
 
 
 class TestRemoveRouteErrorHandling:
@@ -668,7 +675,7 @@ class TestRemoveRouteErrorHandling:
     async def test_remove_kubernetes_manager_exception_returns_503(
         self, client, app_mock_db, auth_headers
     ):
-        """remove_daemonset raising during remove returns 503 with the error message."""
+        """remove_daemonset raising during remove returns 503 with a generic message (M6)."""
         dep = _mock_deployment(status="running", deployment_type="kubernetes")
         app_mock_db.return_value.select.return_value.first.return_value = dep
         with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
@@ -677,7 +684,7 @@ class TestRemoveRouteErrorHandling:
             mock_mgr_class.return_value = mock_mgr
             resp = await client.post("/api/v1/llamacpp/deployments/1/remove", headers=auth_headers)
         assert resp.status_code == 503
-        assert "k8s unreachable" in (await resp.get_json())["error"]
+        assert "k8s unreachable" not in (await resp.get_json())["error"]
 
 
 class TestHealthRouteErrorHandling:
@@ -819,7 +826,34 @@ class TestResponseSchemasWave2:
         """Deploy returns exactly {message, deployment_id}."""
         dep = _mock_deployment(status="pending", deployment_type="kubernetes")
         app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 1  # the conditional UPDATE matched
         with patch("services.management.app.api.v1.llamacpp.LlamaCppManager"):
             resp = await client.post("/api/v1/llamacpp/deployments/1/deploy", headers=auth_headers)
         assert resp.status_code == 200
         assert set((await resp.get_json()).keys()) == {"message", "deployment_id"}
+
+
+class TestLostRaceIs409:
+    """M3: the stopped/pending and not-already-deploying checks are re-asserted in the UPDATE."""
+
+    async def test_patch_that_lost_the_race_is_409(self, client, app_mock_db, auth_headers):
+        """The snapshot said stopped, but the conditional UPDATE matched 0 rows -> 409."""
+        dep = _mock_deployment(status="stopped")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 0
+        resp = await client.patch(
+            "/api/v1/llamacpp/deployments/1", headers=auth_headers, json={"n_ctx": 8192}
+        )
+        assert resp.status_code == 409
+
+    async def test_deploy_that_lost_the_claim_creates_nothing(
+        self, client, app_mock_db, auth_headers
+    ):
+        """Another request already claimed the row (0 rows updated) -> 409, no K8s objects."""
+        dep = _mock_deployment(status="pending", deployment_type="kubernetes")
+        app_mock_db.return_value.select.return_value.first.return_value = dep
+        app_mock_db.return_value.update.return_value = 0
+        with patch("services.management.app.api.v1.llamacpp.LlamaCppManager") as mock_mgr_class:
+            resp = await client.post("/api/v1/llamacpp/deployments/1/deploy", headers=auth_headers)
+        assert resp.status_code == 409
+        mock_mgr_class.return_value.deploy_daemonset.assert_not_called()

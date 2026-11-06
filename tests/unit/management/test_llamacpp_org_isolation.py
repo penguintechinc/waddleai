@@ -48,6 +48,8 @@ async def test_cross_org_rotate_is_404_and_touches_nothing(
 async def test_owner_org_can_still_rotate(client, priced, auth_headers, fake_k8s):  # noqa: F811
     """Positive control: the owning org's rotate still succeeds."""
     created = await _create(client, auth_headers)
+    priced(priced.llamacpp_deployments.id == created["deployment_id"]).update(status="running")
+    priced.commit()
     resp = await client.post(ROTATE.format(created["public_id"]), headers=auth_headers)
     assert resp.status_code == 200 and list(fake_k8s.restart.values()) == [1]
 

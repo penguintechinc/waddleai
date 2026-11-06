@@ -118,6 +118,8 @@ class InferenceFleetBackend(abc.ABC):
 
     type: BackendType
     fleet_backend_id: int = 0
+    # owning org, applied by the registry from the fleet_backends row; None = not org-bound
+    org_id: int | None = None
     management_scope: ManagementScope
 
     @abc.abstractmethod

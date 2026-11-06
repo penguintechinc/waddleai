@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -52,6 +53,8 @@ _RPC_MODEL_SOURCE = (
 _RPC_LAYOUT_KEYS = frozenset({"topology", "rpc_workers", "allow_mixed_class", "gguf_bytes"})
 _RPC_LAYOUT_RUNNING = "Stop the deployment before changing its layout."
 _RPC_LIVE_STATUSES = frozenset({"deploying", "running", "degraded", "error"})
+_EDITABLE_STATUSES = ("stopped", "pending")
+_DEPLOY_CLAIMABLE = ("stopped", "pending", "error")
 _RPC_START_FAILED = "llama.cpp RPC deployment failed to start; nothing was kept."
 _RPC_CONVERT_LIVE = "Remove the running deployment before converting it to an RPC layout."
 _RPC_DERIVED_KEYS = frozenset({"gpu_count", "node_selector", "k8s_namespace", "n_gpu_layers"})
@@ -433,6 +436,8 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
 
     public_id = str(uuid.uuid4())
     owner_org_id = g.user.get("organization_id")
+    if await asyncio.to_thread(_name_taken_in_org, name, owner_org_id):
+        return jsonify({"error": _NAME_TAKEN}), 409
 
     def _create():
         mgr = LlamaCppManager(db)
@@ -448,7 +453,7 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
             gpu_count=data.gpu_count if data.gpu_count is not None else 1,
             endpoint_url=data.endpoint_url,
             k8s_namespace=data.k8s_namespace or "waddleai",
-            k8s_daemonset_name=mgr._daemonset_name(name),
+            k8s_daemonset_name=mgr.single_node_object_name(name, public_id),
             node_selector=data.node_selector,
             node_affinity=data.node_affinity,
             public_id=public_id,
@@ -457,7 +462,13 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
         db.commit()
         return new_id
 
-    dep_id = await asyncio.to_thread(_create)
+    try:
+        dep_id = await asyncio.to_thread(_create)
+    except Exception as exc:
+        if not _is_unique_violation(exc):
+            raise
+        await asyncio.to_thread(_database().rollback)
+        return jsonify({"error": _NAME_TAKEN}), 409
     row = await asyncio.to_thread(_llamacpp_row, dep_id)
 
     if price_fields is not None:
@@ -639,6 +650,8 @@ async def _create_rpc_deployment(
     if allowed_error:
         return jsonify({"error": allowed_error}), 422
     mgr = LlamaCppManager(db)
+    if await asyncio.to_thread(_name_taken_in_org, name, org_id):
+        return jsonify({"error": _NAME_TAKEN}), 409
     public_id = str(uuid.uuid4())
     base = rpc_service.rpc_base_name(name, public_id)
     if await asyncio.to_thread(rpc_service.base_name_taken, db, base):
@@ -696,7 +709,12 @@ async def _create_rpc_deployment(
             **rpc_service.layout_columns(layout),
         )
 
-    dep_id = await asyncio.to_thread(lambda: _commit_after(_create))
+    try:
+        dep_id = await asyncio.to_thread(lambda: _commit_after(_create))
+    except Exception as exc:
+        if not _is_unique_violation(exc):
+            raise
+        return jsonify({"error": _NAME_TAKEN}), 409
     row = await asyncio.to_thread(_llamacpp_row, dep_id)
     slug = derive_slug(name, public_id)
 
@@ -780,6 +798,13 @@ def _drop_link_and_rate(public_id: Any) -> None:
     database.commit()
 
 
+def _disable_link(public_id: Any) -> None:
+    """Disable a deployment's key link so no traffic routes to it (idempotent; no-op if absent)."""
+    database = _database()
+    database(database.connection_links.name == f"llamacpp-{public_id}").update(enabled=False)
+    database.commit()
+
+
 def _fleet_keys_enabled(org_id: Any) -> bool:
     """Per-deployment key minting is part of the vLLM-on-Ray fleet: both flags must be on."""
     from .fleet import _vllm_ray_enabled
@@ -792,6 +817,66 @@ def _database() -> Any:
     if db is None:
         raise RuntimeError("database not initialized")
     return db
+
+
+_ROTATION_LEASE_S = 60
+
+
+def _acquire_rotation_lease(deployment_id: int) -> bool:
+    """Take the deployment's rotation lease with a conditional UPDATE (False when held)."""
+    database = _database()
+    table = database.llamacpp_deployments
+    now = datetime.utcnow()
+    taken = database(
+        (table.id == deployment_id)
+        & ((table.rotation_lease_until == None) | (table.rotation_lease_until < now))  # noqa: E711
+    ).update(rotation_lease_until=now + timedelta(seconds=_ROTATION_LEASE_S))
+    database.commit()
+    return bool(taken)
+
+
+def _release_rotation_lease(deployment_id: int) -> None:
+    """Free the rotation lease (idempotent)."""
+    database = _database()
+    database(database.llamacpp_deployments.id == deployment_id).update(rotation_lease_until=None)
+    database.commit()
+
+
+def _claim_for_deploy(dep: Any) -> bool:
+    """Atomically move a row to ``deploying`` (False if another request already owns it)."""
+    database = _database()
+    table = database.llamacpp_deployments
+    won = database((table.id == dep.id) & table.status.belongs(_DEPLOY_CLAIMABLE)).update(
+        status="deploying"
+    )
+    database.commit()
+    return bool(won)
+
+
+def _unclaim(dep: Any, previous: str) -> None:
+    """Return a claimed row to ``previous`` after a failed deploy (only while still claimed)."""
+    database = _database()
+    table = database.llamacpp_deployments
+    database((table.id == dep.id) & (table.status == "deploying")).update(status=previous)
+    database.commit()
+
+
+_NAME_TAKEN = "A deployment with that name already exists."
+
+
+def _name_taken_in_org(name: str, org_id: Any) -> bool:
+    """True when ``org_id`` already owns a deployment called ``name`` (other orgs never count)."""
+    database = _database()
+    table = database.llamacpp_deployments
+    owner = (table.owner_org_id == org_id) if org_id is not None else (table.owner_org_id == None)  # noqa: E711
+    return database(owner & (table.name == name)).select(limitby=(0, 1)).first() is not None
+
+
+def _is_unique_violation(exc: BaseException) -> bool:
+    """True for a DB unique-constraint violation (a lost same-name race)."""
+    from sqlalchemy.exc import IntegrityError
+
+    return isinstance(exc, IntegrityError) or "unique" in str(exc).lower()
 
 
 def _llamacpp_row(deployment_id: int) -> Any:
@@ -998,12 +1083,19 @@ async def update_llamacpp_deployment(deployment_id):
             return jsonify({"error": _MODEL_FILENAME_ERROR}), 400
 
     def _update():
-        if updates:
-            db(db.llamacpp_deployments.id == deployment_id).update(**updates)
-            db.commit()
-        return "ok"
+        if not updates:
+            return "ok"
+        table = db.llamacpp_deployments
+        query = table.id == deployment_id
+        if not price_only:
+            # the stopped/pending check above is a snapshot: re-assert it atomically in the UPDATE
+            query = query & table.status.belongs(_EDITABLE_STATUSES)
+        changed = db(query).update(**updates)
+        db.commit()
+        return "ok" if changed else "conflict"
 
-    await asyncio.to_thread(_update)
+    if await asyncio.to_thread(_update) == "conflict":
+        return jsonify({"error": "Stop the deployment before modifying it"}), 409
 
     return {"message": "Deployment updated"}, 200
 
@@ -1031,7 +1123,9 @@ async def delete_llamacpp_deployment(deployment_id):
             try:
                 mgr.remove_daemonset(dep, force=True)
             except Exception as e:
-                logger.warning(f"Error during forced removal of {dep.name}: {e}")
+                # keep the row, key and link: deleting them would orphan what the removal kept
+                logger.error(f"Forced removal of {dep.name} failed: {e}")
+                return "remove_failed", None
         return "ok", dep
 
     result, dep = await asyncio.to_thread(_prepare)
@@ -1040,6 +1134,8 @@ async def delete_llamacpp_deployment(deployment_id):
         return jsonify({"error": "Deployment not found"}), 404
     if result == "running":
         return jsonify({"error": "Deployment is running. Use ?force=true to delete it."}), 409
+    if result == "remove_failed":
+        return jsonify({"error": "removal failed; deployment kept, retry"}), 502
 
     fleet_managed = _is_rpc(dep) or _fleet_keys_enabled(g.user.get("organization_id"))
     if fleet_managed:
@@ -1077,6 +1173,9 @@ async def deploy_llamacpp(deployment_id):
         if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
+        previous = str(dep.status)
+        if not _claim_for_deploy(dep):
+            return "conflict", None
         mgr = LlamaCppManager(db)
         try:
             if dep.deployment_type == "kubernetes":
@@ -1084,6 +1183,7 @@ async def deploy_llamacpp(deployment_id):
             else:
                 mgr.register_remote(dep)
         except Exception as e:
+            _unclaim(dep, previous)
             return "error", str(e)
 
         return "ok", None
@@ -1092,6 +1192,8 @@ async def deploy_llamacpp(deployment_id):
 
     if status == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
+    if status == "conflict":
+        return jsonify({"error": "Already deploying or deployed. Remove it first."}), 409
     if status == "error":
         return jsonify({"error": error}), 503
 
@@ -1104,6 +1206,16 @@ async def _rotate_key_for_redeploy(dep: Any) -> str | None:
     Returns an error message, or ``None`` on success. A failed link update restores the previous
     Secret value so the Secret and the link never disagree.
     """
+    if not await asyncio.to_thread(_acquire_rotation_lease, int(dep.id)):
+        return "token rotation already in progress; retry"
+    try:
+        return await _rotate_key_for_redeploy_locked(dep)
+    finally:
+        await asyncio.to_thread(_release_rotation_lease, int(dep.id))
+
+
+async def _rotate_key_for_redeploy_locked(dep: Any) -> str | None:
+    """Body of ``_rotate_key_for_redeploy`` once the rotation lease is held."""
     slug = derive_slug(dep.name, dep.public_id)
     link = await asyncio.to_thread(_llamacpp_link, f"llamacpp-{dep.public_id}")
     if link is None:
@@ -1154,16 +1266,22 @@ async def _deploy_rpc_row(dep: Any):
     except rpc_service.RpcImageNotConfigured as exc:
         logger.error("llamacpp rpc image not configured: %s", exc)
         return jsonify({"error": str(exc)}), 500
+    previous = str(dep.status)
+    if not await asyncio.to_thread(_claim_for_deploy, dep):
+        return jsonify({"error": "Already deployed. Remove it before deploying again."}), 409
     if (rotation_error := await _rotate_key_for_redeploy(dep)) is not None:
+        await asyncio.to_thread(_unclaim, dep, previous)
         return jsonify({"error": rotation_error, "reason": rotation_error}), 502
     mgr = LlamaCppManager(db)
     try:
         await asyncio.to_thread(mgr.deploy_rpc, dep, layout, hostnames, image)
         await asyncio.to_thread(_commit_after, lambda: None)
     except RpcRefused as exc:
+        await asyncio.to_thread(_unclaim, dep, previous)
         return jsonify({"error": str(exc)}), 422
     except Exception:
         logger.error("llamacpp rpc redeploy failed for %s", dep.public_id, exc_info=True)
+        await asyncio.to_thread(_unclaim, dep, previous)
         return jsonify({"error": _RPC_START_FAILED}), 503
     return {"message": "Deployment initiated", "deployment_id": dep.id}, 200
 
@@ -1187,17 +1305,19 @@ async def remove_llamacpp(deployment_id):
             else:
                 db(db.llamacpp_deployments.id == deployment_id).update(status="stopped")
                 db.commit()
-        except Exception as e:
-            return "error", str(e)
-
+        except Exception:
+            logger.error("llamacpp removal failed for %s", dep.public_id, exc_info=True)
+            return "error", None
+        # a stopped deployment must stop receiving routed traffic in the same step
+        _disable_link(dep.public_id)
         return "ok", None
 
-    status, error = await asyncio.to_thread(_remove)
+    status, _error = await asyncio.to_thread(_remove)
 
     if status == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
     if status == "error":
-        return jsonify({"error": error}), 503
+        return jsonify({"error": "removal failed; retry"}), 503
 
     return {"message": "Deployment removed"}, 200
 
@@ -1327,6 +1447,28 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
         _visible_to_org, dep, g.user.get("organization_id")
     ):
         return jsonify({"error": "Deployment not found"}), 404
+    if not await asyncio.to_thread(_acquire_rotation_lease, int(dep.id)):
+        return jsonify({"error": "token rotation already in progress; retry"}), 409
+    try:
+        return await _rotate_locked(dep, public_id, secrets_svc)
+    finally:
+        await asyncio.to_thread(_release_rotation_lease, int(dep.id))
+
+
+def _restart_target(dep: Any) -> tuple[str, str]:
+    """``(workload kind, name)`` whose pods must roll to pick up a new token.
+
+    RPC: the head Deployment (workers are never touched). Single-node Kubernetes deployments are
+    DaemonSets. Raises for rows with no recorded object name rather than guessing one.
+    """
+    name = dep.k8s_daemonset_name
+    if not name:
+        raise RuntimeError("deployment has no k8s object name recorded")
+    return ("Deployment" if _is_rpc(dep) else "DaemonSet"), str(name)
+
+
+async def _rotate_locked(dep: Any, public_id: uuid.UUID, secrets_svc: Any):
+    """Rotate the token while holding the deployment's rotation lease (Secret, link, restart)."""
     slug = derive_slug(dep.name, public_id)
     link = await asyncio.to_thread(_llamacpp_link, f"llamacpp-{public_id}")
     token = secrets_svc.mint_token()
@@ -1373,10 +1515,10 @@ async def rotate_llamacpp_token(public_id: uuid.UUID):
                 502,
             )
     try:
-        # RPC: the head is a Deployment (workers are never touched); single-node keeps its target
-        await secrets_svc.bump_restart(
-            "Deployment" if _is_rpc(dep) else "StatefulSet", dep.k8s_daemonset_name or dep.name
-        )
+        # nothing to roll when no pod runs: the next deploy reads the fresh Secret anyway
+        if dep.status in _RPC_LIVE_STATUSES:
+            kind, target = _restart_target(dep)
+            await secrets_svc.bump_restart(kind, target)
     except secrets_svc.SecretWriteFailed:
         logger.error(
             "fleet.deployment.token_rotation_partial deployment=%s slug=%s: restart pending",

@@ -172,3 +172,16 @@ async def test_secret_failures_never_leak_the_value(caplog) -> None:
             await fs.bump_restart("RayCluster", "r")
     finally:
         fs.set_gateway(None)
+
+
+def test_bump_daemonset_increments_generation(gw) -> None:
+    """regression: single-node llama.cpp deployments are DaemonSets, so rotate must bump one."""
+    template = SimpleNamespace(metadata=SimpleNamespace(annotations={fs.RESTART_ANNOTATION: "2"}))
+    gw._apps.read_namespaced_daemon_set.return_value = SimpleNamespace(
+        spec=SimpleNamespace(template=template)
+    )
+    assert gw.bump_restart_generation("ns", "DaemonSet", "ds") == 3
+    name, namespace, body = gw._apps.patch_namespaced_daemon_set.call_args.args
+    assert (name, namespace) == ("ds", "ns")
+    assert body["spec"]["template"]["metadata"]["annotations"][fs.RESTART_ANNOTATION] == "3"
+    gw._apps.patch_namespaced_stateful_set.assert_not_called()
