@@ -193,3 +193,23 @@ async def test_fleet_managed_llamacpp_without_key_fails_closed() -> None:
     finally:
         await server.close()
     assert hits == []
+
+
+async def test_ollama_and_llamacpp_stamp_generation_ms() -> None:
+    """Ollama/llama.cpp usage (stream and non-stream) carries generation_ms for throughput."""
+    server = await _serve({"/api/chat": _ollama_chat, "/v1/chat/completions": _llama_chat})
+    url = str(server.make_url("")).rstrip("/")
+    try:
+        oll = OllamaConnector("o", {"endpoint_url": url})
+        llm = LlamaCppConnector("l", {"endpoint_url": url})
+        _t, o_usage = await oll.chat_completion(MSGS, "m")
+        _t, l_usage = await llm.chat_completion(MSGS, "m")
+        o_final = await _collect(oll.stream_chat_completion(MSGS, "m"))
+        l_final = await _collect(llm.stream_chat_completion(MSGS, "m"))
+        await oll.close()
+        await llm.close()
+    finally:
+        await server.close()
+    for usage in (o_usage, l_usage, o_final.usage, l_final.usage):
+        assert usage is not None and isinstance(usage["generation_ms"], int)
+        assert usage["generation_ms"] >= 1

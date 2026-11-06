@@ -174,3 +174,15 @@ def test_factory_builds_vllm_connector_from_link() -> None:
     assert isinstance(conn, VllmConnector)
     assert conn.local_deployment_id == 7 and conn.owner_org_id == 3
     assert conn.is_routable is True
+
+
+async def test_generation_ms_stamped_non_stream_and_stream(fake_openai_server) -> None:
+    """VLLM usage carries wall-clock generation_ms (total for non-stream, first-to-last stream)."""
+    fake_openai_server.mode = "json_usage"
+    _t, usage = await make(fake_openai_server).chat_completion(MSGS, "m")
+    assert isinstance(usage["generation_ms"], int) and usage["generation_ms"] >= 1
+    fake_openai_server.mode = "sse_usage"
+    chunks = [c async for c in make(fake_openai_server).stream_chat_completion(MSGS, "m")]
+    final = chunks[-1].usage
+    assert final is not None and isinstance(final["generation_ms"], int)
+    assert final["generation_ms"] >= 1

@@ -15,6 +15,7 @@ from typing import Any
 
 import tiktoken
 
+from shared.fleet.throughput import record_generation_sample
 from shared.quota.virtual_price import (
     LocalDeployment,
     LocalRateMissingError,
@@ -223,6 +224,7 @@ class TokenManager:
         local_deployment_id: int | None = None,
         unit_price_input: Decimal | None = None,
         unit_price_output: Decimal | None = None,
+        generation_ms: int | None = None,
     ) -> TokenUsage:
         """Process token usage for a request.
 
@@ -291,7 +293,21 @@ class TokenManager:
             local=local,
         )
 
+        if local is not None and not estimated and generation_ms is not None:
+            self._record_generation_sample(local, usage.llm_tokens_output, generation_ms)
+
         return usage
+
+    def _record_generation_sample(
+        self, local: LocalDeployment, output_tokens: int, generation_ms: int
+    ) -> None:
+        """Best-effort throughput sample; never fails billing (estimated counts never sample)."""
+        try:
+            record_generation_sample(
+                self.db, local.kind, local.deployment_id, output_tokens, generation_ms
+            )
+        except Exception:  # noqa: BLE001 -- observed throughput is advisory, billing is not
+            logger.warning("could not record generation sample", exc_info=True)
 
     def require_local_rate(self, kind: int | None, deployment_id: int | None) -> LocalDeployment:
         """Resolve a local deployment and its rate row, or refuse (fail closed, AM27).

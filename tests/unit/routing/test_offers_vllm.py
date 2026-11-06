@@ -165,3 +165,18 @@ def test_prefer_local_fallback_ignores_other_orgs_owned_commercial_rows(fake_db)
     dep = SimpleNamespace(slug="s", served_model_name="m", public_id="p")
     with pytest.raises(ValueError, match="commercial model"):
         create_prefer_local_rule(fake_db, 1, dep, "gpt-x", {"model_prefix": "a"})
+
+
+async def test_foreign_only_models_degrades_safely() -> None:
+    """No links table or a failing query yields no hidden models (dispatch still isolates)."""
+    from shared.routing.providers import foreign_only_models
+
+    assert await foreign_only_models(object(), 1) == set()
+
+    class Broken:
+        connection_links = type("T", (), {"enabled": True})()
+
+        def __call__(self, _q: Any) -> Any:
+            raise RuntimeError("db down")
+
+    assert await foreign_only_models(Broken(), 1) == set()

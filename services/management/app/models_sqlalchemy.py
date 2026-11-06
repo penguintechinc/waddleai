@@ -659,6 +659,30 @@ class TokenUsage(Base):
     unit_price_output = Column(Numeric(12, 6), nullable=True)
 
 
+class LocalGenerationSample(Base):
+    """One timed local-model generation (migration 030): feeds the observed-throughput p50."""
+
+    __tablename__ = "local_generation_samples"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    local_deployment_kind = Column(Integer, nullable=False)
+    local_deployment_id = Column(BigInteger, nullable=False)
+    output_tokens = Column(Integer, nullable=False)
+    generation_ms = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index(
+            "ix_local_generation_samples_dep_created",
+            "local_deployment_kind",
+            "local_deployment_id",
+            "created_at",
+        ),
+        CheckConstraint("output_tokens > 0", name="ck_local_generation_samples_tokens"),
+        CheckConstraint("generation_ms > 0", name="ck_local_generation_samples_ms"),
+    )
+
+
 class UsageCache(Base):
     """A precomputed daily/monthly usage snapshot for a virtual key or organization."""
 
@@ -1157,7 +1181,7 @@ class ModelConfig(Base):
     __tablename__ = "model_configs"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    model_name = Column(String(255), unique=True, nullable=False)
+    model_name = Column(String(255), nullable=False)
     preferred_providers = Column(JSON, nullable=False, default=list)
     cost_per_token = Column(JSON, nullable=False, default=dict)
     max_tokens = Column(Integer, nullable=False)
@@ -1165,6 +1189,24 @@ class ModelConfig(Base):
     capabilities = Column(JSON, nullable=False, default=list)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Deployment scope (migration 029): NULL for global/commercial offers. A vLLM deployment's
+    # offer carries its org and public_id so only that deployment may remove or replace it.
+    owner_org_id = Column(Integer, nullable=True)
+    deployment_public_id = Column(Uuid, nullable=True, index=True)
+
+    __table_args__ = (
+        # Global offers are unique by name; org-owned offers are unique per (org, name).
+        Index(
+            "uq_model_configs_global_name", "model_name", unique=True,
+            postgresql_where=text("owner_org_id IS NULL"),
+            sqlite_where=text("owner_org_id IS NULL"),
+        ),
+        Index(
+            "uq_model_configs_org_name", "owner_org_id", "model_name", unique=True,
+            postgresql_where=text("owner_org_id IS NOT NULL"),
+            sqlite_where=text("owner_org_id IS NOT NULL"),
+        ),
+    )  # fmt: skip
 
 
 class ModelAlias(Base):

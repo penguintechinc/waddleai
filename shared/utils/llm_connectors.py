@@ -8,6 +8,7 @@ import asyncio
 import logging
 import random
 import threading
+import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
@@ -327,6 +328,12 @@ class LLMConnector(ABC):
 
 
 USAGE_COUNT_CAP = 1_048_576  # generous ceiling for an engine-reported token count
+MAX_GENERATION_MS = 3_600_000  # a single generation longer than an hour is not a sample
+
+
+def elapsed_ms(start: float) -> int:
+    """Whole milliseconds since ``start`` (``time.monotonic``), at least 1."""
+    return max(1, int((time.monotonic() - start) * 1000))
 
 
 def validate_token_count(value: Any, cap: int) -> int | None:
@@ -478,6 +485,9 @@ class OpenAIConnector(LLMConnector):
         """Hook to annotate a usage dict before it leaves the connector (identity by default)."""
         return usage_info
 
+    def _note_generation_ms(self, usage_info: dict[str, Any], ms: int) -> None:
+        """Hook to record wall-clock generation time on a usage dict (no-op for OpenAI proper)."""
+
     async def _validate_usage(
         self,
         usage_info: dict[str, Any],
@@ -513,11 +523,13 @@ class OpenAIConnector(LLMConnector):
         """Generate OpenAI chat completion."""
         kwargs = self._adapt_token_limit(model, kwargs)
         try:
+            started = time.monotonic()
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=cast(list[ChatCompletionMessageParam], messages),
                 **kwargs,
             )
+            call_ms = elapsed_ms(started)
 
             content = response.choices[0].message.content or ""
             usage = response.usage
@@ -529,6 +541,7 @@ class OpenAIConnector(LLMConnector):
                     "finish_reason": response.choices[0].finish_reason,
                     "cached_tokens": 0,
                 }
+                self._note_generation_ms(usage_info, call_ms)
                 return content, self._stamp_usage(usage_info)
             usage_info = {
                 "input_tokens": usage.prompt_tokens,
@@ -548,6 +561,7 @@ class OpenAIConnector(LLMConnector):
             usage_info = await self._validate_usage(
                 usage_info, "non_stream", model, messages, content, kwargs
             )
+            self._note_generation_ms(usage_info, call_ms)
             return content, self._stamp_usage(usage_info)
 
         except openai.APITimeoutError as e:
@@ -612,8 +626,13 @@ class OpenAIConnector(LLMConnector):
             stream = cast(AsyncStream[ChatCompletionChunk], raw_stream)
             usage: dict[str, Any] | None = None
             text_parts: list[str] = []
+            first_token: float | None = None
+            last_token: float | None = None
             async for chunk in stream:
                 if chunk.choices and chunk.choices[0].delta.content:
+                    last_token = time.monotonic()
+                    if first_token is None:
+                        first_token = last_token
                     text_parts.append(chunk.choices[0].delta.content)
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
                 # The usage-bearing chunk arrives last and carries no choices.
@@ -630,6 +649,9 @@ class OpenAIConnector(LLMConnector):
                 usage = await self._validate_usage(usage, "stream", model, messages, text, kwargs)
             usage = await self._finalize_stream_usage(usage, model, messages, text)
             if usage is not None:
+                if first_token is not None and last_token is not None:
+                    # first token to last: excludes queueing/prefill, measures decode speed
+                    self._note_generation_ms(usage, max(1, int((last_token - first_token) * 1000)))
                 usage = self._stamp_usage(usage)
             yield StreamChunk(delta="", usage=usage, done=True)
 
@@ -857,6 +879,10 @@ class VllmConnector(OpenAIConnector):
             return usage
         estimated = await self._estimate(model, messages, text, "stream")
         return {**estimated, "model": model}
+
+    def _note_generation_ms(self, usage_info: dict[str, Any], ms: int) -> None:
+        """Record wall-clock generation time for the observed-throughput samples."""
+        usage_info["generation_ms"] = ms
 
     def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
         """Attach the chargeback snapshot: kind, deployment id and the unit prices in force."""
@@ -1920,6 +1946,7 @@ class OllamaConnector(LLMConnector):
             if think is not None:
                 payload["think"] = think
 
+            started = time.monotonic()
             async with self.session.post(
                 f"{self.endpoint_url}/api/chat",
                 json=payload,
@@ -1942,6 +1969,7 @@ class OllamaConnector(LLMConnector):
                         )
 
                 result = await response.json()
+                call_ms = elapsed_ms(started)
                 content = result["message"]["content"]
 
                 # Real counts when the engine reported valid ones; else a flagged estimate.
@@ -1955,6 +1983,7 @@ class OllamaConnector(LLMConnector):
                     kwargs,
                 )
                 usage_info["finish_reason"] = result.get("done_reason", "stop")
+                usage_info["generation_ms"] = call_ms
 
                 return content, usage_info
 
@@ -2124,6 +2153,8 @@ class OllamaConnector(LLMConnector):
                 # Read NDJSON stream line by line
                 reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
+                first_token: float | None = None
+                last_token: float | None = None
                 async for line in response.content:
                     if not line:
                         continue
@@ -2134,6 +2165,9 @@ class OllamaConnector(LLMConnector):
                         if "message" in chunk and "content" in chunk["message"]:
                             content = chunk["message"]["content"]
                             if content:
+                                last_token = time.monotonic()
+                                if first_token is None:
+                                    first_token = last_token
                                 text_parts.append(content)
                                 yield StreamChunk(delta=content, done=False)
                         if chunk.get("done"):
@@ -2145,6 +2179,8 @@ class OllamaConnector(LLMConnector):
                 usage = await self._usage_from_counts(
                     reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
                 )
+                if first_token is not None and last_token is not None:
+                    usage["generation_ms"] = max(1, int((last_token - first_token) * 1000))
                 yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
@@ -2282,6 +2318,7 @@ class LlamaCppConnector(LLMConnector):
         session = self._get_session()
         payload = {"model": model or self.model_name, "messages": messages, **kwargs}
         try:
+            started = time.monotonic()
             async with session.post(
                 f"{self.endpoint_url}/v1/chat/completions",
                 json=payload,
@@ -2309,6 +2346,7 @@ class LlamaCppConnector(LLMConnector):
                         model=model,
                         message="llama-server returned empty choices",
                     )
+                call_ms = elapsed_ms(started)
                 content = data["choices"][0]["message"]["content"]
                 raw = data.get("usage")
                 raw = raw if isinstance(raw, dict) else {}
@@ -2321,6 +2359,7 @@ class LlamaCppConnector(LLMConnector):
                     "non_stream",
                     kwargs,
                 )
+                usage["generation_ms"] = call_ms
                 return content, usage
         except ProviderError:
             raise
@@ -2421,6 +2460,8 @@ class LlamaCppConnector(LLMConnector):
                 # Read SSE stream
                 reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
+                first_token: float | None = None
+                last_token: float | None = None
                 async for line in response.content:
                     if not line:
                         continue
@@ -2437,6 +2478,9 @@ class LlamaCppConnector(LLMConnector):
                         if "choices" in chunk and chunk["choices"]:
                             delta = chunk["choices"][0].get("delta", {})
                             if "content" in delta and delta["content"]:
+                                last_token = time.monotonic()
+                                if first_token is None:
+                                    first_token = last_token
                                 text_parts.append(delta["content"])
                                 yield StreamChunk(delta=delta["content"], done=False)
                         chunk_usage = chunk.get("usage")
@@ -2452,6 +2496,8 @@ class LlamaCppConnector(LLMConnector):
                 usage = await self._usage_from_counts(
                     reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
                 )
+                if first_token is not None and last_token is not None:
+                    usage["generation_ms"] = max(1, int((last_token - first_token) * 1000))
                 yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:

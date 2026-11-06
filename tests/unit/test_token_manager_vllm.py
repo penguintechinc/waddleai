@@ -286,3 +286,25 @@ async def test_dispatch_refuses_local_deployment_without_rate_before_any_request
     assert ctx.blocked and ctx.status_code == 503 and ctx.block_reason == "local_rate_missing"
     assert fake_openai_server.requests == []
     assert sum(p.value for p in points(metric_reader, "waddleai_local_rate_missing_total")) == 1
+
+
+async def test_timed_local_request_records_one_generation_sample(db) -> None:
+    """A timed, non-estimated local request records a sample the p50 helper can read."""
+    from shared.fleet.throughput import observed_tokens_per_s
+
+    dep = _deployment(db, "2.0", "4.0")
+    await _price(db, 1, dep)
+    tm = TokenManager(db)
+    _usage(db, tm, dep, tin=100, tout=64, generation_ms=800)
+    assert observed_tokens_per_s(db, 1, dep.id) == 80.0
+
+
+async def test_estimated_untimed_or_commercial_requests_never_sample(db) -> None:
+    """Estimated counts, a missing time, and commercial usage add no throughput sample."""
+    dep = _deployment(db, "2.0", "4.0")
+    await _price(db, 1, dep)
+    tm = TokenManager(db)
+    _usage(db, tm, dep, tin=100, tout=64, estimated=True, generation_ms=800)
+    _usage(db, tm, dep, tin=100, tout=64)
+    tm.process_usage("a", "b", "openai", "gpt-4", 1, 1, 1, 10, 64, generation_ms=800)
+    assert list(db(db.local_generation_samples.id > 0).select()) == []
