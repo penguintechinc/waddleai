@@ -158,7 +158,7 @@ class VllmRayBackend(InferenceFleetBackend):
         credentials: dict[str, str] | None,
         client: RayServeClient | None = None,
         *,
-        canary: Callable[[str, str], Awaitable[bool]] | None = None,
+        canary: Callable[[str, str, str], Awaitable[bool]] | None = None,
     ) -> None:
         """Merge the AM9 defaults file under ``config`` (row wins) and validate required keys."""
         merged: dict[str, Any] = {**_load_defaults(), **(config or {})}
