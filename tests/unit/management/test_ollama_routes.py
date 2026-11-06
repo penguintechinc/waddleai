@@ -1415,7 +1415,11 @@ async def test_export_all_metallb_services_not_admin(client, app_mock_db, user_a
 # pre-change by deleting one model field and observing the assertion break.
 # ============================================================================
 
-_SUMMARY_FIELDS = {
+_PRICE_FIELDS = {
+    "public_id", "price_mode", "price_input_per_1m", "price_output_per_1m", "comparison_model",
+}  # fmt: skip
+
+_SUMMARY_FIELDS = _PRICE_FIELDS | {
     "id",
     "name",
     "endpoint_url",
@@ -1428,7 +1432,8 @@ _SUMMARY_FIELDS = {
     "created_at",
 }
 
-_DETAIL_FIELDS = {
+_DETAIL_FIELDS = _PRICE_FIELDS | {
+    "price_breakdown",
     "id",
     "name",
     "endpoint_url",
@@ -1485,7 +1490,13 @@ async def test_create_deployment_exact_fields(client, app_mock_db, auth_headers)
         json={"name": "d", "endpoint_url": "http://ollama:11434"},
     )
     assert resp.status_code == 201
-    assert set((await resp.get_json()).keys()) == {"id", "name", "deployment_type", "message"}
+    assert set((await resp.get_json()).keys()) == _PRICE_FIELDS | {
+        "id",
+        "name",
+        "deployment_type",
+        "message",
+        "price_breakdown",
+    }
 
 
 async def test_start_action_exact_fields(client, app_mock_db, auth_headers):

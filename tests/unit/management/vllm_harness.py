@@ -15,15 +15,42 @@ from pathlib import Path
 from typing import Any
 
 from penguin_dal import DAL, Field
-from sqlalchemy import create_engine
+from sqlalchemy import DefaultClause, create_engine, text
 
 from services.management.app.models_sqlalchemy import Base
 from services.management.app.services.fleet_secrets import DEPLOYMENT_KEYS_SECRET
 
 
+def _mirror_python_defaults() -> None:
+    """Give NOT NULL columns their scalar Python default as a server default.
+
+    Production schemas come from migrations (which carry server defaults); ``create_all`` on
+    sqlite only has the ORM's Python-side defaults, which penguin-dal inserts never apply.
+    """
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            default = column.default
+            if (
+                default is not None
+                and getattr(default, "is_scalar", False)
+                and column.server_default is None
+                and not column.nullable
+            ):
+                value = default.arg
+                literal = (
+                    str(int(value))
+                    if isinstance(value, bool)
+                    else repr(value)
+                    if isinstance(value, (int, float))
+                    else "'" + str(value).replace("'", "''") + "'"
+                )
+                column.server_default = DefaultClause(text(literal))
+
+
 def build_db(tmp_path: Path) -> Any:
     """A sqlite penguin-dal DB with the ORM schema and the PyDAL ``connection_links`` table."""
     url = f"sqlite:///{tmp_path / 'fleet.db'}"
+    _mirror_python_defaults()
     Base.metadata.create_all(create_engine(url))
     db = DAL(url)
     db.define_table(

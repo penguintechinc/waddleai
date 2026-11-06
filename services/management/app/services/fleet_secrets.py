@@ -187,6 +187,43 @@ async def remove_key(slug: str) -> None:
         raise SecretWriteFailed("secret write failed") from None
 
 
+async def provision_key_and_link(
+    database: Any,
+    *,
+    org_id: int | None,
+    slug: str,
+    link_name: str,
+    models: list[str],
+    provider: str = "vllm",
+) -> tuple[str, int]:
+    """Mint a deployment token, publish it to the shared Secret and store it encrypted.
+
+    The connection link is created DISABLED: it holds the encrypted token (the readiness canary
+    and the proxy read it) and is enabled by the reconciler once the deployment serves. Raises
+    ``SecretWriteFailed`` before anything is written to the database.
+    """
+    from shared.database.models import insert_connection_link
+
+    token = mint_token()
+    await write_deployment_key(slug, token)
+
+    def _insert() -> int:
+        link_id = insert_connection_link(
+            database,
+            api_key=token,
+            name=link_name,
+            provider=provider,
+            endpoint_url="",
+            model_list=models,
+            enabled=False,
+            owner_org_id=org_id,
+        )
+        database.commit()
+        return int(link_id)
+
+    return token, await asyncio.to_thread(_insert)
+
+
 async def bump_restart(kind: str, name: str) -> int:
     """Bump the restart-generation annotation so KubeRay / the StatefulSet recreate pods."""
     try:

@@ -23,7 +23,7 @@ from quart import g, jsonify, request
 from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
-from shared.database.models import insert_connection_link, update_connection_link_api_key
+from shared.database.models import update_connection_link_api_key
 from shared.fleet.base import BackendType
 from shared.fleet.caps import CapEnforcer, CapExceededError
 from shared.fleet.enums import (
@@ -1231,28 +1231,24 @@ async def create_vllm_deployment() -> Any:
     if status == "name_conflict":
         return _err(f"a deployment named '{spec.name}' already exists for this org", 409)
 
-    token = fleet_secrets.mint_token()
     try:
-        await fleet_secrets.write_deployment_key(slug, token)
+        token, link_id = await fleet_secrets.provision_key_and_link(
+            database,
+            org_id=org_id,
+            slug=slug,
+            link_name=f"vllm-{org_id}-{slug}",
+            models=[spec.served_model_name],
+        )
     except fleet_secrets.SecretWriteFailed:
         await asyncio.to_thread(_discard, database, dep)
         return _err("secret write failed", 502, reason="secret write failed")
+    del token
 
-    def _link() -> None:
-        link_id = insert_connection_link(
-            database,
-            api_key=token,
-            name=f"vllm-{org_id}-{slug}",
-            provider="vllm",
-            endpoint_url="",
-            model_list=[spec.served_model_name],
-            enabled=False,
-            owner_org_id=org_id,
-        )
+    def _attach() -> None:
         database(database.vllm_deployments.id == dep.id).update(connection_link_id=link_id)
         database.commit()
 
-    await asyncio.to_thread(_link)
+    await asyncio.to_thread(_attach)
 
     try:
         await model_store.ensure_weights(
