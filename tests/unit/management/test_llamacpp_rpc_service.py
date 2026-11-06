@@ -196,3 +196,23 @@ def test_rpc_workers_json_shape():
     assert svc.rpc_workers_json(layout) == [
         {"node_uid": "n", "gpu_class": "c", "gpu_count": 1, "tensor_split_share": 0.5}
     ]
+
+
+def test_base_name_is_unique_per_public_id_and_fits_dns():
+    """Regression (tenant collision): the same name with two public ids never collides."""
+    a = svc.rpc_base_name("shared-name", "11111111-1111-1111-1111-111111111111")
+    b = svc.rpc_base_name("shared-name", "22222222-2222-2222-2222-222222222222")
+    assert a != b and a.startswith("llamacpp-shared-name-") and len(a) <= 48
+    assert len(svc.rpc_base_name("x" * 60, "11111111-1111-1111-1111-111111111111")) <= 48
+
+
+def test_base_name_taken_checks_every_org_and_honours_exclude(inv):
+    """A name used by ANY org is taken; the row's own id can be excluded."""
+    row_id = inv.db.llamacpp_deployments.insert(
+        name="n", deployment_type="kubernetes", status="stopped", model_name="m",
+        public_id="33333333-3333-3333-3333-333333333333", owner_org_id=2,
+        k8s_daemonset_name="llamacpp-n-333333333333",
+    )  # fmt: skip
+    assert svc.base_name_taken(inv.db, "llamacpp-n-333333333333") is True
+    assert svc.base_name_taken(inv.db, "llamacpp-n-333333333333", exclude_id=row_id) is False
+    assert svc.base_name_taken(inv.db, "llamacpp-other") is False

@@ -132,6 +132,7 @@ def test_worker_ingress_only_from_head(mgr, dep):
             "matchLabels": {
                 "waddleai.penguintech.io/llamacpp-deployment": base,
                 "waddleai.penguintech.io/llamacpp-role": "head",
+                "waddleai.penguintech.io/llamacpp-public-id": str(PUBLIC_ID),
             }
         }
     ]
@@ -392,8 +393,9 @@ def test_remove_rpc_deletes_everything_and_stops_row(mgr, dep):
     assert crd.delete_namespaced_custom_object.call_count == 2
     assert mgr.db.return_value.update.call_args.kwargs == {"status": "stopped"}
     selector = apps.list_namespaced_stateful_set.call_args.kwargs["label_selector"]
-    assert (
-        selector == f"waddleai.penguintech.io/llamacpp-deployment={mgr._daemonset_name(dep.name)}"
+    assert selector == (
+        f"waddleai.penguintech.io/llamacpp-deployment={mgr._daemonset_name(dep.name)},"
+        f"waddleai.penguintech.io/llamacpp-public-id={PUBLIC_ID}"
     )
 
 
@@ -438,3 +440,18 @@ def test_get_k8s_custom_client_falls_back_to_kubeconfig():
     ):
         assert module.get_k8s_custom_client() is api.return_value
     kube.assert_called_once()
+
+
+def test_every_object_and_selector_carries_the_owner_public_id(mgr, dep):
+    """Regression (tenant collision): all objects and pod selectors are scoped by public_id."""
+    docs = mgr.export_rpc_manifests(dep, layout(), HOSTS, IMG, 8192)
+    owner = "waddleai.penguintech.io/llamacpp-public-id"
+    for doc in docs:
+        spec = doc["spec"]
+        if doc["kind"] == "Service":
+            assert spec["selector"][owner] == str(PUBLIC_ID)
+        elif doc["kind"] == "CiliumNetworkPolicy":
+            assert spec["endpointSelector"]["matchLabels"][owner] == str(PUBLIC_ID)
+        else:
+            assert spec["selector"]["matchLabels"][owner] == str(PUBLIC_ID)
+            assert spec["template"]["metadata"]["labels"][owner] == str(PUBLIC_ID)

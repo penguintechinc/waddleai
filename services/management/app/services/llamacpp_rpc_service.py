@@ -16,6 +16,7 @@ from shared.fleet.enums import GpuVendor, LlamaCppTopology
 from shared.fleet.llamacpp_rpc import RpcLayout, RpcRefused, RpcWorker, plan_rpc_layout
 from shared.fleet.pricing import GPU_CLASSES_LABEL
 from shared.fleet.vllm_ray.fit import Pool, build_pools
+from shared.fleet.vllm_ray.slug import derive_slug
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,24 @@ class RpcImageNotConfigured(RuntimeError):  # noqa: N818 -- name states the cond
 
 class RpcPlacementUnavailable(RuntimeError):  # noqa: N818 -- name states the condition
     """A persisted RPC layout can no longer be resolved against the live inventory."""
+
+
+def rpc_base_name(name: str, public_id: Any) -> str:
+    """Kubernetes object base name, unique per deployment: ``llamacpp-<name>-<12 hex of id>``.
+
+    Names are tenant-chosen and all RPC objects live in the shared fleet namespace, so the name
+    alone must never address objects (two orgs picking one name would share them).
+    """
+    return f"llamacpp-{derive_slug(name[:20], public_id)}"
+
+
+def base_name_taken(db: Any, base: str, exclude_id: int | None = None) -> bool:
+    """True when ANY row, in any org, already uses ``base`` as its Kubernetes object name."""
+    table = db.llamacpp_deployments
+    query = table.k8s_daemonset_name == base
+    if exclude_id is not None:
+        query = query & (table.id != exclude_id)
+    return db(query).select(limitby=(0, 1)).first() is not None
 
 
 def backend_for_org(db: Any, org_id: int) -> Any | None:

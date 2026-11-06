@@ -58,6 +58,7 @@ RPC_RESOURCE_BY_VENDOR: dict[int, str] = {2: "amd.com/gpu", 3: "gpu.intel.com/i9
 _NVIDIA = 1
 _ROLE_LABEL = "waddleai.penguintech.io/llamacpp-role"
 _DEPLOYMENT_LABEL = "waddleai.penguintech.io/llamacpp-deployment"
+_OWNER_LABEL = "waddleai.penguintech.io/llamacpp-public-id"
 _KEYS_DIR = "/secrets/deployment-keys"
 _MAX_RPC_BASE_NAME = 48  # <base>-rpc-<i>-<ordinal> must stay a valid 63-char pod hostname
 _WAIT_ATTEMPTS = 600  # x 2 s: a worker that never comes up fails the head loudly (~20 min)
@@ -82,6 +83,22 @@ _RPC_DEFAULT_MANAGEMENT_SELECTOR = {
     "app.kubernetes.io/name": "waddleai",
     "app.kubernetes.io/component": "management",
 }
+
+
+_FAILED_WAITING = frozenset(
+    {"CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "CreateContainerConfigError"}
+)
+
+
+@dataclass(slots=True, frozen=True)
+class RpcObservation:
+    """What Kubernetes currently reports for one RPC deployment (input to status derivation)."""
+
+    workers_total: int
+    workers_up: int
+    workers_down: list[str]
+    head_ready: bool
+    failed_message: str | None
 
 
 def resource_for(vendor: int, gpu_class: str) -> str:
@@ -528,15 +545,25 @@ class LlamaCppManager(InferenceFleetBackend):
             pod = f"{base}-rpc-{group_index[key]}-{ordinal}"
             fqdns.append(f"{pod}.{base}-rpc.{namespace}.svc:{RPC_PORT}")
 
+        pid = str(deployment.public_id)
         slug = derive_slug(deployment.name, deployment.public_id)
         objects: list[dict] = [
-            self._rpc_head_service(base, namespace),
-            self._rpc_worker_service(base, namespace),
+            self._rpc_head_service(base, namespace, pid),
+            self._rpc_worker_service(base, namespace, pid),
         ]
         for index, (node_uid, gpu_class, replicas) in enumerate(groups):
             objects.append(
                 self._rpc_worker_statefulset(
-                    base, namespace, index, node_uid, gpu_class, replicas, layout, hostnames, image
+                    base,
+                    namespace,
+                    pid,
+                    index,
+                    node_uid,
+                    gpu_class,
+                    replicas,
+                    layout,
+                    hostnames,
+                    image,
                 )
             )
         objects.append(
@@ -544,16 +571,16 @@ class LlamaCppManager(InferenceFleetBackend):
                 deployment, base, namespace, layout, hostnames, image, n_ctx, fqdns, slug
             )
         )
-        objects.append(self._rpc_worker_policy(base, namespace))
+        objects.append(self._rpc_worker_policy(base, namespace, pid))
         objects.append(self._rpc_head_policy(deployment, base, namespace))
         return objects
 
     @staticmethod
-    def _rpc_labels(base: str, role: str) -> dict[str, str]:
+    def _rpc_labels(base: str, role: str, pid: str) -> dict[str, str]:
         """Pod/Service selector labels for one role of an RPC deployment."""
-        return {_DEPLOYMENT_LABEL: base, _ROLE_LABEL: role}
+        return {_DEPLOYMENT_LABEL: base, _ROLE_LABEL: role, _OWNER_LABEL: pid}
 
-    def _rpc_head_service(self, base: str, namespace: str) -> dict:
+    def _rpc_head_service(self, base: str, namespace: str, pid: str) -> dict:
         """ClusterIP Service in front of the head (the endpoint the proxy routes to)."""
         return {
             "apiVersion": "v1",
@@ -561,12 +588,12 @@ class LlamaCppManager(InferenceFleetBackend):
             "metadata": {"name": f"{base}-svc", "namespace": namespace},
             "spec": {
                 "type": "ClusterIP",
-                "selector": self._rpc_labels(base, "head"),
+                "selector": self._rpc_labels(base, "head", pid),
                 "ports": [{"port": 8080, "targetPort": 8080}],
             },
         }
 
-    def _rpc_worker_service(self, base: str, namespace: str) -> dict:
+    def _rpc_worker_service(self, base: str, namespace: str, pid: str) -> dict:
         """Headless Service giving every rpc-server pod a stable DNS name."""
         return {
             "apiVersion": "v1",
@@ -575,7 +602,7 @@ class LlamaCppManager(InferenceFleetBackend):
             "spec": {
                 "clusterIP": "None",
                 "publishNotReadyAddresses": True,
-                "selector": self._rpc_labels(base, "worker"),
+                "selector": self._rpc_labels(base, "worker", pid),
                 "ports": [{"port": RPC_PORT, "targetPort": RPC_PORT, "name": "rpc"}],
             },
         }
@@ -584,6 +611,7 @@ class LlamaCppManager(InferenceFleetBackend):
         self,
         base: str,
         namespace: str,
+        pid: str,
         index: int,
         node_uid: str,
         gpu_class: str,
@@ -594,7 +622,7 @@ class LlamaCppManager(InferenceFleetBackend):
     ) -> dict:
         """One StatefulSet of single-GPU rpc-server pods pinned to one node (and class)."""
         resource = resource_for(layout.vendor, gpu_class)
-        labels = self._rpc_labels(base, "worker")
+        labels = self._rpc_labels(base, "worker", pid)
         container = {
             "name": "rpc-server",
             "image": image,
@@ -658,10 +686,11 @@ class LlamaCppManager(InferenceFleetBackend):
         slug: str,
     ) -> dict:
         """The llama-server head: pinned to its planned node, key file from the shared Secret."""
+        pid = str(deployment.public_id)
         from services.management.app.services.fleet_secrets import DEPLOYMENT_KEYS_SECRET
 
         labels = {
-            **self._rpc_labels(base, "head"),
+            **self._rpc_labels(base, "head", pid),
             "app.kubernetes.io/component": "llamacpp",  # admitted by waddleai-allow-fleet-ingress
         }
         head_resource = resource_for(layout.vendor, layout.head_gpu_class)
@@ -764,7 +793,7 @@ class LlamaCppManager(InferenceFleetBackend):
             "spec": {
                 "replicas": 1,
                 "strategy": {"type": "Recreate"},  # one head owns the GPUs; never two at once
-                "selector": {"matchLabels": self._rpc_labels(base, "head")},
+                "selector": {"matchLabels": self._rpc_labels(base, "head", pid)},
                 "template": {
                     "metadata": {"labels": labels},
                     "spec": {
@@ -790,6 +819,7 @@ class LlamaCppManager(InferenceFleetBackend):
         }
 
     def _rpc_head_policy(self, deployment, base: str, namespace: str) -> dict:
+        pid = str(deployment.public_id)
         """Head CNP: ingress from the proxy and management only; egress to DNS, workers, source.
 
         Every allowed flow requires Cilium mutual auth. The default-deny egress would otherwise
@@ -798,8 +828,8 @@ class LlamaCppManager(InferenceFleetBackend):
         auth = {"mode": "required"}
         proxy = _topology_selector("aiproxy", _RPC_DEFAULT_PROXY_SELECTOR)
         management = _topology_selector("management", _RPC_DEFAULT_MANAGEMENT_SELECTOR)
-        head_labels = self._rpc_labels(base, "head")
-        worker_labels = self._rpc_labels(base, "worker")
+        head_labels = self._rpc_labels(base, "head", pid)
+        worker_labels = self._rpc_labels(base, "worker", pid)
         head_egress: list[dict[str, Any]] = [
             {
                 "toEndpoints": [
@@ -849,7 +879,7 @@ class LlamaCppManager(InferenceFleetBackend):
             },
         }
 
-    def _rpc_worker_policy(self, base: str, namespace: str) -> dict:
+    def _rpc_worker_policy(self, base: str, namespace: str, pid: str) -> dict:
         """Worker CNP: the RPC port admits only this deployment's head (rpc-server has no auth)."""
         auth = {"mode": "required"}
         return {
@@ -858,10 +888,10 @@ class LlamaCppManager(InferenceFleetBackend):
             "metadata": {"name": f"{base}-rpc-allow", "namespace": namespace},
             "spec": {
                 "description": "rpc-server pods: no auth/TLS of their own, so only the head",
-                "endpointSelector": {"matchLabels": self._rpc_labels(base, "worker")},
+                "endpointSelector": {"matchLabels": self._rpc_labels(base, "worker", pid)},
                 "ingress": [
                     {
-                        "fromEndpoints": [{"matchLabels": self._rpc_labels(base, "head")}],
+                        "fromEndpoints": [{"matchLabels": self._rpc_labels(base, "head", pid)}],
                         "authentication": auth,
                         "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
                     }
@@ -942,6 +972,53 @@ class LlamaCppManager(InferenceFleetBackend):
                 failed.append(f"{kind}/{name}")
         return failed
 
+    def rpc_observe(self, deployment) -> RpcObservation:
+        """Read worker and head readiness (and any terminal pod failure) for an RPC deployment.
+
+        Worker pods are matched to their StatefulSet's expected names, so a pod that has not been
+        created yet counts as down just like an unready one. Raises on Kubernetes API errors.
+        """
+        base, namespace = self._rpc_names(deployment)
+        selector = f"{_DEPLOYMENT_LABEL}={base},{_OWNER_LABEL}={deployment.public_id}"
+        apps, core = get_k8s_apps_client(), get_k8s_core_client()
+        expected: list[str] = []
+        for sts in apps.list_namespaced_stateful_set(
+            namespace=namespace, label_selector=selector
+        ).items:
+            expected.extend(f"{sts.metadata.name}-{i}" for i in range(int(sts.spec.replicas or 0)))
+        ready_workers: set[str] = set()
+        head_ready = False
+        failed: str | None = None
+        for pod in core.list_namespaced_pod(namespace=namespace, label_selector=selector).items:
+            name = pod.metadata.name
+            ready = any(
+                c.type == "Ready" and c.status == "True" for c in (pod.status.conditions or [])
+            )
+            if (pod.metadata.labels or {}).get(_ROLE_LABEL) == "head":
+                head_ready = head_ready or ready
+            elif ready:
+                ready_workers.add(name)
+            statuses = [
+                *(pod.status.init_container_statuses or []),
+                *(pod.status.container_statuses or []),
+            ]
+            for status in statuses:
+                waiting = getattr(getattr(status, "state", None), "waiting", None)
+                if waiting is not None and waiting.reason in _FAILED_WAITING and failed is None:
+                    failed = f"{waiting.reason} on {name}"
+        head = apps.read_namespaced_deployment(name=base, namespace=namespace)
+        for cond in (head.status.conditions or []) if head.status else []:
+            if cond.reason == "ProgressDeadlineExceeded" and failed is None:
+                failed = f"ProgressDeadlineExceeded on {base}"
+        down = sorted(set(expected) - ready_workers)
+        return RpcObservation(
+            workers_total=len(expected),
+            workers_up=len(expected) - len(down),
+            workers_down=down,
+            head_ready=head_ready,
+            failed_message=failed,
+        )
+
     def remove_rpc(self, deployment) -> None:
         """Delete every Kubernetes object of an RPC deployment and mark it stopped.
 
@@ -950,7 +1027,7 @@ class LlamaCppManager(InferenceFleetBackend):
         """
         base, namespace = self._rpc_names(deployment)
         apps, core, custom = get_k8s_apps_client(), get_k8s_core_client(), get_k8s_custom_client()
-        selector = f"{_DEPLOYMENT_LABEL}={base}"
+        selector = f"{_DEPLOYMENT_LABEL}={base},{_OWNER_LABEL}={deployment.public_id}"
         statefulsets = apps.list_namespaced_stateful_set(
             namespace=namespace, label_selector=selector
         )

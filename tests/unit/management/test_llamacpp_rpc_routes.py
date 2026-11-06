@@ -243,7 +243,6 @@ async def test_create_secret_write_failure_502_keeps_nothing(rpc, client, auth_h
         ({"model_url": None}, "model_url and model_filename"),
         ({"model_filename": None}, "model_url and model_filename"),
         ({"k8s_namespace": "elsewhere"}, "fleet namespace"),
-        ({"name": "x" * 40}, "too long"),
         ({"comparison_model": None}, "comparison_model is required"),
         ({"comparison_model": "openai/none"}, "No commercial rate"),
         ({"price_mode": 2}, "manual pricing needs"),
@@ -747,3 +746,87 @@ async def test_unauthenticated_and_forbidden_rpc_requests(rpc, client, user_auth
 def test_uuid_helper_import_is_used():
     """Keep the uuid import honest for slug derivation fixtures."""
     assert uuid.UUID("12345678-1234-5678-1234-567812345678").hex
+
+
+async def test_same_name_in_two_orgs_gets_distinct_kubernetes_objects(
+    rpc, client, auth_headers, org2_headers
+):
+    """Regression (tenant collision): two orgs picking one name never share object names."""
+    seed2 = seed_backend(rpc.db, org_id=2, name="gpu2")
+    seed_gpus(rpc.db, seed2, org_id=2, node="node-y", count=2, vram_mb=24564)
+    seed_gpus(rpc.db, seed2, org_id=2, node="node-z", count=2, vram_mb=24564)
+    # distinct names (the column is unique) that sanitise to the SAME old name-only object name
+    first = await _create(client, auth_headers, name="Qwen_RPC")
+    second = await _create(client, org2_headers, name="qwen-rpc")
+    one, two = _row(rpc, first["deployment_id"]), _row(rpc, second["deployment_id"])
+    old = LlamaCppManager(rpc.db)._daemonset_name
+    assert old(one.name) == old(two.name)  # the pre-fix collision
+    assert one.k8s_daemonset_name != two.k8s_daemonset_name
+    for row in (one, two):
+        assert str(row.public_id).replace("-", "")[:12] in row.k8s_daemonset_name
+    assert {call.args[0].k8s_daemonset_name for call in rpc.deploy.call_args_list} == {
+        one.k8s_daemonset_name,
+        two.k8s_daemonset_name,
+    }
+
+
+async def test_create_refuses_a_base_name_already_in_use(rpc, client, auth_headers, monkeypatch):
+    """Regression (tenant collision): an existing row with the same object name is a 409."""
+    monkeypatch.setattr(
+        "services.management.app.api.v1.llamacpp.rpc_service.base_name_taken", lambda *_a: True
+    )
+    resp = await client.post(URL, headers=auth_headers, json=_body())
+    assert resp.status_code == 409
+    assert rpc.db(rpc.db.llamacpp_deployments.id > 0).count() == 0
+    rpc.deploy.assert_not_called()
+
+
+async def test_convert_to_rpc_rebases_the_object_name_and_refuses_collisions(
+    rpc, client, auth_headers, monkeypatch
+):
+    """Regression (tenant collision): converting a name-only row moves it to a public-id name."""
+    single = await (
+        await client.post(URL, headers=auth_headers, json={"name": "solo", "model_name": "m120"})
+    ).get_json()
+    dep_id = single["deployment_id"]
+    row = _row(rpc, dep_id)
+    assert row.k8s_daemonset_name == "waddleai-llamacpp-solo"
+    path = "services.management.app.api.v1.llamacpp.rpc_service.base_name_taken"
+    with monkeypatch.context() as taken:
+        taken.setattr(path, lambda *_a: True)
+        refused = await client.patch(f"{URL}/{dep_id}", headers=auth_headers, json=_convert())
+    assert refused.status_code == 409
+    assert _row(rpc, dep_id).topology == 1
+    ok = await client.patch(f"{URL}/{dep_id}", headers=auth_headers, json=_convert())
+    assert ok.status_code == 200, await ok.get_json()
+    after = _row(rpc, dep_id)
+    assert after.topology == 2
+    assert str(after.public_id).replace("-", "")[:12] in after.k8s_daemonset_name
+
+
+def _convert():
+    """PATCH body converting a deployment to RPC."""
+    return {
+        "topology": 2,
+        "gguf_bytes": GIB65,
+        "model_url": BODY["model_url"],
+        "model_filename": BODY["model_filename"],
+        "comparison_model": "openai/gpt-4o",
+    }
+
+
+async def test_list_without_an_org_is_403_and_never_matches_unowned_rows(
+    rpc, client, auth_headers, monkeypatch
+):
+    """Regression (list/visibility mismatch): an org-less token fails closed, never lists NULLs."""
+    rpc.db.llamacpp_deployments.insert(
+        name="legacy", deployment_type="remote", status="stopped", model_name="m",
+        public_id="44444444-4444-4444-4444-444444444444",
+    )  # fmt: skip
+    rpc.db.commit()
+    monkeypatch.setattr(
+        "services.management.app.api.v1.llamacpp.g", SimpleNamespace(user={"organization_id": None})
+    )
+    resp = await client.get(URL, headers=auth_headers)
+    assert resp.status_code == 403
+    assert "legacy" not in await resp.get_data(as_text=True)

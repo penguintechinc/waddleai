@@ -8,7 +8,6 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -345,6 +344,8 @@ async def list_llamacpp_deployments():
     """
     page = PageRequest.from_request()
     org_id = g.user.get("organization_id")
+    if org_id is None:  # fail closed: an org-less caller must not match unowned rows
+        return jsonify({"error": "organization required"}), 403
     topology_arg = request.args.get("topology")
     topology_filter: int | None = None
     if topology_arg is not None:
@@ -585,13 +586,9 @@ async def _plan_layout_patch(
     allowed, allowed_error = _parse_explicit_workers(data.get("rpc_workers"))
     if allowed_error:
         return {}, (jsonify({"error": allowed_error}), 422)
-    base = current.k8s_daemonset_name or LlamaCppManager(db)._daemonset_name(current.name)
-    try:
-        LlamaCppManager(db)._rpc_names(
-            SimpleNamespace(k8s_daemonset_name=base, name=current.name, k8s_namespace=None)
-        )
-    except ValueError as exc:
-        return {}, (jsonify({"error": str(exc)}), 422)
+    base = rpc_service.rpc_base_name(current.name, current.public_id)
+    if await asyncio.to_thread(rpc_service.base_name_taken, db, base, int(current.id)):
+        return {}, (jsonify({"error": "That deployment name is already in use."}), 409)
     try:
         layout, _backend_id, _hostnames = await _plan_rpc(
             org_id, int(data["gguf_bytes"]), allow_mixed, allowed
@@ -604,6 +601,7 @@ async def _plan_layout_patch(
         **rpc_service.layout_columns(layout),
         "allow_mixed_class": allow_mixed,
         "k8s_namespace": fleet_secrets.namespace(),
+        "k8s_daemonset_name": base,
     }, None
 
 
@@ -637,11 +635,10 @@ async def _create_rpc_deployment(
     if allowed_error:
         return jsonify({"error": allowed_error}), 422
     mgr = LlamaCppManager(db)
-    base = mgr._daemonset_name(name)
-    try:
-        mgr._rpc_names(SimpleNamespace(k8s_daemonset_name=base, name=name, k8s_namespace=namespace))
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 422
+    public_id = str(uuid.uuid4())
+    base = rpc_service.rpc_base_name(name, public_id)
+    if await asyncio.to_thread(rpc_service.base_name_taken, db, base):
+        return jsonify({"error": "That deployment name is already in use; retry."}), 409
     try:
         price_fields = parse_price_fields(
             {
@@ -675,8 +672,6 @@ async def _create_rpc_deployment(
     except rpc_service.RpcImageNotConfigured as exc:
         logger.error("llamacpp rpc image not configured: %s", exc)
         return jsonify({"error": str(exc)}), 500
-
-    public_id = str(uuid.uuid4())
 
     def _create() -> int:
         return _database().llamacpp_deployments.insert(
