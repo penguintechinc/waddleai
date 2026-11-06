@@ -1,6 +1,7 @@
 """Tests for shared.fleet.pricing: one TCO formula for every local deployment kind (B4d)."""
 
 import math
+import uuid
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -14,6 +15,7 @@ from shared.fleet.pricing import (
     apply_pricing,
     gpu_set_for,
     load_pricing_inputs,
+    rate_model_key,
     virtual_rates,
 )
 from shared.fleet.vllm_ray.fit import Layout
@@ -46,7 +48,8 @@ def _db(params_b: str | None = "12.00") -> FakeDAL:
 def _vllm(**kw: Any) -> SimpleNamespace:
     """A vLLM deployment row with 2 GPUs on one stage."""
     base: dict[str, Any] = {
-        "model_ref": "m", "served_model_name": "served-m", "gpu_class": CLS, "tensor_parallel": 2,
+        "public_id": uuid.uuid4(), "model_ref": "m", "served_model_name": "served-m",
+        "gpu_class": CLS, "tensor_parallel": 2,
         "pipeline_parallel": 1, "replicas_min": 1, "price_mode": int(PriceMode.AUTO_TCO),
         "price_input_per_1m": Decimal(0), "price_output_per_1m": Decimal(0),
         "price_breakdown": None, "observed_tokens_per_s": None,
@@ -58,7 +61,8 @@ def _vllm(**kw: Any) -> SimpleNamespace:
 def _ollama(**kw: Any) -> SimpleNamespace:
     """An Ollama row; GPU class from gpu_config node_selector."""
     base: dict[str, Any] = {
-        "name": "m", "gpu_config": {"node_selector": {LABEL: CLS}, "gpu_count": 2},
+        "public_id": uuid.uuid4(), "name": "m",
+        "gpu_config": {"node_selector": {LABEL: CLS}, "gpu_count": 2},
         "price_mode": 1, "price_input_per_1m": Decimal(0), "price_output_per_1m": Decimal(0),
         "price_breakdown": None, "observed_tokens_per_s": None,
     }  # fmt: skip
@@ -69,7 +73,7 @@ def _ollama(**kw: Any) -> SimpleNamespace:
 def _llama(**kw: Any) -> SimpleNamespace:
     """A single-node llama.cpp row; GPU class from node_selector."""
     base: dict[str, Any] = {
-        "model_name": "m", "node_selector": {LABEL: CLS}, "gpu_count": 2,
+        "public_id": uuid.uuid4(), "model_name": "m", "node_selector": {LABEL: CLS}, "gpu_count": 2,
         "topology": int(LlamaCppTopology.SINGLE_NODE), "rpc_workers": None, "price_mode": 1,
         "price_input_per_1m": Decimal(0), "price_output_per_1m": Decimal(0),
         "price_breakdown": None, "observed_tokens_per_s": None,
@@ -232,7 +236,7 @@ async def test_apply_pricing_calls_c6_upsert() -> None:
         await apply_pricing(_db(), VLLM, row, TcoInputs(), _costs(), 40.0)
     upsert.assert_called_once()
     args = upsert.call_args.args
-    assert args[1:3] == ("vllm", "served-m")
+    assert args[1:3] == ("vllm", f"deployment/{row.public_id}")
     assert isinstance(args[3], Decimal) and isinstance(args[4], Decimal)
     assert args[3] == row.price_input_per_1m and args[4] == row.price_output_per_1m
 
@@ -257,7 +261,7 @@ async def test_apply_pricing_auto_matches_compute_tco_for_each_kind(
     assert float(row.price_output_per_1m) == pytest.approx(expected.price_output_per_1m, abs=1e-6)
     assert float(row.price_input_per_1m) == pytest.approx(expected.price_input_per_1m, abs=1e-6)
     assert row.price_breakdown == result.breakdown
-    assert upsert.call_args.args[1:3] == (provider, model)
+    assert upsert.call_args.args[1:3] == (provider, f"deployment/{row.public_id}")
     # rate = 0.001 x 1e6 / price (AM2), computed from what is charged
     rate = Decimal("0.001") * 1000000 / upsert.call_args.args[3]
     assert float(rate) == pytest.approx(0.001 * 1e6 / float(row.price_input_per_1m))
@@ -269,7 +273,7 @@ async def test_apply_pricing_end_to_end_writes_rate_row_via_real_upsert() -> Non
     row = _vllm()
     await apply_pricing(db, VLLM, row, TcoInputs(), _costs(), 40.0)
     t = db.token_conversion_rates
-    (rate,) = list(db((t.provider == "vllm") & (t.model == "served-m")).select())
+    (rate,) = list(db((t.provider == "vllm") & (t.model == f"deployment/{row.public_id}")).select())
     assert rate.input_rate == pytest.approx(1000.0 / float(row.price_input_per_1m))
     assert rate.output_rate == pytest.approx(1000.0 / float(row.price_output_per_1m))
 
@@ -339,7 +343,12 @@ async def test_apply_pricing_manual_accepts_positive_prices() -> None:
         result = await apply_pricing(_db(), LLAMACPP, row, TcoInputs(), {}, None)
     assert result is None
     assert row.price_breakdown == {"keep": True}
-    assert upsert.call_args.args[1:5] == ("llamacpp", "m", Decimal("0.5"), Decimal("2"))
+    assert upsert.call_args.args[1:5] == (
+        "llamacpp",
+        f"deployment/{row.public_id}",
+        Decimal("0.5"),
+        Decimal("2"),
+    )
 
 
 @pytest.mark.parametrize("bad", [0, -1, float("nan"), float("inf")])
@@ -408,3 +417,26 @@ async def test_apply_pricing_unknown_price_mode_rejected() -> None:
     """An unrecognised price_mode is refused rather than guessed."""
     with pytest.raises(ValueError, match="price_mode"):
         await apply_pricing(_db(), VLLM, _vllm(price_mode=9), TcoInputs(), _costs(), 40.0)
+
+
+async def test_same_served_name_in_two_orgs_gets_independent_rate_rows() -> None:
+    """AM26: equal served names must not share (and overwrite) one rate row."""
+    db = _db()
+    a, b = _vllm(served_model_name="shared"), _vllm(served_model_name="shared")
+    cheap = {CLS: GpuClassCost(CLS, 1600, 450, 400.0, _node())}
+    await apply_pricing(db, VLLM, a, TcoInputs(), _costs(), 40.0)
+    await apply_pricing(db, VLLM, b, TcoInputs(), cheap, 400.0)
+    t = db.token_conversion_rates
+    rows = list(db(t.provider == "vllm").select())
+    assert {r.model for r in rows} == {rate_model_key(a), rate_model_key(b)}
+    by_model = {r.model: r for r in rows}
+    assert by_model[rate_model_key(a)].input_rate != by_model[rate_model_key(b)].input_rate
+    assert by_model[rate_model_key(a)].input_rate == pytest.approx(
+        1000 / float(a.price_input_per_1m)
+    )
+
+
+def test_rate_model_key_is_deployment_public_id() -> None:
+    """The helper keys by public_id, never by name."""
+    row = _vllm()
+    assert rate_model_key(row) == f"deployment/{row.public_id}"

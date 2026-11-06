@@ -8,13 +8,23 @@ This module converts a price into those divisors and upserts the (provider, mode
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from shared.utils.conversion_rate_store import upsert_conversion_rate
+from sqlalchemy.exc import IntegrityError
 
 DEFAULT_BASE_COST_PER_WADDLEAI_TOKEN = Decimal("0.001")
 _MILLION = Decimal(1_000_000)
+_MODEL_KEY = re.compile(
+    r"^deployment/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+
+
+def rate_model_key(row: Any) -> str:
+    """Rate-row model key for a deployment: ``deployment/<public_id>`` (AM26), never its name."""
+    return f"deployment/{row.public_id}"
 
 
 def _check_price(name: str, value: Decimal) -> None:
@@ -44,18 +54,30 @@ def upsert_virtual_rate(
     *,
     base_cost_per_waddleai_token: Decimal = DEFAULT_BASE_COST_PER_WADDLEAI_TOKEN,
 ) -> None:
-    """Create or update the ``token_conversion_rates`` row charging this virtual price.
+    """Create or update a deployment's ``token_conversion_rates`` row for this virtual price.
 
     Synchronous (penguin-dal); async callers wrap it in ``asyncio.to_thread``.
     """
+    if not _MODEL_KEY.match(model):
+        raise ValueError(f"model key must be deployment/<uuid>, got {model!r}")
     rate_in, rate_out = virtual_rates(
         price_input_per_1m, price_output_per_1m, base_cost_per_waddleai_token
     )
-    upsert_conversion_rate(
-        db,
-        provider=provider,
-        model=model,
-        input_rate=float(rate_in),
-        output_rate=float(rate_out),
-        base_cost_per_waddleai_token=float(base_cost_per_waddleai_token),
-    )
+    values: dict[str, Any] = {
+        "input_rate": float(rate_in),
+        "output_rate": float(rate_out),
+        "base_cost_per_waddleai_token": float(base_cost_per_waddleai_token),
+        "effective_date": datetime.utcnow(),
+    }
+    table = db.token_conversion_rates
+
+    def match() -> Any:
+        return db((table.provider == provider) & (table.model == model))
+
+    # An existing row keeps its `enabled` flag: an admin-disabled rate must stay disabled.
+    if match().update(**values):
+        return
+    try:
+        table.insert(provider=provider, model=model, enabled=True, **values)
+    except IntegrityError:  # lost an insert race: update the winner's row, keep its flag
+        match().update(**values)

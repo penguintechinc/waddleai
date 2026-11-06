@@ -24,7 +24,7 @@ from shared.fleet.vllm_ray.tco import (
     TcoResult,
     compute_tco,
 )
-from shared.quota.virtual_price import virtual_rates
+from shared.quota.virtual_price import rate_model_key, virtual_rates
 
 __all__ = [
     "GPU_CLASSES_LABEL",
@@ -33,6 +33,7 @@ __all__ = [
     "apply_pricing",
     "gpu_set_for",
     "load_pricing_inputs",
+    "rate_model_key",
     "virtual_rates",
 ]
 
@@ -111,15 +112,6 @@ def _model_lookup_name(kind: int, row: Any) -> str:
     return str(getattr(row, "model_name", None) or row.name)
 
 
-def _served_name(kind: int, row: Any) -> str:
-    """The model name clients send, which is the ``token_conversion_rates.model`` key."""
-    if kind == LocalDeploymentKind.VLLM:
-        return str(row.served_model_name)
-    if kind == LocalDeploymentKind.LLAMACPP:
-        return str(row.model_name)
-    return str(row.name)
-
-
 def _params_b(db: Any, name: str) -> float | None:
     """Parameter count (billions) from the model registry, or None when unset/unknown."""
     entry = db(db.model_registry.name == name).select().first()
@@ -192,11 +184,9 @@ async def apply_pricing(
         if observed_tokens_per_s is not None:
             row.observed_tokens_per_s = observed_tokens_per_s
     await asyncio.to_thread(
-        upsert_virtual_rate, db, provider, _served_name(kind, row), price_in, price_out
+        upsert_virtual_rate, db, provider, rate_model_key(row), price_in, price_out
     )
-    logger.info(
-        "priced %s deployment model=%s mode=%s", provider, _served_name(kind, row), row.price_mode
-    )
+    logger.info("priced %s deployment %s mode=%s", provider, rate_model_key(row), row.price_mode)
     return result
 
 
