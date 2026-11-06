@@ -829,18 +829,31 @@ def _suggest_other(args: Any, org_id: int) -> tuple[TcoResult | None, tuple[Any,
 
 
 @api_v1_bp.route("/fleet/price-suggestion", methods=["GET"])
-@api_v1_bp.route("/fleet/vllm/price-suggestion", methods=["GET"], defaults={"_alias": True})
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
 @validate_response(PriceSuggestionResponse, 200)
-async def price_suggestion(_alias: bool = False) -> Any:
+async def price_suggestion() -> Any:
     """TCO price suggestion for a local deployment kind (``kind`` 1 vLLM, 2 Ollama, 3 llama.cpp)."""
+    return await _price_suggestion(alias=False)
+
+
+@api_v1_bp.route("/fleet/vllm/price-suggestion", methods=["GET"])
+@require_auth
+@require_scope(Permission.FLEET_ADMIN)
+@validate_response(PriceSuggestionResponse, 200)
+async def vllm_price_suggestion() -> Any:
+    """Alias of ``/fleet/price-suggestion`` pinned to ``kind=1`` (vLLM)."""
+    return await _price_suggestion(alias=True)
+
+
+async def _price_suggestion(*, alias: bool) -> Any:
+    """Shared body of the two price-suggestion routes."""
     org_id = g.user.get("organization_id")
     if (blocked := _gate(org_id)) is not None:
         return blocked
     args = request.args
     try:
-        kind = 1 if _alias else int(args.get("kind", "1"))
+        kind = 1 if alias else int(args.get("kind", "1"))
     except ValueError:
         return _validation_error("kind must be 1, 2 or 3")
     if kind not in _KINDS:
