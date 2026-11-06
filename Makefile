@@ -1,6 +1,6 @@
 .PHONY: docker-build-classification test-classification-image test-classification-real dev setup install-hooks verify-hooks venv test test-classification test-unit test-integration test-valkey test-e2e test-functional test-security \
         test-contract test-contract-selftest smoke-test smoke-test-production smoke-test-classification loadtest-classification lint build docker-build docker-push deploy-dev deploy-prod \
-        seed-mock-data clean pre-commit generate-openapi openapi-lint
+        seed-mock-data clean pre-commit generate-openapi openapi-lint gen-gpu-price-reference
 
 # Every python invocation goes through the repo venv when it exists, and only
 # falls back to the interpreter on PATH when it does not.
@@ -252,3 +252,6 @@ pre-commit:
 	@$(MAKE) test-security
 	@$(MAKE) test
 	@echo "=== Pre-commit complete ==="
+
+gen-gpu-price-reference: ## Regenerate shared/fleet/vllm_ray/gpu_price_reference.py from docs/reference/*.json
+	$(PY) scripts/gen_gpu_price_reference.py
