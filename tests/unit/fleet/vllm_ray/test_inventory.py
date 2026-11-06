@@ -253,7 +253,7 @@ def test_collector_fills_node_fields_from_payload() -> None:
             }
         ]
     )
-    recs = asyncio.run(InventoryCollector(1, 1).collect(client))
+    recs = asyncio.run(InventoryCollector(1, 1).collect(client)).records
     assert len(recs) == 4
     assert {(r.node_uid, r.node_name) for r in recs} == {("u1", "n1")}
 
@@ -278,7 +278,7 @@ def test_collector_dispatches_amd_intel_and_rejects_unknown_vendor() -> None:
             },
         ]
     )
-    recs = asyncio.run(InventoryCollector(1, 1).collect(client))
+    recs = asyncio.run(InventoryCollector(1, 1).collect(client)).records
     assert [r.vendor for r in recs] == [GpuVendor.AMD] * 2 + [GpuVendor.INTEL] * 2
     bad = _StubInventoryClient(
         [{"node_uid": "x", "node_name": "x", "vendor": "tpu", "class_map": {}, "raw": "x"}]
@@ -290,7 +290,7 @@ def test_collector_dispatches_amd_intel_and_rejects_unknown_vendor() -> None:
 def test_collector_zero_payloads_returns_empty_and_warns(caplog: pytest.LogCaptureFixture) -> None:
     """Collector zero payloads returns empty and warns."""
     with caplog.at_level("WARNING"):
-        assert asyncio.run(InventoryCollector(1, 1).collect(_StubInventoryClient([]))) == []
+        assert asyncio.run(InventoryCollector(1, 1).collect(_StubInventoryClient([]))).records == []
     assert "no inventory payloads" in caplog.text
 
 
@@ -309,7 +309,7 @@ def test_empty_raw_uses_allocatable_and_node_class() -> None:
             }
         ]
     )
-    recs = asyncio.run(InventoryCollector(1, 1).collect(client))
+    recs = asyncio.run(InventoryCollector(1, 1).collect(client)).records
     assert len(recs) == 2
     assert all(r.state == InventoryState.COLD and r.schedulable is False for r in recs)
     assert all(
@@ -324,7 +324,7 @@ def test_empty_raw_without_allocatable_yields_nothing() -> None:
     client = _StubInventoryClient(
         [{"node_uid": "u3", "node_name": "n3", "vendor": "nvidia", "class_map": {}, "raw": ""}]
     )
-    assert asyncio.run(InventoryCollector(1, 1).collect(client)) == []
+    assert asyncio.run(InventoryCollector(1, 1).collect(client)).records == []
 
 
 def _db(tmp_path: Path) -> Any:
@@ -413,10 +413,10 @@ def test_payload_supplied_class_map_is_ignored() -> None:
     """A worker-supplied class_map must not influence classification."""
     forged = {"*A9000*": "nvidia-rtx4090"}
     client = _StubInventoryClient([_nv_payload(class_map=forged)])
-    recs = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client))
+    recs = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client)).records
     assert recs[3].gpu_class is None and recs[3].state == InventoryState.UNCLASSIFIED
     assert recs[0].gpu_class == "nvidia-rtx4090"
-    no_trusted = asyncio.run(InventoryCollector(1, 1).collect(client))
+    no_trusted = asyncio.run(InventoryCollector(1, 1).collect(client)).records
     assert all(r.gpu_class is None for r in no_trusted)
 
 
@@ -425,7 +425,7 @@ def test_forged_node_class_is_unclassified() -> None:
     client = _StubInventoryClient(
         [_nv_payload(raw="", allocatable_gpus=2, node_class="nvidia-h200-forged")]
     )
-    recs = asyncio.run(InventoryCollector(1, 1).collect(client))
+    recs = asyncio.run(InventoryCollector(1, 1).collect(client)).records
     assert len(recs) == 2
     assert all(r.gpu_class is None and r.state == InventoryState.UNCLASSIFIED for r in recs)
     assert not any(r.schedulable for r in recs)
@@ -445,14 +445,14 @@ def test_allocatable_out_of_range_rejects_payload(
     """Out-of-range or non-integer allocatable_gpus drops the node with a warning."""
     client = _StubInventoryClient([_nv_payload(raw="", allocatable_gpus=count)])
     with caplog.at_level("WARNING"):
-        assert asyncio.run(InventoryCollector(1, 1).collect(client)) == []
+        assert asyncio.run(InventoryCollector(1, 1).collect(client)).records == []
     assert "allocatable_gpus" in caplog.text
 
 
 def test_allocatable_boundary_64_is_accepted() -> None:
     """64 is the inclusive upper bound."""
     client = _StubInventoryClient([_nv_payload(raw="", allocatable_gpus=64)])
-    assert len(asyncio.run(InventoryCollector(1, 1).collect(client))) == 64
+    assert len(asyncio.run(InventoryCollector(1, 1).collect(client)).records) == 64
 
 
 def test_parsers_cap_entries_per_payload(caplog: pytest.LogCaptureFixture) -> None:
@@ -493,6 +493,60 @@ def test_collect_caps_total_records(caplog: pytest.LogCaptureFixture) -> None:
     """collect() drops records beyond 4096 total and logs it."""
     payloads = [_nv_payload(node_uid=f"u{i}", raw="", allocatable_gpus=64) for i in range(100)]
     with caplog.at_level("WARNING"):
-        recs = asyncio.run(InventoryCollector(1, 1).collect(_StubInventoryClient(payloads)))
+        recs = asyncio.run(InventoryCollector(1, 1).collect(_StubInventoryClient(payloads))).records
     assert len(recs) == 4096
     assert "record cap" in caplog.text
+
+
+def _count_cold(db: Any) -> int:
+    return len([r for r in db(db.gpu_inventory).select() if r.state == InventoryState.COLD])
+
+
+def test_cap_hit_is_incomplete_and_skips_cold_sweep(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hitting the record cap marks the result incomplete; no COLD sweep follows."""
+    monkeypatch.setattr("shared.fleet.vllm_ray.inventory.MAX_RECORDS_PER_COLLECT", 3)
+    client = _StubInventoryClient([_nv_payload(node_uid="flood")])
+    res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client))
+    assert res.complete is False and len(res.records) == 3
+    db = _db(tmp_path)
+
+    async def _go() -> None:
+        await upsert_inventory(db, 1, 7, [_rec(0, 1, "legit")])
+        await upsert_inventory(db, 1, 7, res.records, complete=res.complete)
+
+    asyncio.run(_go())
+    legit = [r for r in db(db.gpu_inventory).select() if r.node_uid == "legit"]
+    assert len(legit) == 1 and legit[0].state == InventoryState.WARM
+    assert _count_cold(db) == 0
+
+
+def test_duplicate_node_uid_is_incomplete_first_payload_wins() -> None:
+    """A repeated node_uid is dropped and marks the result incomplete."""
+    client = _StubInventoryClient([_nv_payload(node_uid="d"), _nv_payload(node_uid="d")])
+    res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client))
+    assert res.complete is False and len(res.records) == 4
+
+
+def test_unknown_node_uid_dropped_against_authoritative_list() -> None:
+    """Payloads whose node_uid is not in the authoritative list are dropped."""
+    client = _StubInventoryClient([_nv_payload(node_uid="ok"), _nv_payload(node_uid="evil")])
+    res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client, {"ok"}))
+    assert {r.node_uid for r in res.records} == {"ok"} and res.complete is False
+
+
+def test_clean_collect_is_complete_and_sweeps_stale_cold(tmp_path: Path) -> None:
+    """A complete run still marks absent rows COLD."""
+    client = _StubInventoryClient([_nv_payload(node_uid="ok")])
+    res = asyncio.run(InventoryCollector(1, 1, class_map=CLASS_MAP).collect(client, {"ok"}))
+    assert res.complete is True
+    db = _db(tmp_path)
+
+    async def _go() -> None:
+        await upsert_inventory(db, 1, 7, [_rec(0, 1, "gone")])
+        await upsert_inventory(db, 1, 7, res.records, complete=res.complete)
+
+    asyncio.run(_go())
+    gone = [r for r in db(db.gpu_inventory).select() if r.node_uid == "gone"]
+    assert gone[0].state == InventoryState.COLD

@@ -16,15 +16,23 @@ import io
 import json
 import logging
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Protocol
 
+from prometheus_client import Counter
+
 from shared.fleet.enums import GpuVendor, InventoryState
 
 logger = logging.getLogger(__name__)
+
+_INCOMPLETE_TOTAL = Counter(
+    "waddleai_gpu_inventory_incomplete_total",
+    "GPU inventory upserts that skipped the stale-row COLD sweep (incomplete collect)",
+)
 
 _MB = 1048576
 MAX_GPUS_PER_NODE = 64
@@ -243,6 +251,14 @@ def parse_xpu_smi(json_text: str) -> list[GpuRecord]:
     return records
 
 
+@dataclass(slots=True)
+class InventoryResult:
+    """Collected records plus whether the collect saw every node unmodified."""
+
+    records: list[GpuRecord]
+    complete: bool
+
+
 class _RejectPayload(Exception):  # noqa: N818 - internal control-flow signal
     """Raised to drop one untrusted node payload without failing the whole collect."""
 
@@ -328,19 +344,41 @@ class InventoryCollector:
             raise _RejectPayload
         return value
 
-    async def collect(self, client: InventoryClient) -> list[GpuRecord]:
-        """Gather inventory from every worker; zero payloads yields ``[]`` plus a warning."""
+    async def collect(
+        self, client: InventoryClient, authoritative_node_ids: Collection[str] | None = None
+    ) -> InventoryResult:
+        """Gather inventory from every worker into an ``InventoryResult``.
+
+        The result is marked incomplete (so the caller must not sweep absent rows COLD)
+        when any payload is dropped, a node_uid repeats, the record cap is hit, or no
+        payloads arrive. When ``authoritative_node_ids`` (the Ray node list) is given,
+        payloads for any other node_uid are dropped.
+        """
         payloads = await client.run_inventory()
         if not payloads:
             logger.warning(
                 "no inventory payloads for backend %s (org %s)", self.backend_id, self.org_id
             )
-            return []
+            return InventoryResult([], complete=False)
+        allowed = None if authoritative_node_ids is None else set(authoritative_node_ids)
+        complete = True
+        seen_nodes: set[str] = set()
         out: list[GpuRecord] = []
         for payload in payloads:
+            uid = str(payload.get("node_uid", ""))
+            if uid in seen_nodes:
+                logger.warning("duplicate inventory payload for node %r dropped", uid)
+                complete = False
+                continue
+            seen_nodes.add(uid)
+            if allowed is not None and uid not in allowed:
+                logger.warning("inventory payload for unknown node %r dropped", uid)
+                complete = False
+                continue
             try:
                 parsed = self._parse_payload(payload)
             except _RejectPayload:
+                complete = False
                 continue
             node = [
                 dataclasses.replace(
@@ -359,13 +397,21 @@ class InventoryCollector:
                 len(out) - MAX_RECORDS_PER_COLLECT,
             )
             out = out[:MAX_RECORDS_PER_COLLECT]
-        return out
+            complete = False
+        return InventoryResult(out, complete=complete)
 
 
 async def upsert_inventory(
-    db: Any, fleet_backend_id: int, org_id: int, records: list[GpuRecord]
+    db: Any,
+    fleet_backend_id: int,
+    org_id: int,
+    records: list[GpuRecord],
+    complete: bool = True,
 ) -> None:
     """Upsert records on (backend, node_uid, gpu_index); absent rows become COLD.
+
+    When ``complete`` is False the stale sweep is skipped (records are still upserted):
+    an incomplete collect must never force legitimate, merely-unseen nodes COLD.
 
     Blocking DAL calls run in a worker thread so the event loop stays free.
     """
@@ -403,9 +449,12 @@ async def upsert_inventory(
                     gpu_index=rec.gpu_index,
                     **values,
                 )
-        for row in db(table.fleet_backend_id == fleet_backend_id).select():
+        for row in db(table.fleet_backend_id == fleet_backend_id).select() if complete else ():
             if (row.node_uid, row.gpu_index) not in seen:
                 db(table.id == row.id).update(state=int(InventoryState.COLD), schedulable=False)
         db.commit()
 
+    if not complete:
+        logger.warning("incomplete inventory for backend %s: stale sweep skipped", fleet_backend_id)
+        _INCOMPLETE_TOTAL.inc()
     await asyncio.to_thread(_write)
