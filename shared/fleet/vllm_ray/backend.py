@@ -316,11 +316,11 @@ class VllmRayBackend(InferenceFleetBackend):
             raise RuntimeError(_REJECTED_OP) from None
 
     async def _run_canary(self, dep: Any) -> bool:
-        """Run the readiness canary; any exception counts as a failure."""
+        """Run the readiness canary; transport errors count as failure, bugs propagate."""
         url = dep.endpoint_url or self._endpoint_url(dep)
         try:
             return bool(await self._canary(url, dep.served_model_name))
-        except Exception:
+        except (RayClientError, httpx.HTTPError, TimeoutError, OSError):
             logger.warning("canary raised for %s", dep.serve_app_name, exc_info=True)
             return False
 

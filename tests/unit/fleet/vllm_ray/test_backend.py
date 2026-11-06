@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from shared.fleet.base import BackendType, ManagementScope, ProvisionSpec
@@ -1040,3 +1041,25 @@ async def test_default_canary_used_when_none_injected(
     """Check: default canary used when none injected."""
     b = VllmRayBackend(db, dict(CFG), None, client)
     assert b._canary is backend_mod._default_canary
+
+
+@pytest.mark.parametrize(
+    "exc", [RayClientError("x"), httpx.ConnectError("x"), httpx.ReadTimeout("x"), TimeoutError()]
+)
+async def test_run_canary_expected_transport_errors_count_as_failure(
+    backend: VllmRayBackend, canary: AsyncMock, db: FakeDAL, exc: Exception
+) -> None:
+    """Expected transport/HTTP/timeout errors are a failed canary, not a crash."""
+    canary.side_effect = exc
+    d = _insert_dep(db, status=int(S.WARMING), endpoint_url="http://u/v1")
+    assert await backend._run_canary(d) is False
+
+
+async def test_run_canary_programming_error_propagates(
+    backend: VllmRayBackend, canary: AsyncMock, db: FakeDAL
+) -> None:
+    """A bug (KeyError) inside the canary must surface, not hide as 'canary failed'."""
+    canary.side_effect = KeyError("bug")
+    d = _insert_dep(db, status=int(S.WARMING), endpoint_url="http://u/v1")
+    with pytest.raises(KeyError):
+        await backend._run_canary(d)
