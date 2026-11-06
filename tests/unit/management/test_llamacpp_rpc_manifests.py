@@ -393,9 +393,9 @@ def test_remove_rpc_deletes_everything_and_stops_row(mgr, dep):
     assert crd.delete_namespaced_custom_object.call_count == 2
     assert mgr.db.return_value.update.call_args.kwargs == {"status": "stopped"}
     selector = apps.list_namespaced_stateful_set.call_args.kwargs["label_selector"]
-    assert selector == (
-        f"waddleai.penguintech.io/llamacpp-deployment={mgr._daemonset_name(dep.name)},"
-        f"waddleai.penguintech.io/llamacpp-public-id={PUBLIC_ID}"
+    # base-only: legacy objects (created before the owner label) must still be found
+    assert (
+        selector == f"waddleai.penguintech.io/llamacpp-deployment={mgr._daemonset_name(dep.name)}"
     )
 
 
@@ -455,3 +455,40 @@ def test_every_object_and_selector_carries_the_owner_public_id(mgr, dep):
         else:
             assert spec["selector"]["matchLabels"][owner] == str(PUBLIC_ID)
             assert spec["template"]["metadata"]["labels"][owner] == str(PUBLIC_ID)
+
+
+def test_remove_rpc_keeps_policies_and_everything_else_when_a_statefulset_delete_fails(mgr, dep):
+    """Fail closed: a surviving worker StatefulSet keeps its CNPs; nothing else is touched."""
+    apps, core, crd = _clients()
+    sts = SimpleNamespace(metadata=SimpleNamespace(name="b-rpc-0"))
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(items=[sts])
+    apps.delete_namespaced_stateful_set.side_effect = RuntimeError("api down")
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
+    ):
+        with pytest.raises(RuntimeError, match="policies kept"):
+            mgr.remove_rpc(dep)
+    crd.delete_namespaced_custom_object.assert_not_called()
+    core.delete_namespaced_service.assert_not_called()
+    apps.delete_namespaced_deployment.assert_not_called()
+    mgr.db.return_value.update.assert_not_called()
+
+
+def test_remove_rpc_deletes_workers_before_policies(mgr, dep):
+    """Worker StatefulSets are deleted first, the policies last-ish (after workers succeeded)."""
+    apps, core, crd = _clients()
+    order = MagicMock()
+    apps.list_namespaced_stateful_set.return_value = SimpleNamespace(
+        items=[SimpleNamespace(metadata=SimpleNamespace(name="b-rpc-0"))]
+    )
+    order.attach_mock(apps.delete_namespaced_stateful_set, "sts")
+    order.attach_mock(crd.delete_namespaced_custom_object, "cnp")
+    with (
+        patch(f"{MGR}.get_k8s_apps_client", return_value=apps),
+        patch(f"{MGR}.get_k8s_core_client", return_value=core),
+        patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
+    ):
+        mgr.remove_rpc(dep)
+    assert order.mock_calls[0][0] == "sts"

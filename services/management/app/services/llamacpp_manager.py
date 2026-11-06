@@ -979,7 +979,8 @@ class LlamaCppManager(InferenceFleetBackend):
         created yet counts as down just like an unready one. Raises on Kubernetes API errors.
         """
         base, namespace = self._rpc_names(deployment)
-        selector = f"{_DEPLOYMENT_LABEL}={base},{_OWNER_LABEL}={deployment.public_id}"
+        # base embeds the public id; legacy objects lack the owner label
+        selector = f"{_DEPLOYMENT_LABEL}={base}"
         apps, core = get_k8s_apps_client(), get_k8s_core_client()
         expected: list[str] = []
         for sts in apps.list_namespaced_stateful_set(
@@ -1027,7 +1028,8 @@ class LlamaCppManager(InferenceFleetBackend):
         """
         base, namespace = self._rpc_names(deployment)
         apps, core, custom = get_k8s_apps_client(), get_k8s_core_client(), get_k8s_custom_client()
-        selector = f"{_DEPLOYMENT_LABEL}={base},{_OWNER_LABEL}={deployment.public_id}"
+        # base embeds the public id; legacy objects lack the owner label
+        selector = f"{_DEPLOYMENT_LABEL}={base}"
         statefulsets = apps.list_namespaced_stateful_set(
             namespace=namespace, label_selector=selector
         )
@@ -1042,7 +1044,14 @@ class LlamaCppManager(InferenceFleetBackend):
             ),
             {"kind": "Deployment", "metadata": {"name": base}},
         ]
-        failed = self._rpc_delete_objects(apps, core, custom, namespace, docs)
+        # fail closed: workers go first; if any StatefulSet survives, keep the policies (and
+        # everything else) so the leftovers stay isolated, and report for a retry
+        workers = [d for d in docs if d["kind"] == "StatefulSet"]
+        failed = self._rpc_delete_objects(apps, core, custom, namespace, workers)
+        if failed:
+            raise RuntimeError(f"could not delete {', '.join(failed)}; policies kept")
+        rest = [d for d in docs if d["kind"] != "StatefulSet"]
+        failed = self._rpc_delete_objects(apps, core, custom, namespace, rest)
         if failed:
             raise RuntimeError(f"could not delete {', '.join(failed)}")
         db = self.db

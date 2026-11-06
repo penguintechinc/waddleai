@@ -830,3 +830,20 @@ async def test_list_without_an_org_is_403_and_never_matches_unowned_rows(
     resp = await client.get(URL, headers=auth_headers)
     assert resp.status_code == 403
     assert "legacy" not in await resp.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("status", ["running", "deploying", "degraded", "error"])
+async def test_convert_refused_while_old_objects_may_be_live(rpc, client, auth_headers, status):
+    """Regression: re-basing the object name of a live row would orphan its objects (409)."""
+    single = await (
+        await client.post(URL, headers=auth_headers, json={"name": "solo", "model_name": "m120"})
+    ).get_json()
+    dep_id = single["deployment_id"]
+    rpc.db(rpc.db.llamacpp_deployments.id == dep_id).update(status=status)
+    rpc.db.commit()
+    price_only_blocked = await client.patch(
+        f"{URL}/{dep_id}", headers=auth_headers, json=_convert()
+    )
+    assert price_only_blocked.status_code == 409
+    row = _row(rpc, dep_id)
+    assert (row.topology, row.k8s_daemonset_name) == (1, "waddleai-llamacpp-solo")

@@ -53,6 +53,7 @@ _RPC_LAYOUT_KEYS = frozenset({"topology", "rpc_workers", "allow_mixed_class", "g
 _RPC_LAYOUT_RUNNING = "Stop the deployment before changing its layout."
 _RPC_LIVE_STATUSES = frozenset({"deploying", "running", "degraded", "error"})
 _RPC_START_FAILED = "llama.cpp RPC deployment failed to start; nothing was kept."
+_RPC_CONVERT_LIVE = "Remove the running deployment before converting it to an RPC layout."
 _RPC_DERIVED_KEYS = frozenset({"gpu_count", "node_selector", "k8s_namespace", "n_gpu_layers"})
 _RPC_DERIVED_ERROR = (
     "gpu_count, node_selector, k8s_namespace and n_gpu_layers are derived from the RPC layout; "
@@ -587,6 +588,9 @@ async def _plan_layout_patch(
     if allowed_error:
         return {}, (jsonify({"error": allowed_error}), 422)
     base = rpc_service.rpc_base_name(current.name, current.public_id)
+    if current.k8s_daemonset_name != base and current.status not in ("stopped", "pending"):
+        # re-basing the object name would orphan live objects under the old name
+        return {}, (jsonify({"error": _RPC_CONVERT_LIVE}), 409)
     if await asyncio.to_thread(rpc_service.base_name_taken, db, base, int(current.id)):
         return {}, (jsonify({"error": "That deployment name is already in use."}), 409)
     try:

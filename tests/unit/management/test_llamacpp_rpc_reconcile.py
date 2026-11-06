@@ -431,10 +431,7 @@ def test_rpc_observe_counts_ready_workers_and_names_missing_pods(monkeypatch):
     assert seen.workers_down == ["b-rpc-0-1", "b-rpc-1-0"] and seen.head_ready is True
     assert seen.failed_message is None
     selector = apps.list_namespaced_stateful_set.call_args.kwargs["label_selector"]
-    assert selector == (
-        "waddleai.penguintech.io/llamacpp-deployment=waddleai-llamacpp-qwen-rpc,"
-        "waddleai.penguintech.io/llamacpp-public-id=aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    )
+    assert selector == "waddleai.penguintech.io/llamacpp-deployment=waddleai-llamacpp-qwen-rpc"
 
 
 def test_rpc_observe_reports_terminal_failures(monkeypatch):
