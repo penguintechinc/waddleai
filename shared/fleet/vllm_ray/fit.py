@@ -16,7 +16,8 @@ from shared.fleet.enums import GpuVendor, InventoryState, LayoutStrategy, Quanti
 
 CONTEXT_MB = 1536
 _MAX_PP = 3
-_VENDOR_PREFIX = re.compile(r"^(nvidia|amd|intel)-")
+_VENDOR_PREFIX = re.compile(r"^(nvidia|amd|intel)-(instinct-)?")
+_ADA_PRO = re.compile(r"^nvidia-rtx-\d+-ada")
 _FP8_PREFIXES: dict[int, tuple[str, ...]] = {
     int(GpuVendor.NVIDIA): (
         "nvidia-rtx40",
@@ -26,8 +27,17 @@ _FP8_PREFIXES: dict[int, tuple[str, ...]] = {
         "nvidia-h100",
         "nvidia-h200",
         "nvidia-b200",
+        "nvidia-b300",
+        "nvidia-gb200",
+        "nvidia-rtx-pro-",  # RTX PRO Blackwell
     ),
-    int(GpuVendor.AMD): ("amd-mi300",),
+    # Slugs follow the generated reference (amd-instinct-mi300x); amd-mi300x is also accepted.
+    int(GpuVendor.AMD): (
+        "amd-mi300",
+        "amd-instinct-mi300",
+        "amd-instinct-mi325",
+        "amd-instinct-mi35",
+    ),
 }
 
 QUANT_MATRIX: dict[int, set[int]] = {
@@ -117,6 +127,8 @@ def quant_allowed(vendor: int, gpu_class: str, quantization: int) -> bool:
     if allowed is None or quantization not in allowed:
         return False
     if quantization == Quantization.FP8:
+        if vendor == GpuVendor.NVIDIA and _ADA_PRO.match(gpu_class):
+            return True  # RTX 2000/4000/4500/5000/6000 Ada workstation cards
         return gpu_class.startswith(_FP8_PREFIXES.get(vendor, ()))
     return True
 

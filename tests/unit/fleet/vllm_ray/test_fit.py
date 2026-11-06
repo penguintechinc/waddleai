@@ -305,6 +305,12 @@ def test_quant_matrix_matches_spec() -> None:
         (NV, "nvidia-rtx3090", False),
         (AMD, "amd-mi300x", True),
         (AMD, "amd-mi250", False),
+        (AMD, "amd-instinct-mi300x", True),  # reference slug form
+        (AMD, "amd-instinct-mi250x", False),
+        (NV, "nvidia-rtx-6000-ada", True),
+        (NV, "nvidia-rtx-a6000", False),
+        (NV, "nvidia-rtx-pro-6000-blackwell", True),
+        (NV, "nvidia-b300", True),
     ],
 )
 def test_quant_allowed_fp8_by_class(vendor: int, cls: str, allowed: bool) -> None:
@@ -324,6 +330,7 @@ def test_quant_allowed_unknown_vendor_false() -> None:
         ("amd-mi300x", "MI300X"),
         ("intel-max1100", "MAX1100"),
         ("nvidia-h100", "H100"),
+        ("amd-instinct-mi300x", "MI300X"),
     ],
 )
 def test_class_label(slug: str, label: str) -> None:
