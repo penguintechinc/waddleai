@@ -428,24 +428,37 @@ class KubernetesGateway:
         _core, apps, _batch, custom = self._clients()
         if kind == "RayCluster":
             return self._bump_raycluster(custom, namespace, name)
-        if kind == "StatefulSet":
-            apps_api: Any = apps
-            sts = apps_api.read_namespaced_stateful_set(name, namespace)
-            annotations = dict(sts.spec.template.metadata.annotations or {})
-            generation = int(annotations.get(RESTART_ANNOTATION, "0")) + 1
-            apps_api.patch_namespaced_stateful_set(
-                name,
-                namespace,
-                {
-                    "spec": {
-                        "template": {
-                            "metadata": {"annotations": {RESTART_ANNOTATION: str(generation)}}
-                        }
-                    }
-                },
-            )
-            return generation
+        if kind in ("StatefulSet", "Deployment"):
+            return self._bump_workload(apps, namespace, kind, name)
         raise ValueError(f"unsupported restart target kind {kind}")
+
+    @staticmethod
+    def _bump_workload(apps: object, namespace: str, kind: str, name: str) -> int:
+        """Increment the restart annotation on a StatefulSet or Deployment pod template."""
+        api: Any = apps
+        read = (
+            api.read_namespaced_stateful_set
+            if kind == "StatefulSet"
+            else api.read_namespaced_deployment
+        )
+        patch = (
+            api.patch_namespaced_stateful_set
+            if kind == "StatefulSet"
+            else api.patch_namespaced_deployment
+        )
+        workload = read(name, namespace)
+        annotations = dict(workload.spec.template.metadata.annotations or {})
+        generation = int(annotations.get(RESTART_ANNOTATION, "0")) + 1
+        patch(
+            name,
+            namespace,
+            {
+                "spec": {
+                    "template": {"metadata": {"annotations": {RESTART_ANNOTATION: str(generation)}}}
+                }
+            },
+        )
+        return generation
 
     @staticmethod
     def _bump_raycluster(custom: object, namespace: str, name: str) -> int:

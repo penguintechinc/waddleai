@@ -24,11 +24,12 @@ def _cfg(url: str) -> Config:
     return cfg
 
 
-def test_revision_chain_031_follows_030_and_is_head() -> None:
-    """031 revises 030 and is the single head."""
+def test_revision_chain_031_follows_030_and_precedes_032() -> None:
+    """031 revises 030 and is followed by 032 (Plan F), the single head."""
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision(REV).down_revision == PREV
-    assert script.get_heads() == [REV]
+    assert script.get_revision("032_llamacpp_rpc_head").down_revision == REV
+    assert script.get_heads() == ["032_llamacpp_rpc_head"]
 
 
 def test_upgrade_backfills_from_link_leaves_orphan_null_downgrade_drops(tmp_path, monkeypatch):

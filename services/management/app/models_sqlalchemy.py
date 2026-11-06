@@ -523,6 +523,8 @@ class LlamaCppDeployment(Base):
     rpc_workers = Column(JSON)  # [{node_uid, gpu_class, gpu_count, tensor_split_share}]
     tensor_split = Column(String(255))  # comma-joined 4-dp shares in device order
     allow_mixed_class = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # inventory node_uid of the RPC head (migration 032); NULL for single-node rows
+    rpc_head_node_uid = Column(String(255), nullable=True)
 
     # Stable external identifier (migration 028)
     public_id = Column(Uuid, unique=True, nullable=False, default=uuid.uuid4)

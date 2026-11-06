@@ -2098,6 +2098,12 @@ components:
       description: A llama.cpp deployment row, exactly as ``_deployment_to_dict``
         serialises it.
       properties:
+        allow_mixed_class:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Allow Mixed Class
         comparison_model:
           anyOf:
           - type: string
@@ -2213,6 +2219,15 @@ components:
           - type: 'null'
           default: null
           title: Public Id
+        rpc_workers:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          default: null
+          title: Rpc Workers
         status:
           anyOf:
           - type: string
@@ -2223,6 +2238,18 @@ components:
           - type: string
           - type: 'null'
           title: Status Message
+        tensor_split:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Tensor Split
+        topology:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Topology
       required:
       - id
       - name
@@ -7425,7 +7452,15 @@ paths:
       summary: Fetch a single knowledge document, org-scoped.
   /api/v1/llamacpp/deployments:
     get:
-      description: ''
+      description: '
+
+        Optional filters: ``topology`` (1 single-node, 2 RPC multi-node) and ``status``.
+        Another
+
+        org''s deployments are never listed; unowned legacy rows are visible to the
+        system org only
+
+        (the same rule as the id routes'' ``_visible_to_org``).'
       operationId: get_list_llamacpp_deployments
       parameters: []
       responses:
@@ -7448,7 +7483,7 @@ paths:
                 title: LlamaCppDeploymentListResponse
                 type: object
           description: Response body for GET /api/v1/llamacpp/deployments.
-      summary: List all llama.cpp deployments (bounded page).
+      summary: List the caller's org's llama.cpp deployments (bounded page).
     post:
       description: ''
       operationId: post_create_llamacpp_deployment
@@ -7460,6 +7495,12 @@ paths:
               description: Request body for POST /api/v1/llamacpp/deployments. Every
                 field optional.
               properties:
+                allow_mixed_class:
+                  anyOf:
+                  - type: boolean
+                  - type: 'null'
+                  default: false
+                  title: Allow Mixed Class
                 comparison_model:
                   anyOf:
                   - type: string
@@ -7478,6 +7519,12 @@ paths:
                   - type: 'null'
                   default: null
                   title: Endpoint Url
+                gguf_bytes:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: null
+                  title: Gguf Bytes
                 gpu_count:
                   anyOf:
                   - type: integer
@@ -7558,6 +7605,21 @@ paths:
                   - type: 'null'
                   default: null
                   title: Price Output Per 1M
+                rpc_workers:
+                  anyOf:
+                  - items:
+                      additionalProperties: true
+                      type: object
+                    type: array
+                  - type: 'null'
+                  default: null
+                  title: Rpc Workers
+                topology:
+                  anyOf:
+                  - type: integer
+                  - type: 'null'
+                  default: 1
+                  title: Topology
               title: CreateLlamaCppDeploymentRequest
               type: object
       responses:
@@ -7582,6 +7644,12 @@ paths:
                   deployment_id:
                     title: Deployment Id
                     type: integer
+                  explanation:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Explanation
                   message:
                     title: Message
                     type: string
@@ -7668,6 +7736,12 @@ paths:
                 description: A llama.cpp deployment row, exactly as ``_deployment_to_dict``
                   serialises it.
                 properties:
+                  allow_mixed_class:
+                    anyOf:
+                    - type: boolean
+                    - type: 'null'
+                    default: null
+                    title: Allow Mixed Class
                   comparison_model:
                     anyOf:
                     - type: string
@@ -7783,6 +7857,15 @@ paths:
                     - type: 'null'
                     default: null
                     title: Public Id
+                  rpc_workers:
+                    anyOf:
+                    - items:
+                        additionalProperties: true
+                        type: object
+                      type: array
+                    - type: 'null'
+                    default: null
+                    title: Rpc Workers
                   status:
                     anyOf:
                     - type: string
@@ -7793,6 +7876,18 @@ paths:
                     - type: string
                     - type: 'null'
                     title: Status Message
+                  tensor_split:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Tensor Split
+                  topology:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    default: null
+                    title: Topology
                 required:
                 - id
                 - name
@@ -7956,6 +8051,24 @@ paths:
                   status:
                     title: Status
                     type: string
+                  status_message:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Status Message
+                  workers_total:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    default: null
+                    title: Workers Total
+                  workers_up:
+                    anyOf:
+                    - type: integer
+                    - type: 'null'
+                    default: null
+                    title: Workers Up
                 required:
                 - status
                 title: LlamaCppHealthResponse

@@ -337,7 +337,10 @@ async def test_apply_pricing_rpc_one_plus_two_node_layout() -> None:
         {"node_uid": "w1", "gpu_class": CLS, "gpu_count": 1, "tensor_split_share": 0.3},
         {"node_uid": "w2", "gpu_class": CLS, "gpu_count": 1, "tensor_split_share": 0.3},
     ]
-    row = _llama(topology=int(LlamaCppTopology.RPC_MULTI_NODE), rpc_workers=workers, gpu_count=1)
+    row = _llama(
+        topology=int(LlamaCppTopology.RPC_MULTI_NODE), rpc_workers=workers, gpu_count=1,
+        rpc_head_node_uid="h",
+    )  # fmt: skip
     expected = compute_tco(_layout(3, 1, 1, 3), _costs(), TcoInputs(), 12.0, 40.0)
     single = compute_tco(_layout(1, 1, 1, 1), _costs(), TcoInputs(), 12.0, 40.0)
     with patch(UPSERT):
@@ -485,4 +488,29 @@ async def test_apply_pricing_rejects_invalid_base_before_write() -> None:
             _db(), VLLM, _vllm(), TcoInputs(), _costs(), 40.0,
             base_cost_per_waddleai_token=Decimal(0),
         )  # fmt: skip
+    upsert.assert_not_called()
+
+
+async def test_apply_pricing_rpc_nodes_are_distinct_node_ids_not_entry_count() -> None:
+    """Head sharing a node with workers: 1 head + 2 workers on 2 nodes prices 2 nodes, not 3."""
+    workers = [
+        {"node_uid": "h", "gpu_class": CLS, "gpu_count": 1, "tensor_split_share": 0.3},
+        {"node_uid": "w2", "gpu_class": CLS, "gpu_count": 1, "tensor_split_share": 0.3},
+    ]
+    row = _llama(
+        topology=int(LlamaCppTopology.RPC_MULTI_NODE), rpc_workers=workers, gpu_count=1,
+        rpc_head_node_uid="h",
+    )  # fmt: skip
+    with patch(UPSERT):
+        result = await apply_pricing(_db(), LLAMACPP, row, TcoInputs(), _costs(), 40.0)
+    assert result is not None
+    assert result.breakdown["nodes_used"] == 2 and result.breakdown["total_gpus"] == 3
+
+
+async def test_apply_pricing_rpc_without_head_node_is_refused_not_guessed() -> None:
+    """An RPC row with no recorded head node raises PricingInputsUnavailable and writes nothing."""
+    workers = [{"node_uid": "w1", "gpu_class": CLS, "gpu_count": 1, "tensor_split_share": 0.5}]
+    row = _llama(topology=int(LlamaCppTopology.RPC_MULTI_NODE), rpc_workers=workers, gpu_count=1)
+    with patch(UPSERT) as upsert, pytest.raises(PricingInputsUnavailable, match="head node"):
+        await apply_pricing(_db(), LLAMACPP, row, TcoInputs(), _costs(), 40.0)
     upsert.assert_not_called()

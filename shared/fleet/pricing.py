@@ -140,6 +140,22 @@ def _params_b(db: Any, name: str) -> float | None:
     return None if value is None else float(value)
 
 
+def _llamacpp_nodes(row: Any, gpu_set: list[tuple[str, int]]) -> int:
+    """Distinct nodes a llama.cpp deployment spans: 1 single-node, head + worker nodes for RPC.
+
+    Workers may share the head's node (and each other's), so the count comes from node ids, never
+    from the number of worker entries. An RPC row with no recorded head node is refused: guessing
+    would silently misprice the deployment.
+    """
+    if getattr(row, "topology", None) != LlamaCppTopology.RPC_MULTI_NODE:
+        return len(gpu_set)
+    head = getattr(row, "rpc_head_node_uid", None)
+    if not head:
+        raise PricingInputsUnavailable("RPC deployment has no recorded head node for pricing")
+    workers = getattr(row, "rpc_workers", None) or []
+    return len({str(head), *(str(w["node_uid"]) for w in workers)})
+
+
 def _build_layout(kind: int, row: Any, gpu_set: list[tuple[str, int]], per_node: int) -> Layout:
     """Layout for pricing; ``nodes_used`` comes from the layout, never a constant (AM17)."""
     cls = gpu_set[0][0]
@@ -148,8 +164,7 @@ def _build_layout(kind: int, row: Any, gpu_set: list[tuple[str, int]], per_node:
         tp, pp, replicas = row.tensor_parallel, row.pipeline_parallel, row.replicas_min
         nodes = math.ceil(total / per_node) if pp == 1 else pp * replicas
         return Layout(1, cls, replicas, tp, pp, 1, nodes, 0, 0, True, "")
-    nodes = len(gpu_set)  # single node: 1; RPC: head + workers
-    return Layout(1, cls, 1, total, 1, 1, nodes, 0, 0, True, "")
+    return Layout(1, cls, 1, total, 1, 1, _llamacpp_nodes(row, gpu_set), 0, 0, True, "")
 
 
 async def apply_pricing(

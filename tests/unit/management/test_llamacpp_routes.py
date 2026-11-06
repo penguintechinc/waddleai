@@ -769,6 +769,11 @@ _DEPLOYMENT_FIELDS = {
     "node_affinity",
     "created_at",
     "modified_at",
+    # multi-node RPC topology (Plan F)
+    "topology",
+    "allow_mixed_class",
+    "rpc_workers",
+    "tensor_split",
 }
 
 
@@ -807,6 +812,7 @@ class TestResponseSchemasWave2:
         assert set((await resp.get_json()).keys()) == {
             "deployment_id", "message", "public_id", "price_mode", "price_input_per_1m",
             "price_output_per_1m", "price_breakdown", "comparison_model", "api_key_fingerprint",
+            "explanation",
         }  # fmt: skip
 
     async def test_deploy_response_exact_fields(self, client, app_mock_db, auth_headers):
