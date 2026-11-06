@@ -13,6 +13,8 @@ import pytest
 pytestmark = pytest.mark.container
 
 VENDORS = ["cuda", "rocm", "sycl"]
+# /opt/cuda-stubs holds a CUDA driver stub (cuda image only) so --help runs without a GPU
+_LD_PATH = "/usr/local/lib:/opt/cuda-stubs"
 REVISION_FORMAT = '{{index .Config.Labels "org.opencontainers.image.revision"}}'
 
 
@@ -28,7 +30,8 @@ def image(vendor: str) -> str:
 def run(img: str, *args: str, entrypoint: str) -> subprocess.CompletedProcess:
     """Run ``entrypoint args`` in the image (no GPU needed for --help / id)."""
     return subprocess.run(  # noqa: S603 -- fixed argv, no shell
-        ["docker", "run", "--rm", "--entrypoint", entrypoint, img, *args],  # noqa: S607
+        ["docker", "run", "--rm", "-e", f"LD_LIBRARY_PATH={_LD_PATH}"]  # noqa: S607
+        + ["--entrypoint", entrypoint, img, *args],
         capture_output=True, text=True, timeout=120, check=False,
     )  # fmt: skip
 

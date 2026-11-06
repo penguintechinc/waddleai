@@ -12,11 +12,11 @@ WORKDIR /src
 RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.git \
     && git fetch --depth 1 origin "${LLAMACPP_COMMIT}" && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
-RUN cmake -B build -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF \
+RUN cmake -B build -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF \
       -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90" \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
-    && cmake --build build --config Release -j "$(nproc)" --target llama-server rpc-server
-RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server build/bin/rpc-server /out/bin/ \
+    && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
+RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server /out/bin/ && cp build/bin/ggml-rpc-server /out/bin/rpc-server \
     && find build -name '*.so*' -exec cp -P {} /out/lib/ \;
 
 FROM rocm/dev-ubuntu-24.04:6.4.1-complete@sha256:40eb8498dbfd1770da15b811d5fcfdf0341531dd71f87fea92ea6ae6596bafa3 AS build-rocm
@@ -28,11 +28,11 @@ RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.gi
     && git fetch --depth 1 origin "${LLAMACPP_COMMIT}" && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
 RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" cmake -B build \
-      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DGGML_HIP=ON \
+      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_HIP=ON \
       -DAMDGPU_TARGETS="gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1101;gfx1200;gfx1201" \
       -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --config Release -j "$(nproc)" --target llama-server rpc-server
-RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server build/bin/rpc-server /out/bin/ \
+    && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
+RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server /out/bin/ && cp build/bin/ggml-rpc-server /out/bin/rpc-server \
     && find build -name '*.so*' -exec cp -P {} /out/lib/ \;
 
 FROM intel/oneapi-basekit:2025.1.1-0-devel-ubuntu24.04@sha256:81458504ff677db5d880b9893063faef4cb1ddde6d0d06bc1c646980c35600ef AS build-sycl
@@ -44,10 +44,10 @@ RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.gi
     && git fetch --depth 1 origin "${LLAMACPP_COMMIT}" && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
 RUN . /opt/intel/oneapi/setvars.sh && cmake -B build \
-      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DGGML_SYCL=ON \
+      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_SYCL=ON \
       -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release \
-    && cmake --build build --config Release -j "$(nproc)" --target llama-server rpc-server
-RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server build/bin/rpc-server /out/bin/ \
+    && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
+RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server /out/bin/ && cp build/bin/ggml-rpc-server /out/bin/rpc-server \
     && find build -name '*.so*' -exec cp -P {} /out/lib/ \;
 
 FROM nvidia/cuda:12.6.3-runtime-ubuntu24.04@sha256:92906d87596d638d35015c6353053121bd299d25943b875763321653884ba924 AS runtime-cuda
@@ -57,6 +57,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libssl3 libgomp
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build-cuda /out/bin/ /usr/local/bin/
 COPY --from=build-cuda /out/lib/ /usr/local/lib/
+# CUDA driver stub, NOT on any loader path: lets `--help` and the contract tests run on hosts
+# without a GPU (tests add /opt/cuda-stubs to LD_LIBRARY_PATH); real runs use the injected driver.
+COPY --from=build-cuda /usr/local/cuda/lib64/stubs/libcuda.so /opt/cuda-stubs/libcuda.so.1
 RUN ldconfig
 ENV LD_LIBRARY_PATH=/usr/local/lib
 USER 1000:1000
