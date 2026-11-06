@@ -736,6 +736,19 @@ def _opt_str(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
 
+def _local_usage_keys(config: dict[str, Any]) -> dict[str, int | None]:
+    """``local_deployment_kind``/``local_deployment_id`` from a link's management_capabilities.
+
+    Absent capabilities (a plain commercial or legacy link) yield ``None`` for both, so usage
+    is metered exactly as before; present ones tie the usage to its chargeback deployment.
+    """
+    caps = config.get("management_capabilities") or {}
+    return {
+        "local_deployment_kind": caps.get("local_deployment_kind"),
+        "local_deployment_id": caps.get("local_deployment_id"),
+    }
+
+
 class XAIConnector(OpenAIConnector):
     """xAI API connector (OpenAI-compatible).
 
@@ -1693,6 +1706,7 @@ class OllamaConnector(LLMConnector):
 
         # Use OpenAI tokenizer for estimation
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        self._local_keys = _local_usage_keys(config)
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -1780,6 +1794,7 @@ class OllamaConnector(LLMConnector):
                     "model": model,
                     "finish_reason": result.get("done_reason", "stop"),
                     "provider": "ollama",
+                    **self._local_keys,
                 }
 
                 return content, usage_info
@@ -1875,6 +1890,32 @@ class OllamaConnector(LLMConnector):
             logger.error(f"Failed to remove Ollama model {model}: {e}")
             return {"status": "error", "error": str(e)}
 
+    def _stream_usage(
+        self,
+        reported: dict[str, int] | None,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+    ) -> dict[str, Any]:
+        """Final-chunk usage: the engine's real counts, else a flagged tiktoken estimate."""
+        if reported is None:
+            prompt = " ".join(str(m.get("content", "")) for m in messages)
+            reported = {
+                "input_tokens": len(self.token_estimator.encode(prompt)),
+                "output_tokens": len(self.token_estimator.encode(text)),
+            }
+            estimated = True
+        else:
+            estimated = False
+        return {
+            **reported,
+            "total_tokens": reported["input_tokens"] + reported["output_tokens"],
+            "model": model,
+            "provider": "ollama",
+            "estimated": estimated,
+            **self._local_keys,
+        }
+
     async def stream_chat_completion(
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
@@ -1912,6 +1953,8 @@ class OllamaConnector(LLMConnector):
                         )
 
                 # Read NDJSON stream line by line
+                reported: dict[str, int] | None = None
+                text_parts: list[str] = []
                 async for line in response.content:
                     if not line:
                         continue
@@ -1922,12 +1965,19 @@ class OllamaConnector(LLMConnector):
                         if "message" in chunk and "content" in chunk["message"]:
                             content = chunk["message"]["content"]
                             if content:
+                                text_parts.append(content)
                                 yield StreamChunk(delta=content, done=False)
-                    except (json.JSONDecodeError, KeyError):
+                        if chunk.get("done") and "eval_count" in chunk:
+                            reported = {
+                                "input_tokens": int(chunk.get("prompt_eval_count", 0)),
+                                "output_tokens": int(chunk["eval_count"]),
+                            }
+                    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                         continue
 
-                # Ollama streaming does not include final usage; send done=True signal
-                yield StreamChunk(delta="", usage=None, done=True)
+                # The final NDJSON object carries real counts; without it, estimate (flagged).
+                usage = self._stream_usage(reported, model, messages, "".join(text_parts))
+                yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
             raise
@@ -1995,6 +2045,19 @@ class LlamaCppConnector(LLMConnector):
         self._headers = {}
         if config.get("api_key"):
             self._headers["Authorization"] = f"Bearer {config['api_key']}"
+        self._local_keys = _local_usage_keys(config)
+        # Fleet-managed deployments (AM11) always carry a per-deployment bearer key: an
+        # unauthenticated request to one is refused before it leaves, never sent bare.
+        self._fleet_managed = self._local_keys["local_deployment_kind"] is not None
+
+    def _require_fleet_key(self, model: str) -> None:
+        """Fail closed when a fleet-managed link has no per-deployment api key."""
+        if self._fleet_managed and "Authorization" not in self._headers:
+            raise ProviderServerError(
+                provider="llamacpp",
+                model=model,
+                message="llamacpp fleet link has no per-deployment api key",
+            )
 
     def _get_session(self) -> aiohttp.ClientSession:
         """The HTTP session, opened on first use.
@@ -2013,6 +2076,7 @@ class LlamaCppConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate a chat completion via llama-server's OpenAI-compatible /v1/chat/completions."""
+        self._require_fleet_key(model)
         session = self._get_session()
         payload = {"model": model or self.model_name, "messages": messages, **kwargs}
         try:
@@ -2047,6 +2111,10 @@ class LlamaCppConnector(LLMConnector):
                 usage = data.get("usage", {})
                 usage["provider"] = "llamacpp"
                 usage["model"] = model
+                # OpenAI-style usage names; the proxy meters input_tokens/output_tokens.
+                usage.setdefault("input_tokens", usage.get("prompt_tokens", 0))
+                usage.setdefault("output_tokens", usage.get("completion_tokens", 0))
+                usage.update(self._local_keys)
                 return content, usage
         except ProviderError:
             raise
@@ -2113,11 +2181,13 @@ class LlamaCppConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream llama-server chat completion using SSE format."""
+        self._require_fleet_key(model)
         session = self._get_session()
         payload = {
             "model": model or self.model_name,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             **kwargs,
         }
         try:
@@ -2143,6 +2213,8 @@ class LlamaCppConnector(LLMConnector):
                         )
 
                 # Read SSE stream
+                reported: dict[str, int] | None = None
+                text_parts: list[str] = []
                 async for line in response.content:
                     if not line:
                         continue
@@ -2159,12 +2231,35 @@ class LlamaCppConnector(LLMConnector):
                         if "choices" in chunk and chunk["choices"]:
                             delta = chunk["choices"][0].get("delta", {})
                             if "content" in delta and delta["content"]:
+                                text_parts.append(delta["content"])
                                 yield StreamChunk(delta=delta["content"], done=False)
-                    except (json.JSONDecodeError, KeyError):
+                        chunk_usage = chunk.get("usage")
+                        if chunk_usage:
+                            reported = {
+                                "input_tokens": int(chunk_usage.get("prompt_tokens", 0)),
+                                "output_tokens": int(chunk_usage.get("completion_tokens", 0)),
+                            }
+                    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                         continue
 
-                # llama.cpp streaming does not include final usage; send done=True signal
-                yield StreamChunk(delta="", usage=None, done=True)
+                # Real counts from the include_usage chunk, else a flagged estimate.
+                text = "".join(text_parts)
+                estimated = reported is None
+                if reported is None:
+                    prompt = " ".join(str(m.get("content", "")) for m in messages)
+                    reported = {
+                        "input_tokens": await self.count_tokens(prompt, model),
+                        "output_tokens": await self.count_tokens(text, model),
+                    }
+                usage = {
+                    **reported,
+                    "total_tokens": reported["input_tokens"] + reported["output_tokens"],
+                    "model": model,
+                    "provider": "llamacpp",
+                    "estimated": estimated,
+                    **self._local_keys,
+                }
+                yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
             raise
