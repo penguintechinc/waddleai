@@ -388,6 +388,7 @@ def define_tables(db):
             Field("public_id", "string", length=36),
             Field("price_input_per_1m", "decimal(12,6)"),
             Field("price_output_per_1m", "decimal(12,6)"),
+            Field("comparison_model", "string"),
         )
 
     # Real-time Usage Cache (for quota enforcement)

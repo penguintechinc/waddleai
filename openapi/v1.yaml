@@ -613,6 +613,70 @@ components:
       - usd_saved_estimate
       title: CacheStatsData
       type: object
+    ChargebackData:
+      description: Chargeback report payload (decimal strings).
+      properties:
+        rows:
+          items:
+            $ref: '#/components/schemas/ChargebackRowDTO'
+          title: Rows
+          type: array
+        rows_examined:
+          title: Rows Examined
+          type: integer
+        rows_missing_price:
+          title: Rows Missing Price
+          type: integer
+        since:
+          title: Since
+          type: string
+        total_virtual_cost:
+          title: Total Virtual Cost
+          type: string
+      required:
+      - since
+      - rows
+      - total_virtual_cost
+      - rows_examined
+      - rows_missing_price
+      title: ChargebackData
+      type: object
+    ChargebackRowDTO:
+      description: One (team, deployment) chargeback line.
+      properties:
+        local_deployment_id:
+          title: Local Deployment Id
+          type: integer
+        local_deployment_kind:
+          title: Local Deployment Kind
+          type: integer
+        request_count:
+          title: Request Count
+          type: integer
+        team_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Team Id
+        tokens_input:
+          title: Tokens Input
+          type: integer
+        tokens_output:
+          title: Tokens Output
+          type: integer
+        virtual_cost:
+          title: Virtual Cost
+          type: string
+      required:
+      - team_id
+      - local_deployment_kind
+      - local_deployment_id
+      - tokens_input
+      - tokens_output
+      - request_count
+      - virtual_cost
+      title: ChargebackRowDTO
+      type: object
     CredentialActionMeta:
       description: '`meta` block for a single-credential mutation response.
 
@@ -826,6 +890,50 @@ components:
       - route_id
       - last_updated
       title: DeploymentModelItem
+      type: object
+    DeploymentSavingsDTO:
+      description: One deployment's savings line.
+      properties:
+        commercial_equivalent_cost:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Commercial Equivalent Cost
+        comparison_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comparison Model
+        deployment_id:
+          title: Deployment Id
+          type: integer
+        kind:
+          title: Kind
+          type: integer
+        savings:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Savings
+        tokens_input:
+          title: Tokens Input
+          type: integer
+        tokens_output:
+          title: Tokens Output
+          type: integer
+        virtual_cost:
+          title: Virtual Cost
+          type: string
+      required:
+      - kind
+      - deployment_id
+      - comparison_model
+      - tokens_input
+      - tokens_output
+      - virtual_cost
+      - commercial_equivalent_cost
+      - savings
+      title: DeploymentSavingsDTO
       type: object
     DryRunMeta:
       description: '``meta`` for the dry-run response.'
@@ -2478,6 +2586,20 @@ components:
       - enabled
       title: RateItem
       type: object
+    ReportMeta:
+      description: 'Envelope ``meta`` for a report: the period and generation time.'
+      properties:
+        period:
+          title: Period
+          type: string
+        timestamp:
+          title: Timestamp
+          type: string
+      required:
+      - period
+      - timestamp
+      title: ReportMeta
+      type: object
     ReservationItem:
       description: 'A member''s reservation: the user id (never a name or email) and
         credits.'
@@ -2689,6 +2811,55 @@ components:
       required:
       - timestamp
       title: RuleTimestampMeta
+      type: object
+    SavingsData:
+      description: Savings report payload (decimal strings).
+      properties:
+        by_deployment:
+          items:
+            $ref: '#/components/schemas/DeploymentSavingsDTO'
+          title: By Deployment
+          type: array
+        commercial_equivalent_cost:
+          title: Commercial Equivalent Cost
+          type: string
+        missing_commercial_models:
+          items:
+            type: string
+          title: Missing Commercial Models
+          type: array
+        rows_examined:
+          title: Rows Examined
+          type: integer
+        rows_missing_price:
+          title: Rows Missing Price
+          type: integer
+        savings:
+          title: Savings
+          type: string
+        since:
+          title: Since
+          type: string
+        tokens_input:
+          title: Tokens Input
+          type: integer
+        tokens_output:
+          title: Tokens Output
+          type: integer
+        virtual_cost:
+          title: Virtual Cost
+          type: string
+      required:
+      - since
+      - tokens_input
+      - tokens_output
+      - virtual_cost
+      - commercial_equivalent_cost
+      - savings
+      - by_deployment
+      - rows_examined
+      - rows_missing_price
+      title: SavingsData
       type: object
     SecurityPolicyModel:
       description: Exact response schema for one security_policies row (mirrors `_row_to_dict`).
@@ -4247,6 +4418,115 @@ paths:
           description: Response body for GET /api/v1/fleet/backends/<id>/health.
       summary: Health-check a registered backend through the ``InferenceFleetBackend``
         interface.
+  /api/v1/fleet/chargeback:
+    get:
+      description: ''
+      operationId: get_fleet_chargeback
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/fleet/chargeback.
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ChargebackData'
+                  meta:
+                    $ref: '#/components/schemas/ReportMeta'
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                - meta
+                title: ChargebackResponse
+                type: object
+          description: Response body for GET /api/v1/fleet/chargeback.
+      summary: Virtual-price chargeback per team and deployment (all kinds, or ``?kind=``).
+  /api/v1/fleet/savings:
+    get:
+      description: ''
+      operationId: get_fleet_savings
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/fleet/savings.
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SavingsData'
+                  meta:
+                    $ref: '#/components/schemas/ReportMeta'
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                - meta
+                title: SavingsResponse
+                type: object
+          description: Response body for GET /api/v1/fleet/savings.
+      summary: Savings of the local fleet (all kinds, or ``?kind=``) versus commercial
+        comparison.
+  /api/v1/fleet/vllm/chargeback:
+    get:
+      description: ''
+      operationId: get_fleet_vllm_chargeback
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/fleet/chargeback.
+                properties:
+                  data:
+                    $ref: '#/components/schemas/ChargebackData'
+                  meta:
+                    $ref: '#/components/schemas/ReportMeta'
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                - meta
+                title: ChargebackResponse
+                type: object
+          description: Response body for GET /api/v1/fleet/chargeback.
+      summary: Alias of ``/fleet/chargeback`` restricted to vLLM deployments.
+  /api/v1/fleet/vllm/savings:
+    get:
+      description: ''
+      operationId: get_fleet_vllm_savings
+      parameters: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/fleet/savings.
+                properties:
+                  data:
+                    $ref: '#/components/schemas/SavingsData'
+                  meta:
+                    $ref: '#/components/schemas/ReportMeta'
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                - meta
+                title: SavingsResponse
+                type: object
+          description: Response body for GET /api/v1/fleet/savings.
+      summary: Alias of ``/fleet/savings`` restricted to vLLM deployments.
   /api/v1/hooks/configs:
     get:
       description: ''
