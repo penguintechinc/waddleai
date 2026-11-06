@@ -952,8 +952,43 @@ def test_create_deployment_ai_node_refused_regardless_of_flag(fleet_manager, mon
 
 
 def test_create_deployment_no_selector_unaffected_when_flag_on(fleet_manager, monkeypatch):
-    """Flag on, no node_selector: not refused."""
+    """Flag on, no node_selector, cluster of plain nodes: not refused."""
+    core = MagicMock()
+    core.list_node.return_value.items = []
+    monkeypatch.setattr(
+        "services.management.app.services.llamacpp_manager.get_k8s_core_client", lambda: core
+    )
     monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
     config = LlamaCppDeploymentConfig(name="plain", model_name="m")
 
     assert fleet_manager.create_deployment(config)["success"] is True
+
+
+def test_create_deployment_k8s_lookup_failure_fails_closed(fleet_manager, db):
+    """Kubernetes deployment whose node lookup errors is refused with the error."""
+    config = LlamaCppDeploymentConfig(name="k", model_name="m", node_selector={"pool": "x"})
+    with patch(
+        "services.management.app.services.llamacpp_manager.get_k8s_core_client",
+        side_effect=RuntimeError("no kubeconfig"),
+    ):
+        result = fleet_manager.create_deployment(config)
+    assert result["success"] is False
+    assert "no kubeconfig" in result["error"]
+    assert not db._tables.get("llamacpp_deployments")
+
+
+def test_create_deployment_selector_resolves_to_renamed_node_refused(fleet_manager, db):
+    """A plain-looking selector matching a node with per-class allocatable is refused."""
+    node = MagicMock()
+    node.metadata.labels = {"pool": "x"}
+    node.status.allocatable = {"nvidia.com/a100": "4"}
+    core = MagicMock()
+    core.list_node.return_value.items = [node]
+    config = LlamaCppDeploymentConfig(name="k", model_name="m", node_selector={"pool": "x"})
+    with patch(
+        "services.management.app.services.llamacpp_manager.get_k8s_core_client",
+        return_value=core,
+    ):
+        result = fleet_manager.create_deployment(config)
+    assert result["success"] is False
+    core.list_node.assert_called_once_with(label_selector="pool=x")

@@ -1509,3 +1509,32 @@ def test_create_deployment_default_selector_unaffected_when_flag_on(manager, mon
     config = OllamaDeploymentConfig(name="plain", gpu_count=1)
 
     assert manager.create_deployment(config)["success"] is True
+
+
+def test_create_deployment_k8s_no_selector_with_renamed_node_refused(manager, db, monkeypatch):
+    """Kubernetes deployment with no selector in a cluster with an AI node is refused."""
+    from shared.fleet.vllm_ray.coexistence import NodeFacts
+
+    monkeypatch.setattr(
+        "services.management.app.services.ollama_manager.default_list_nodes",
+        lambda _sel: [NodeFacts(labels={"waddleai.penguintech.io/ai-node": "true"})],
+    )
+    config = OllamaDeploymentConfig(
+        name="k", gpu_count=1, deployment_type="kubernetes", node_selector={}
+    )
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "node selector" in result["error"]
+
+
+def test_create_deployment_k8s_lookup_failure_fails_closed(manager, db, monkeypatch):
+    """Kubernetes deployment whose node lookup raises is refused with the error."""
+
+    def boom(_sel):
+        raise RuntimeError("apiserver down")
+
+    monkeypatch.setattr("services.management.app.services.ollama_manager.default_list_nodes", boom)
+    config = OllamaDeploymentConfig(name="k", gpu_count=1, deployment_type="kubernetes")
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "apiserver down" in result["error"]

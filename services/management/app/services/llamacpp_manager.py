@@ -25,7 +25,10 @@ from shared.fleet.base import (
     ProvisionSpec,
 )
 from shared.fleet.registry import register
-from shared.fleet.vllm_ray.coexistence import refuse_plain_gpu_request_on_renamed_node
+from shared.fleet.vllm_ray.coexistence import (
+    default_list_nodes,
+    refuse_plain_gpu_for_target_nodes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -367,10 +370,11 @@ class LlamaCppManager(InferenceFleetBackend):
         can never schedule a plain request, so the refusal applies whenever the
         selector shows one.
         """
-        if config.gpu_count <= 0:
-            return None
-        return refuse_plain_gpu_request_on_renamed_node(
-            dict(config.node_selector or {}), {"nvidia.com/gpu": str(config.gpu_count)}
+        return refuse_plain_gpu_for_target_nodes(
+            dict(config.node_selector or {}),
+            config.gpu_count,
+            lambda sel: default_list_nodes(sel, get_k8s_core_client()),
+            kubernetes=config.deployment_type == "kubernetes",
         )
 
     def create_deployment(self, config: LlamaCppDeploymentConfig) -> dict[str, Any]:
