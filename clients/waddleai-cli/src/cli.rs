@@ -671,4 +671,162 @@ mod tests {
             mask_token("rt-abcdefghijklmnop")
         );
     }
+
+    fn unique_tmp(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("waddleai-cli-test-{}-{name}", std::process::id()))
+    }
+
+    #[tokio::test]
+    async fn run_apply_dry_run_when_no_confirm_plan_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/manifests/apply"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({"manifest": "kind: Team", "dry_run": true}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"plan_id": "p1"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let manifest = unique_tmp("apply-dry.yaml");
+        std::fs::write(&manifest, "kind: Team").expect("write manifest");
+        let store = logged_in_store(&server.uri());
+        let cmd = Command::Apply {
+            file: manifest.clone(),
+            confirm: None,
+        };
+        let res = run(
+            cli_for(&server.uri(), cmd),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await;
+        let _ = std::fs::remove_file(&manifest);
+        res.expect("dry-run apply");
+    }
+
+    #[tokio::test]
+    async fn run_apply_with_confirm_sends_plan_id_and_not_dry_run() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/manifests/apply"))
+            .and(wiremock::matchers::body_partial_json(
+                serde_json::json!({"dry_run": false, "plan_id": "p1"}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"applied": true})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let manifest = unique_tmp("apply-confirm.yaml");
+        std::fs::write(&manifest, "kind: Team").expect("write manifest");
+        let store = logged_in_store(&server.uri());
+        let cmd = Command::Apply {
+            file: manifest.clone(),
+            confirm: Some("p1".into()),
+        };
+        let res = run(
+            cli_for(&server.uri(), cmd),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await;
+        let _ = std::fs::remove_file(&manifest);
+        res.expect("confirmed apply");
+    }
+
+    #[tokio::test]
+    async fn run_apply_unreadable_manifest_errors_before_any_network_call() {
+        let store = InMemoryTokenStore::default();
+        let cmd = Command::Apply {
+            file: unique_tmp("does-not-exist.yaml"),
+            confirm: None,
+        };
+        let err = run(
+            cli_for("http://127.0.0.1:1", cmd),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await
+        .expect_err("missing manifest");
+        assert!(matches!(err, CliError::InvalidInput(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn run_apply_server_error_propagates() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/manifests/apply"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let manifest = unique_tmp("apply-500.yaml");
+        std::fs::write(&manifest, "kind: Team").expect("write manifest");
+        let store = logged_in_store(&server.uri());
+        let cmd = Command::Apply {
+            file: manifest.clone(),
+            confirm: None,
+        };
+        let res = run(
+            cli_for(&server.uri(), cmd),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await;
+        let _ = std::fs::remove_file(&manifest);
+        assert!(res.is_err());
+    }
+
+    #[tokio::test]
+    async fn run_harness_sync_stdout_and_file_output() {
+        let store = InMemoryTokenStore::default();
+        let opener = RecordingBrowserOpener::default();
+        let to_stdout = Command::Harness {
+            action: HarnessCommand::Sync { output: None },
+        };
+        run(
+            cli_for("https://waddleai.example", to_stdout),
+            &store,
+            &opener,
+        )
+        .await
+        .expect("sync to stdout");
+
+        let out = unique_tmp("harness.json");
+        let to_file = Command::Harness {
+            action: HarnessCommand::Sync {
+                output: Some(out.clone()),
+            },
+        };
+        run(
+            cli_for("https://waddleai.example", to_file),
+            &store,
+            &opener,
+        )
+        .await
+        .expect("sync to file");
+        let written = std::fs::read_to_string(&out).expect("file written");
+        let _ = std::fs::remove_file(&out);
+        assert!(written.contains("waddleai.example"), "{written}");
+    }
+
+    #[tokio::test]
+    async fn run_harness_sync_unwritable_output_errors() {
+        let store = InMemoryTokenStore::default();
+        let cmd = Command::Harness {
+            action: HarnessCommand::Sync {
+                output: Some(unique_tmp("no-such-dir").join("nested/out.json")),
+            },
+        };
+        let res = run(
+            cli_for("https://waddleai.example", cmd),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await;
+        assert!(res.is_err());
+    }
 }

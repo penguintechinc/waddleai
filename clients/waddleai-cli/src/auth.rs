@@ -241,19 +241,40 @@ pub async fn login_oauth(
     crate::browser::validate_redirect_url(authorize_url.as_str(), &expected_host)
         .and_then(|_| opener.open(authorize_url.as_str()))?;
 
-    let expected_state = state.clone();
+    complete_oauth_login(
+        &http,
+        &discovery.token_endpoint,
+        server,
+        &state,
+        &redirect_uri,
+        &pkce.verifier,
+        api_url,
+        store,
+    )
+    .await
+}
+
+/// Second half of the OAuth flow: waits for the browser redirect, validates
+/// `state`, exchanges the code for tokens and persists them. Split from
+/// `login_oauth` so it is testable without an https authorize endpoint.
+#[allow(clippy::too_many_arguments)]
+async fn complete_oauth_login(
+    http: &reqwest::Client,
+    token_endpoint: &str,
+    server: tiny_http::Server,
+    state: &str,
+    redirect_uri: &str,
+    verifier: &str,
+    api_url: &str,
+    store: &dyn TokenStore,
+) -> Result<()> {
+    let expected_state = state.to_string();
     let code = tokio::task::spawn_blocking(move || wait_for_callback(server, &expected_state))
         .await
         .map_err(|e| CliError::OAuth(format!("callback listener task panicked: {e}")))??;
 
-    let exchanged = exchange_code_for_tokens(
-        &http,
-        &discovery.token_endpoint,
-        &code,
-        &redirect_uri,
-        &pkce.verifier,
-    )
-    .await?;
+    let exchanged =
+        exchange_code_for_tokens(http, token_endpoint, &code, redirect_uri, verifier).await?;
 
     let tokens = StoredTokens {
         access_token: exchanged.access_token,
@@ -630,6 +651,164 @@ mod tests {
         // No mock server listening at this address -- the HTTP call fails,
         // but logout must still clear the local store.
         logout("https://127.0.0.1:1", &store).await.expect("logout");
+        assert!(store.load().expect("load").is_none());
+    }
+
+    use crate::browser::test_support::RecordingBrowserOpener;
+
+    async fn fire_callback(port: u16, query: &str) {
+        let url = format!("http://127.0.0.1:{port}/callback?{query}");
+        let _ = reqwest::get(&url).await.expect("simulate browser");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn complete_oauth_login_exchanges_code_and_persists_tokens() {
+        let idp = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "at-new", "refresh_token": "rt-new", "expires_in": 120
+            })))
+            .expect(1)
+            .mount(&idp)
+            .await;
+        let (server, port) = start_callback_listener().expect("listener");
+        let store = InMemoryTokenStore::default();
+        let http = reqwest::Client::new();
+        let token_endpoint = format!("{}/token", idp.uri());
+        let redirect = format!("http://127.0.0.1:{port}/callback");
+        let fut = complete_oauth_login(
+            &http,
+            &token_endpoint,
+            server,
+            "st",
+            &redirect,
+            "ver",
+            "https://api.example",
+            &store,
+        );
+        let (res, ()) = tokio::join!(fut, fire_callback(port, "code=c1&state=st"));
+        res.expect("login");
+        let saved = store.load().expect("load").expect("saved");
+        assert_eq!(saved.access_token, "at-new");
+        assert_eq!(saved.refresh_token.as_deref(), Some("rt-new"));
+        assert_eq!(saved.api_url, "https://api.example");
+        assert!(saved.expires_at > now_epoch());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn complete_oauth_login_state_mismatch_saves_nothing_and_skips_exchange() {
+        let idp = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&idp)
+            .await;
+        let (server, port) = start_callback_listener().expect("listener");
+        let store = InMemoryTokenStore::default();
+        let http = reqwest::Client::new();
+        let token_endpoint = format!("{}/token", idp.uri());
+        let redirect = format!("http://127.0.0.1:{port}/callback");
+        let fut = complete_oauth_login(
+            &http,
+            &token_endpoint,
+            server,
+            "st",
+            &redirect,
+            "ver",
+            "https://api.example",
+            &store,
+        );
+        let (res, ()) = tokio::join!(fut, fire_callback(port, "code=c1&state=evil"));
+        assert!(matches!(res, Err(CliError::OAuth(_))));
+        assert!(store.load().expect("load").is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn complete_oauth_login_exchange_failure_saves_nothing() {
+        let idp = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("invalid_grant"))
+            .mount(&idp)
+            .await;
+        let (server, port) = start_callback_listener().expect("listener");
+        let store = InMemoryTokenStore::default();
+        let http = reqwest::Client::new();
+        let token_endpoint = format!("{}/token", idp.uri());
+        let redirect = format!("http://127.0.0.1:{port}/callback");
+        let fut = complete_oauth_login(
+            &http,
+            &token_endpoint,
+            server,
+            "st",
+            &redirect,
+            "ver",
+            "https://api.example",
+            &store,
+        );
+        let (res, ()) = tokio::join!(fut, fire_callback(port, "code=c1&state=st"));
+        assert!(matches!(res, Err(CliError::OAuth(_))));
+        assert!(store.load().expect("load").is_none());
+    }
+
+    async fn mount_discovery(server: &MockServer, authorize: &str) {
+        Mock::given(method("GET"))
+            .and(path("/.well-known/openid-configuration"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "authorization_endpoint": authorize,
+                "token_endpoint": format!("{}/token", server.uri()),
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn login_oauth_refuses_non_https_authorize_url_and_never_opens_browser() {
+        let server = MockServer::start().await;
+        mount_discovery(&server, &format!("{}/authorize", server.uri())).await;
+        let opener = RecordingBrowserOpener::default();
+        let store = InMemoryTokenStore::default();
+        let err = login_oauth(&server.uri(), &store, &opener)
+            .await
+            .expect_err("http authorize must be refused");
+        assert!(matches!(err, CliError::OAuth(_)));
+        assert!(opener.opened_urls().is_empty());
+        assert!(store.load().expect("load").is_none());
+    }
+
+    #[tokio::test]
+    async fn login_oauth_refuses_off_host_authorize_url() {
+        let server = MockServer::start().await;
+        mount_discovery(&server, "https://attacker.example/authorize").await;
+        let opener = RecordingBrowserOpener::default();
+        let store = InMemoryTokenStore::default();
+        let err = login_oauth(&server.uri(), &store, &opener)
+            .await
+            .expect_err("off-host must be refused");
+        match err {
+            CliError::OAuth(msg) => assert!(msg.contains("attacker.example")),
+            other => panic!("expected OAuth error, got {other:?}"),
+        }
+        assert!(opener.opened_urls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn login_oauth_discovery_failure_is_reported() {
+        let server = MockServer::start().await;
+        let opener = RecordingBrowserOpener::default();
+        let store = InMemoryTokenStore::default();
+        let err = login_oauth(&server.uri(), &store, &opener)
+            .await
+            .expect_err("404 discovery");
+        assert!(matches!(err, CliError::OAuth(_)));
+    }
+
+    #[tokio::test]
+    async fn logout_with_no_session_still_succeeds() {
+        let store = InMemoryTokenStore::default();
+        logout("http://127.0.0.1:1", &store).await.expect("logout");
         assert!(store.load().expect("load").is_none());
     }
 }
