@@ -1398,7 +1398,9 @@ jobs:
     - name: Free runner disk space
       run: |
         set -euo pipefail
-        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL \
+          /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+        docker system prune -af
         df -h /
 
     - name: Set up Docker Buildx
@@ -1428,7 +1430,9 @@ jobs:
         file: ./images/vllm-ray-${{ matrix.image }}/Dockerfile
         platforms: linux/amd64
         push: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
-        load: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') }}
+        # ROCm (~15 GB) is never loaded into the daemon (runner disk exhaustion): non-push builds use cacheonly.
+        load: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') && matrix.image != 'rocm' }}
+        outputs: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') && matrix.image == 'rocm' && 'type=cacheonly' || '' }}
         provenance: false
         sbom: false
         tags: ${{ steps.meta.outputs.tags }}
@@ -1438,7 +1442,9 @@ jobs:
 
     # Image contract gate: uid 1000, Ray version, Python minor. Runs on the loaded image for
     # non-pushing runs and on the pulled digest for pushing runs; a skipped gate is not a pass.
+    # ROCm on non-pushing runs is built cacheonly (no image in the daemon), so its contract test runs only after push.
     - name: Image contract test
+      if: ${{ matrix.image != 'rocm' || (github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') }}
       env:
         IMAGE_REF: ${{ steps.meta.outputs.tags }}
         PUSHED: ${{ github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true' }}
