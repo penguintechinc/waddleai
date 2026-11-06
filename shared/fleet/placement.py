@@ -42,6 +42,11 @@ from shared.routing.capability import ModelOffer
 
 logger = logging.getLogger(__name__)
 
+
+class FleetUnavailableError(RuntimeError):
+    """Every fleet backend failed: an infrastructure error, not "model not served"."""
+
+
 _AFFINITY_TTL_SECONDS = 1800  # 30 minutes, matches shared.cache.affinity's default window
 _AFFINITY_KEY_PREFIX = "waddleai:fleet:affinity"
 
@@ -186,18 +191,26 @@ class PlacementEngine:
         """Aggregate ``endpoints_for(model)`` across every given backend (§10.4).
 
         A single backend failing (network error, unhealthy cluster) never
-        fails the whole aggregation -- it just contributes no endpoints.
+        fails the whole aggregation -- it just contributes no endpoints. If
+        EVERY backend fails, raises ``FleetUnavailableError`` so callers see an
+        infrastructure error instead of a misleading "model not served".
         """
         endpoints: list[Endpoint] = []
+        failures: list[Exception] = []
         for backend in backends:
             try:
                 endpoints.extend(await backend.endpoints_for(model))
-            except Exception as exc:  # pragma: no cover - defensive, backend I/O failure
+            except Exception as exc:
+                failures.append(exc)
                 logger.warning(
                     "PlacementEngine: endpoints_for failed for backend_id=%s: %s",
                     getattr(backend, "fleet_backend_id", "?"),
                     exc,
                 )
+        if backends and len(failures) == len(backends):
+            raise FleetUnavailableError(
+                f"every fleet backend failed listing endpoints for {model!r}: {failures[-1]}"
+            ) from failures[-1]
         return endpoints
 
     # -- endpoint selection: affinity -> hot-pin -> load-balanced -----------
@@ -276,7 +289,8 @@ class PlacementEngine:
         """Lazy-pull a cold model: if no backend currently serves it, place it on one.
 
         Returns the (possibly still empty, if every backend's ``place_model``
-        raised) endpoint list after the attempt. ``register_and_route``
+        raised) endpoint list after the attempt. Propagates ``FleetUnavailableError``
+        (no lazy pull is attempted while every backend is unreachable). ``register_and_route``
         backends (EXO, admin-registered cloud endpoints WaddleAI doesn't
         lifecycle) are skipped -- WaddleAI cannot push a placement onto a
         backend it doesn't manage the lifecycle of.
@@ -414,7 +428,10 @@ class PlacementEngine:
             if offer.location != "local":
                 annotated.append(offer)
                 continue
-            endpoints = await self.endpoints_for(offer.model_name, backends)
+            try:
+                endpoints = await self.endpoints_for(offer.model_name, backends)
+            except FleetUnavailableError:
+                endpoints = []  # infra down: mark unavailable (logged), never routable
             has_healthy = any(e.healthy for e in endpoints)
             if has_healthy == offer.available:
                 annotated.append(offer)
