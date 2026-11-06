@@ -336,42 +336,126 @@ def elapsed_ms(start: float) -> int:
     return max(1, int((time.monotonic() - start) * 1000))
 
 
-class StreamTimer:
-    """Decode-time stopwatch for a stream that a slow consumer cannot inflate.
+STREAM_QUEUE_MAX = 256  # chunks buffered between the upstream reader and a slow consumer
 
-    ``receive()`` stamps each upstream chunk when it is RECEIVED, and ``suspended()`` brackets
-    the ``yield`` so time spent parked in the consumer is subtracted. ``ms()`` is first-to-last
-    receipt minus the consumer stalls that happened in between. A client that reads slowly
-    therefore cannot change the number (it would otherwise drag the p50 and the AUTO price).
+
+class _ReaderFailure:
+    """An exception raised by the upstream source, carried through the queue to the consumer."""
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BaseException) -> None:
+        """Hold the upstream exception."""
+        self.exc = exc
+
+
+_STREAM_END = object()
+
+
+class TimedStream:
+    """Drain an upstream stream in its OWN task so receipt timing is independent of the consumer.
+
+    A reader task pulls chunks from ``source`` as fast as the engine sends them, stamps content
+    chunks on receipt, and hands them to the consumer through a bounded queue. A client that
+    reads slowly therefore cannot change first-to-last receipt time (it would otherwise stretch
+    the measurement and drag the observed-throughput p50 / AUTO price). If the bounded queue is
+    ever full the consumer is slower than the engine and backpressure reaches the engine, so the
+    measurement is no longer trustworthy: ``tainted`` is set and the sample must be discarded.
     """
 
-    __slots__ = ("_first", "_last", "_stalled", "_stalled_at_last")
-
-    def __init__(self) -> None:
-        """Start with no chunks seen."""
+    def __init__(
+        self,
+        source: AsyncIterator[Any],
+        is_content: Callable[[Any], bool],
+        maxsize: int | None = None,
+    ) -> None:
+        """Wrap ``source``; ``is_content(item)`` marks chunks that count as generated tokens."""
+        self._source = source
+        self._is_content = is_content
+        self._maxsize = STREAM_QUEUE_MAX if maxsize is None else maxsize
         self._first: float | None = None
         self._last: float | None = None
-        self._stalled = 0.0
-        self._stalled_at_last = 0.0
-
-    def receive(self) -> None:
-        """Stamp a content chunk at receipt (call BEFORE yielding it)."""
-        now = time.monotonic()
-        if self._first is None:
-            self._first = now
-        self._last = now
-        self._stalled_at_last = self._stalled
-
-    def stalled(self, parked_for: float) -> None:
-        """Add ``parked_for`` seconds the consumer held the generator suspended."""
-        self._stalled += max(0.0, parked_for)
+        self.tainted = False
 
     def ms(self) -> int | None:
-        """Consumer-independent first-to-last milliseconds, or None with < 1 chunk."""
+        """First-to-last content receipt in whole milliseconds (>= 1), or None with no content."""
         if self._first is None or self._last is None:
             return None
-        active = (self._last - self._first) - self._stalled_at_last
-        return max(1, int(active * 1000))
+        return max(1, int((self._last - self._first) * 1000))
+
+    async def _read(self, queue: asyncio.Queue[Any]) -> None:
+        """Reader task: stamp on receipt, then enqueue (blocking = backpressure = taint)."""
+        try:
+            async for item in self._source:
+                if self._is_content(item):
+                    now = time.monotonic()
+                    if self._first is None:
+                        self._first = now
+                    self._last = now
+                if queue.full():
+                    self.tainted = True
+                await queue.put(item)
+            await queue.put(_STREAM_END)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 -- re-raised in the consumer
+            await queue.put(_ReaderFailure(exc))
+
+    def __aiter__(self) -> AsyncIterator[Any]:
+        """Iterate the queued chunks; cancels the reader when the consumer stops early."""
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[Any]:
+        """Start the reader and yield from the queue until the stream ends or fails."""
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self._maxsize)
+        reader = asyncio.ensure_future(self._read(queue))
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_END:
+                    return
+                if isinstance(item, _ReaderFailure):
+                    raise item.exc
+                yield item
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+
+
+async def _ndjson_objects(content: Any) -> AsyncIterator[dict[str, Any]]:
+    """Parse an NDJSON byte stream into dicts, skipping blank or malformed lines."""
+    import json
+
+    async for line in content:
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+async def _sse_objects(content: Any) -> AsyncIterator[dict[str, Any]]:
+    """Parse ``data: {json}`` SSE lines into dicts; stops at ``[DONE]``, skips malformed lines."""
+    import json
+
+    async for line in content:
+        if not line:
+            continue
+        line_str = line.decode("utf-8").strip()
+        if not line_str.startswith("data: "):
+            continue
+        data_str = line_str[6:]
+        if data_str == "[DONE]":
+            return
+        try:
+            obj = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
 
 
 def engine_timing(ms: Any, tokens: Any) -> tuple[int, int] | None:
@@ -390,15 +474,23 @@ def engine_timing(ms: Any, tokens: Any) -> tuple[int, int] | None:
 
 
 def stamp_timing(
-    usage: dict[str, Any], engine: tuple[int, int] | None, proxy_ms: int | None
+    usage: dict[str, Any],
+    engine: tuple[int, int] | None,
+    proxy_ms: int | None,
+    tainted: bool = False,
 ) -> None:
-    """Record the generation time on ``usage``: engine-reported when valid, else proxy-measured."""
+    """Record the generation time on ``usage``.
+
+    Engine-reported timing when valid; else the proxy's receipt-time measurement, labelled
+    ``proxy`` -- or ``proxy_tainted`` when the consumer backpressured the stream (such a
+    sample is never recorded as throughput).
+    """
     if engine is not None:
         usage["generation_ms"], usage["timed_tokens"] = engine
         usage["timing_source"] = "engine"
     elif proxy_ms is not None:
         usage["generation_ms"] = proxy_ms
-        usage["timing_source"] = "proxy"
+        usage["timing_source"] = "proxy_tainted" if tainted else "proxy"
 
 
 def validate_token_count(value: Any, cap: int) -> int | None:
@@ -550,7 +642,13 @@ class OpenAIConnector(LLMConnector):
         """Hook to annotate a usage dict before it leaves the connector (identity by default)."""
         return usage_info
 
-    def _note_timing(self, usage_info: dict[str, Any], proxy_ms: int | None, extra: Any) -> None:
+    def _note_timing(
+        self,
+        usage_info: dict[str, Any],
+        proxy_ms: int | None,
+        extra: Any,
+        tainted: bool = False,
+    ) -> None:
         """Hook to record generation time on a usage dict (no-op for OpenAI proper).
 
         ``proxy_ms`` is the consumer-independent wall-clock measurement; ``extra`` is the
@@ -695,20 +793,17 @@ class OpenAIConnector(LLMConnector):
             stream = cast(AsyncStream[ChatCompletionChunk], raw_stream)
             usage: dict[str, Any] | None = None
             text_parts: list[str] = []
-            timer = StreamTimer()
+            timed = TimedStream(
+                stream, lambda c: bool(getattr(c, "choices", None) and c.choices[0].delta.content)
+            )
             engine_extra: Any = None
-            async for chunk in stream:
-                # Stamp on RECEIPT, before any yield: a slow consumer must not stretch the time.
-                if chunk.choices and chunk.choices[0].delta.content:
-                    timer.receive()
+            async for chunk in timed:
                 chunk_extra = getattr(chunk, "model_extra", None)
                 if isinstance(chunk_extra, dict) and chunk_extra.get("timings"):
                     engine_extra = chunk_extra
                 if chunk.choices and chunk.choices[0].delta.content:
                     text_parts.append(chunk.choices[0].delta.content)
-                    parked = time.monotonic()
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
-                    timer.stalled(time.monotonic() - parked)
                 # The usage-bearing chunk arrives last and carries no choices.
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage:
@@ -723,7 +818,7 @@ class OpenAIConnector(LLMConnector):
                 usage = await self._validate_usage(usage, "stream", model, messages, text, kwargs)
             usage = await self._finalize_stream_usage(usage, model, messages, text)
             if usage is not None:
-                self._note_timing(usage, timer.ms(), engine_extra)
+                self._note_timing(usage, timed.ms(), engine_extra, timed.tainted)
                 usage = self._stamp_usage(usage)
             yield StreamChunk(delta="", usage=usage, done=True)
 
@@ -952,7 +1047,13 @@ class VllmConnector(OpenAIConnector):
         estimated = await self._estimate(model, messages, text, "stream")
         return {**estimated, "model": model}
 
-    def _note_timing(self, usage_info: dict[str, Any], proxy_ms: int | None, extra: Any) -> None:
+    def _note_timing(
+        self,
+        usage_info: dict[str, Any],
+        proxy_ms: int | None,
+        extra: Any,
+        tainted: bool = False,
+    ) -> None:
         """Engine ``timings`` (llama-server/vLLM-fork style) when valid, else proxy-measured."""
         timings = extra.get("timings") if isinstance(extra, dict) else None
         engine = (
@@ -960,7 +1061,7 @@ class VllmConnector(OpenAIConnector):
             if isinstance(timings, dict)
             else None
         )
-        stamp_timing(usage_info, engine, proxy_ms)
+        stamp_timing(usage_info, engine, proxy_ms, tainted)
 
     def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
         """Attach the chargeback snapshot: kind, deployment id and the unit prices in force."""
@@ -2239,28 +2340,20 @@ class OllamaConnector(LLMConnector):
                 # Read NDJSON stream line by line
                 reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
-                timer = StreamTimer()
+                timed = TimedStream(
+                    _ndjson_objects(response.content),
+                    lambda c: bool((c.get("message") or {}).get("content")),
+                )
                 final_chunk: dict[str, Any] = {}
-                async for line in response.content:
-                    if not line:
-                        continue
-                    try:
-                        import json
-
-                        chunk = json.loads(line)
-                        if "message" in chunk and "content" in chunk["message"]:
-                            content = chunk["message"]["content"]
-                            if content:
-                                timer.receive()  # on receipt, before the yield
-                                text_parts.append(content)
-                                parked = time.monotonic()
-                                yield StreamChunk(delta=content, done=False)
-                                timer.stalled(time.monotonic() - parked)
-                        if chunk.get("done"):
-                            final_chunk = chunk
-                            reported = (chunk.get("prompt_eval_count"), chunk.get("eval_count"))
-                    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-                        continue
+                async for chunk in timed:
+                    message = chunk.get("message")
+                    if isinstance(message, dict) and message.get("content"):
+                        content = message["content"]
+                        text_parts.append(content)
+                        yield StreamChunk(delta=content, done=False)
+                    if chunk.get("done"):
+                        final_chunk = chunk
+                        reported = (chunk.get("prompt_eval_count"), chunk.get("eval_count"))
 
                 # The final NDJSON object carries counts; invalid/missing ones are estimated.
                 usage = await self._usage_from_counts(
@@ -2273,7 +2366,8 @@ class OllamaConnector(LLMConnector):
                         eval_ns / 1e6 if isinstance(eval_ns, int | float) else None,
                         final_chunk.get("eval_count"),
                     ),
-                    timer.ms(),
+                    timed.ms(),
+                    timed.tainted,
                 )
                 yield StreamChunk(delta="", usage=usage, done=True)
 
@@ -2561,39 +2655,27 @@ class LlamaCppConnector(LLMConnector):
                 # Read SSE stream
                 reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
-                timer = StreamTimer()
+                timed = TimedStream(
+                    _sse_objects(response.content),
+                    lambda c: bool(
+                        c.get("choices") and (c["choices"][0].get("delta") or {}).get("content")
+                    ),
+                )
                 engine_timings: Any = None
-                async for line in response.content:
-                    if not line:
-                        continue
-                    line_str = line.decode("utf-8").strip()
-                    if not line_str.startswith("data: "):
-                        continue
-                    data_str = line_str[6:]  # Strip "data: " prefix
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        import json
-
-                        chunk = json.loads(data_str)
-                        if "choices" in chunk and chunk["choices"]:
-                            delta = chunk["choices"][0].get("delta", {})
-                            if "content" in delta and delta["content"]:
-                                timer.receive()  # on receipt, before the yield
-                                text_parts.append(delta["content"])
-                                parked = time.monotonic()
-                                yield StreamChunk(delta=delta["content"], done=False)
-                                timer.stalled(time.monotonic() - parked)
-                        if isinstance(chunk.get("timings"), dict):
-                            engine_timings = chunk["timings"]
-                        chunk_usage = chunk.get("usage")
-                        if isinstance(chunk_usage, dict):
-                            reported = (
-                                chunk_usage.get("prompt_tokens"),
-                                chunk_usage.get("completion_tokens"),
-                            )
-                    except (json.JSONDecodeError, KeyError, ValueError, TypeError):
-                        continue
+                async for chunk in timed:
+                    if chunk.get("choices"):
+                        delta = chunk["choices"][0].get("delta") or {}
+                        if delta.get("content"):
+                            text_parts.append(delta["content"])
+                            yield StreamChunk(delta=delta["content"], done=False)
+                    if isinstance(chunk.get("timings"), dict):
+                        engine_timings = chunk["timings"]
+                    chunk_usage = chunk.get("usage")
+                    if isinstance(chunk_usage, dict):
+                        reported = (
+                            chunk_usage.get("prompt_tokens"),
+                            chunk_usage.get("completion_tokens"),
+                        )
 
                 # Counts from the include_usage chunk; invalid/missing ones are estimated.
                 usage = await self._usage_from_counts(
@@ -2606,7 +2688,8 @@ class LlamaCppConnector(LLMConnector):
                     )
                     if isinstance(engine_timings, dict)
                     else None,
-                    timer.ms(),
+                    timed.ms(),
+                    timed.tainted,
                 )
                 yield StreamChunk(delta="", usage=usage, done=True)
 

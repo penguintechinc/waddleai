@@ -295,7 +295,13 @@ class TokenManager:
             local=local,
         )
 
-        if local is not None and not estimated and generation_ms is not None:
+        # proxy_tainted = the consumer backpressured the stream: the timing is not a measurement
+        if (
+            local is not None
+            and not estimated
+            and generation_ms is not None
+            and timing_source != "proxy_tainted"
+        ):
             self._record_generation_sample(
                 local,
                 timed_tokens or usage.llm_tokens_output,

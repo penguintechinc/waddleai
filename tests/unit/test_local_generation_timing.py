@@ -12,7 +12,7 @@ from aiohttp import web
 from shared.utils.llm_connectors import (
     LlamaCppConnector,
     OllamaConnector,
-    StreamTimer,
+    TimedStream,
     VllmConnector,
     engine_timing,
 )
@@ -70,18 +70,79 @@ def test_engine_timing_validation(ms: Any, tokens: Any, ok: bool) -> None:
     assert (engine_timing(ms, tokens) is not None) is ok
 
 
-def test_stream_timer_excludes_consumer_stall(monkeypatch: pytest.MonkeyPatch) -> None:
-    """first-to-last receipt minus the time the consumer held the generator suspended."""
-    clock = iter([10.0, 10.5, 12.5])  # receive, receive, receive (stall of 1.2s between 1&2)
-    monkeypatch.setattr("shared.utils.llm_connectors.time.monotonic", lambda: next(clock))
-    timer = StreamTimer()
-    timer.receive()  # t=10.0
-    timer.stalled(1.2)
-    timer.receive()  # t=10.5 -> 0.5s wall, stall 1.2 would exceed it
-    assert timer.ms() == 1  # clamped at 1ms, never negative
-    timer.stalled(0.0)
-    timer.receive()  # t=12.5
-    assert timer.ms() == 1300  # (12.5 - 10.0) - 1.2 stall
+async def _source(items: list[Any], delay: float = 0.0) -> Any:
+    """An async source yielding ``items`` with ``delay`` seconds between them."""
+    for item in items:
+        if delay:
+            await asyncio.sleep(delay)
+        yield item
+
+
+async def test_timed_stream_measures_upstream_receipt_not_consumer_pace() -> None:
+    """Chunks arrive 100ms apart; a consumer stalling 500ms after each still sees ~200ms.
+
+    The stall exceeds the whole upstream span, so a measurement that subtracted stalls from
+    consumer-side stamps (or stamped after yield) would be wrong; a reader task is not.
+    """
+    ts = TimedStream(_source(["a", "b", "c"], delay=0.1), lambda _c: True)
+    seen = []
+    async for item in ts:
+        seen.append(item)
+        await asyncio.sleep(0.5)
+    assert seen == ["a", "b", "c"]
+    elapsed = ts.ms()
+    assert elapsed is not None
+    assert 150 <= elapsed <= 320  # first-to-last upstream receipt (2 gaps of ~100ms)
+    assert ts.tainted is False  # 3 chunks never filled the 256-slot queue
+
+
+async def test_timed_stream_full_queue_marks_the_sample_tainted() -> None:
+    """A consumer slower than the engine fills the bounded queue: tainted, backpressure applied."""
+    ts = TimedStream(_source(list(range(10))), lambda _c: True, maxsize=2)
+    out = []
+    async for item in ts:
+        out.append(item)
+        await asyncio.sleep(0.01)
+    assert out == list(range(10))  # nothing lost, order kept
+    assert ts.tainted is True
+
+
+async def test_timed_stream_propagates_source_errors_and_cancels_reader() -> None:
+    """An upstream failure surfaces in the consumer; stopping early cancels the reader."""
+
+    async def failing() -> Any:
+        yield "a"
+        raise RuntimeError("upstream broke")
+
+    with pytest.raises(RuntimeError, match="upstream broke"):
+        async for _ in TimedStream(failing(), lambda _c: True):
+            pass
+
+    closed = asyncio.Event()
+
+    async def endless() -> Any:
+        try:
+            while True:
+                yield "x"
+                await asyncio.sleep(0)
+        finally:
+            closed.set()
+
+    ts = TimedStream(endless(), lambda _c: True)
+    async for _ in ts:
+        break
+    await asyncio.sleep(0.05)
+    assert closed.is_set()
+
+
+async def test_vllm_tainted_stream_is_labelled_proxy_tainted(
+    fake_openai_server, monkeypatch
+) -> None:
+    """A backpressured stream is stamped proxy_tainted (and never sampled downstream)."""
+    monkeypatch.setattr("shared.utils.llm_connectors.STREAM_QUEUE_MAX", 1)
+    fake_openai_server.mode = "sse_usage"
+    usage = await _slow_final(_vllm(fake_openai_server).stream_chat_completion(MSGS, "m"))
+    assert usage["timing_source"] == "proxy_tainted"
 
 
 async def test_vllm_engine_timing_unaffected_by_slow_consumer(fake_openai_server) -> None:

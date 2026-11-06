@@ -1,4 +1,4 @@
-"""Observed throughput: validation, exact p50, engine preference, principal cap, plausibility."""
+"""Observed throughput: validation, exact p50, thresholds, per-user cap inside the read."""
 
 from __future__ import annotations
 
@@ -9,8 +9,10 @@ from typing import Any
 import pytest
 
 from shared.database.models import get_db
+from shared.fleet import throughput
 from shared.fleet.throughput import (
     MIN_PRINCIPALS,
+    MIN_SAMPLES,
     TIMING_ENGINE,
     TIMING_PROXY,
     observed_tokens_per_s,
@@ -26,12 +28,15 @@ def db(tmp_path: Path) -> Any:
     return get_db(db_uri=f"sqlite:///{tmp_path / 'tp.db'}")
 
 
+_NEXT_USER = [1000]
+
+
 def _sample(
     db: Any,
     tokens: int,
     ms: int,
     *,
-    user: int = 1,
+    user: int | None = 1,
     source: int = TIMING_PROXY,
     kind: int = 1,
     dep: int = 7,
@@ -49,42 +54,48 @@ def _sample(
     )
 
 
-_NEXT_USER = [1000]
-
-
-def _spread(db: Any, rates: list[int], *, source: int = TIMING_PROXY, **kw: Any) -> None:
-    """One 1-second sample per rate (tok/s), each from a fresh user (so the cap never bites)."""
-    for rate in rates:
+def _crowd(db: Any, rate: int, *, users: int = 5, per_user: int = 4, **kw: Any) -> None:
+    """``users`` fresh users x ``per_user`` samples at ``rate`` tok/s (>= the thresholds)."""
+    for _ in range(users):
         _NEXT_USER[0] += 1
-        _sample(db, rate, 1000, user=_NEXT_USER[0], source=source, **kw)
+        for _i in range(per_user):
+            _sample(db, rate, 1000, user=_NEXT_USER[0], **kw)
+
+
+def test_thresholds_match_the_share_cap() -> None:
+    """MIN_PRINCIPALS == 1 / max share, so the 20% cap is always satisfiable at the minimum."""
+    assert MIN_PRINCIPALS >= 5 and MIN_SAMPLES >= MIN_PRINCIPALS
 
 
 def test_p50_is_the_exact_median_of_per_request_rates(db) -> None:
-    """tokens/s per request, then the median: 100, 50, 200 -> 100 (not the mean 116.7)."""
-    _spread(db, [100, 50, 200])
+    """tokens/s per request, then the median over the capped set."""
+    _crowd(db, 100)  # 20 samples at 100
     assert observed_tokens_per_s(db, 1, 7) == 100.0
-    _spread(db, [400])  # even count: median of 100 and 200
-    assert observed_tokens_per_s(db, 1, 7) == 150.0
+    _crowd(db, 50)  # 20 at 50 -> even split: median of 50 and 100
+    assert observed_tokens_per_s(db, 1, 7) == 75.0
 
 
-def test_none_without_samples_or_with_too_few_principals(db) -> None:
-    """No samples, or fewer than MIN_PRINCIPALS distinct users -> None (keep the estimate)."""
+def test_none_without_samples_principals_or_enough_samples(db) -> None:
+    """No samples, < MIN_PRINCIPALS users, or < MIN_SAMPLES samples -> None (keep estimate)."""
     assert observed_tokens_per_s(db, 1, 7) is None
-    for _ in range(30):
-        _sample(db, 100, 1000, user=1)
-        _sample(db, 100, 1000, user=2)
-    assert MIN_PRINCIPALS == 3
+    _crowd(db, 100, users=MIN_PRINCIPALS - 1, per_user=50)  # many samples, too few users
     assert observed_tokens_per_s(db, 1, 7) is None
-    _sample(db, 100, 1000, user=3)
-    assert observed_tokens_per_s(db, 1, 7) == 100.0
+    _crowd(db, 100, users=MIN_PRINCIPALS, per_user=1)  # 9 users now but let a fresh dep test below
+    other = 99
+    for _ in range(MIN_PRINCIPALS):
+        _NEXT_USER[0] += 1
+        _sample(db, 100, 1000, user=_NEXT_USER[0], dep=other)
+    assert observed_tokens_per_s(db, 1, other) is None  # 5 users, 5 samples: below MIN_SAMPLES
+    _crowd(db, 100, users=MIN_PRINCIPALS, per_user=4, dep=other)
+    assert observed_tokens_per_s(db, 1, other) == 100.0
 
 
 def test_window_deployment_and_kind_scope(db) -> None:
     """Old samples, other deployments and other kinds never contribute."""
-    _spread(db, [100, 100, 100])
-    _spread(db, [999, 999, 999], age_h=30)  # outside the 24h window
-    _spread(db, [999, 999, 999], dep=8)
-    _spread(db, [999, 999, 999], kind=2)
+    _crowd(db, 100)
+    _crowd(db, 999, age_h=30)  # outside the 24h window
+    _crowd(db, 999, dep=8)
+    _crowd(db, 999, kind=2)
     assert observed_tokens_per_s(db, 1, 7) == 100.0
     assert observed_tokens_per_s(db, 1, 7, window_hours=48) == 549.5
 
@@ -95,17 +106,17 @@ def test_rejects_non_positive_window(db) -> None:
         observed_tokens_per_s(db, 1, 7, window_hours=0)
 
 
-def test_engine_timed_samples_win_over_proxy_timed(db) -> None:
-    """When any engine-timed sample exists, proxy-timed ones are ignored entirely."""
-    _spread(db, [10, 10, 10, 10], source=TIMING_PROXY)
-    _spread(db, [100, 100, 100], source=TIMING_ENGINE)
-    assert observed_tokens_per_s(db, 1, 7) == 100.0
-
-
-def test_proxy_timed_used_only_when_no_engine_samples(db) -> None:
-    """With no engine timing at all, the proxy-measured samples drive the p50."""
-    _spread(db, [40, 40, 40], source=TIMING_PROXY)
-    assert observed_tokens_per_s(db, 1, 7) == 40.0
+def test_engine_samples_override_proxy_only_when_they_meet_the_thresholds(db) -> None:
+    """Enough engine-timed samples answer alone; too few engine ones fall back to proxy."""
+    _crowd(db, 10, source=TIMING_PROXY)
+    _crowd(db, 100, source=TIMING_ENGINE)
+    assert observed_tokens_per_s(db, 1, 7) == 100.0  # engine qualifies -> wins
+    for _ in range(MIN_PRINCIPALS - 1):  # a second deployment: engine below the user threshold
+        _NEXT_USER[0] += 1
+        for _i in range(10):
+            _sample(db, 100, 1000, user=_NEXT_USER[0], source=TIMING_ENGINE, dep=8)
+    _crowd(db, 40, source=TIMING_PROXY, dep=8)
+    assert observed_tokens_per_s(db, 1, 8) == 40.0  # 4 engine users < 5 -> proxy used
 
 
 def test_one_key_flooding_cannot_move_the_p50_beyond_its_cap(db) -> None:
@@ -115,14 +126,34 @@ def test_one_key_flooding_cannot_move_the_p50_beyond_its_cap(db) -> None:
     for user in range(1, 10):
         for _ in range(20):
             _sample(db, 100, 1000, user=user)  # 100 tok/s, honest
-    # uncapped, the attacker (1000 of 1180) would pin the median at 10 tok/s
+    assert observed_tokens_per_s(db, 1, 7) == 100.0
+
+
+def test_flood_cannot_fill_the_global_read_window(db, monkeypatch) -> None:
+    """The per-user cap is applied inside the query: a newer flood cannot evict older users.
+
+    The global read limit is shrunk to 100 rows; honest samples are OLDER than 500 attacker
+    rows. A read that took the newest 100 rows first would see only the attacker.
+    """
+    monkeypatch.setattr(throughput, "MAX_SAMPLES_READ", 100)
+    _crowd(db, 100, users=9, per_user=5)  # honest, inserted first (older)
+    for _ in range(500):
+        _sample(db, 10, 1000, user=666)  # attacker floods afterwards
+    assert observed_tokens_per_s(db, 1, 7) == 100.0
+
+
+def test_anonymous_samples_are_a_single_capped_principal(db) -> None:
+    """Samples without a user are one principal: 500 anonymous rows count as one user."""
+    for _ in range(500):
+        _sample(db, 10, 1000, user=None)
+    _crowd(db, 100, users=9, per_user=5)
     assert observed_tokens_per_s(db, 1, 7) == 100.0
 
 
 def test_implausible_rates_dropped_and_counted(db, metric_reader) -> None:
     """Rates >10x or <0.01x the GPU-class estimate are dropped and counted, not averaged in."""
-    _spread(db, [100, 100, 100, 100])
-    _spread(db, [5000, 5000])  # > 10 x 100
+    _crowd(db, 100)
+    _crowd(db, 5000, users=2, per_user=1)  # > 10 x 100
     _sample(db, 8, 3_600_000, user=900)  # ~0.002 tok/s < 0.01 x estimate
     assert observed_tokens_per_s(db, 1, 7, estimate_tokens_per_s=100.0) == 100.0
     dropped = points(metric_reader, "waddleai_local_throughput_samples_dropped_total")

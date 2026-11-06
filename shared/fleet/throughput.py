@@ -8,8 +8,10 @@ is hardened accordingly:
   (``TIMING_PROXY``) are measured from upstream chunk receipt with consumer stalls excluded, and
   are used only when no engine-timed sample exists;
 * implausible rates (absurdly high/low versus the GPU-class estimate) are dropped and counted;
-* no single user may contribute more than ~20% of the samples (and at most 50), and at least
-  ``MIN_PRINCIPALS`` distinct users are required, so one principal cannot steer the p50.
+* the per-user cap is applied INSIDE the read (a window function keeps each user's newest 50),
+  so a flood from one key cannot fill the read window and crowd out everyone else; no user may
+  then exceed 20% of the result; and at least ``MIN_PRINCIPALS`` (= 1 / max share) distinct users
+  and ``MIN_SAMPLES`` samples are required, else the answer is None (keep the estimate).
 """
 
 from __future__ import annotations
@@ -20,12 +22,15 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
+import sqlalchemy as sa
+
 __all__ = [
     "MAX_GENERATION_MS",
     "MAX_SAMPLES_PER_PRINCIPAL",
     "MIN_GENERATION_MS",
     "MIN_OUTPUT_TOKENS",
     "MIN_PRINCIPALS",
+    "MIN_SAMPLES",
     "TIMING_ENGINE",
     "TIMING_PROXY",
     "observed_tokens_per_s",
@@ -42,11 +47,12 @@ MIN_GENERATION_MS = 50  # a single buffered chunk (first == last token) is not a
 MAX_GENERATION_MS = 3_600_000
 MAX_SAMPLES_PER_PRINCIPAL = 50
 MAX_SHARE_PER_PRINCIPAL = 0.2
-MIN_PRINCIPALS = 3  # fewer distinct users and one of them could set the median
+MIN_PRINCIPALS = 5  # = 1 / MAX_SHARE_PER_PRINCIPAL: fewer users cannot satisfy the share cap
+MIN_SAMPLES = 20  # after the per-user cap; fewer is noise, not a throughput measurement
 ABSOLUTE_MAX_TOKENS_PER_S = 100_000.0
 ABSOLUTE_MIN_TOKENS_PER_S = 0.01
 _ESTIMATE_HIGH, _ESTIMATE_LOW = 10.0, 0.01
-_MAX_SAMPLES_READ = 20_000  # bound the read; the newest samples win
+MAX_SAMPLES_READ = 20_000  # global bound AFTER the per-user cap inside the query
 
 
 def _valid_int(value: Any) -> bool:
@@ -99,26 +105,81 @@ def record_generation_sample(
 
 
 def _cap_per_principal(samples: list[tuple[int | None, float]]) -> list[float] | None:
-    """Rates after capping each principal at <= 20% of the result (and <= 50 samples).
+    """Rates after capping each principal at <= 20% of the result; None if not trustworthy.
 
-    ``samples`` are newest-first ``(user_id, rate)``. Returns None when fewer than
-    ``MIN_PRINCIPALS`` distinct users contributed. Samples with no user are one anonymous
-    principal. The cap is the largest c <= 50 with c <= 20% of ``sum(min(n_user, c))``.
+    ``samples`` are newest-first ``(user_id, rate)`` already limited to 50 per user by the read.
+    Samples with no user are one anonymous principal. The cap is the largest c <= 50 such that
+    c <= 20% of ``sum(min(n_user, c))``; if no c satisfies that, or fewer than
+    ``MIN_PRINCIPALS`` users / ``MIN_SAMPLES`` samples remain, the result is None (there is no
+    weaker fallback that would let one principal dominate).
     """
     by_user: dict[int | None, list[float]] = defaultdict(list)
     for user, rate in samples:
         by_user[user].append(rate)
     if len(by_user) < MIN_PRINCIPALS:
         return None
-    cap = 1
-    for candidate in range(MAX_SAMPLES_PER_PRINCIPAL, 0, -1):
-        total = sum(min(len(v), candidate) for v in by_user.values())
-        if candidate <= MAX_SHARE_PER_PRINCIPAL * total:
-            cap = candidate
-            break
-    kept = [rate for rates in by_user.values() for rate in rates[:cap]]
-    _count_dropped("principal_cap", len(samples) - len(kept))
-    return kept
+    for cap in range(MAX_SAMPLES_PER_PRINCIPAL, 0, -1):
+        total = sum(min(len(v), cap) for v in by_user.values())
+        if cap <= MAX_SHARE_PER_PRINCIPAL * total:
+            kept = [rate for rates in by_user.values() for rate in rates[:cap]]
+            if len(kept) < MIN_SAMPLES:
+                return None
+            _count_dropped("principal_cap", len(samples) - len(kept))
+            return kept
+    return None
+
+
+_SAMPLES = sa.table(
+    "local_generation_samples",
+    sa.column("id", sa.BigInteger),
+    sa.column("local_deployment_kind", sa.Integer),
+    sa.column("local_deployment_id", sa.BigInteger),
+    sa.column("output_tokens", sa.Integer),
+    sa.column("generation_ms", sa.Integer),
+    sa.column("timing_source", sa.SmallInteger),
+    sa.column("user_id", sa.BigInteger),
+    sa.column("created_at", sa.DateTime),
+)
+
+
+def _read_capped(
+    db: Any, kind: int, deployment_id: int, since: datetime
+) -> list[tuple[int | None, float, int]]:
+    """``(user_id, tokens/s, timing_source)`` newest-first, <= 50 newest rows PER USER.
+
+    The per-user limit is a window function inside the query, so one user's flood can neither
+    fill the read nor evict another user's samples. Implausible rows are filtered by the caller.
+    """
+    t = _SAMPLES.c
+    rank = (
+        sa.func.row_number()
+        .over(partition_by=sa.func.coalesce(t.user_id, -1), order_by=t.id.desc())
+        .label("rn")
+    )
+    inner = (
+        sa.select(t.id, t.output_tokens, t.generation_ms, t.timing_source, t.user_id, rank)
+        .where(
+            (t.local_deployment_kind == kind)
+            & (t.local_deployment_id == deployment_id)
+            & (t.created_at >= since)
+        )
+        .subquery()
+    )
+    stmt = (
+        sa.select(
+            inner.c.output_tokens, inner.c.generation_ms, inner.c.timing_source, inner.c.user_id
+        )
+        .where(inner.c.rn <= MAX_SAMPLES_PER_PRINCIPAL)
+        .order_by(inner.c.id.desc())
+        .limit(MAX_SAMPLES_READ)
+    )
+    with db.engine.connect() as conn:
+        rows = conn.execute(stmt).all()
+    return [
+        (user, tokens * 1000.0 / ms, int(source))
+        for tokens, ms, source, user in rows
+        if tokens and ms and ms > 0
+    ]
 
 
 def observed_tokens_per_s(
@@ -130,23 +191,17 @@ def observed_tokens_per_s(
 ) -> float | None:
     """p50 output tokens/s over the last ``window_hours``; ``None`` when not trustworthy.
 
-    Engine-timed samples are used when any exist (proxy-timed ones only otherwise). Rates more
-    than 10x or less than 0.01x ``estimate_tokens_per_s`` (the GPU-class estimate; absolute
-    bounds apply when it is None) are dropped and counted, each user is capped, and fewer than
-    ``MIN_PRINCIPALS`` distinct users yields None so the reconciler keeps the estimate.
+    Each user's newest 50 samples are read (cap applied in SQL). Rates more than 10x or less
+    than 0.01x ``estimate_tokens_per_s`` (the GPU-class estimate; absolute bounds apply when it
+    is None) are dropped and counted. Engine-timed samples answer only if THEY alone meet the
+    min-principal/min-sample thresholds; otherwise proxy-timed ones are tried under the same
+    thresholds; if neither qualifies the result is None and the reconciler keeps the estimate.
     """
     if window_hours <= 0:
         raise ValueError("window_hours must be positive")
-    if not hasattr(db, "local_generation_samples"):
+    if not hasattr(db, "local_generation_samples") or not hasattr(db, "engine"):
         return None
-    table = db.local_generation_samples
     since = datetime.utcnow() - timedelta(hours=window_hours)
-    query = (
-        (table.local_deployment_kind == kind)
-        & (table.local_deployment_id == deployment_id)
-        & (table.created_at >= since)
-    )
-    rows = db(query).select(orderby=~table.id, limitby=(0, _MAX_SAMPLES_READ))
     low, high = ABSOLUTE_MIN_TOKENS_PER_S, ABSOLUTE_MAX_TOKENS_PER_S
     if estimate_tokens_per_s is not None and estimate_tokens_per_s > 0:
         low = max(low, estimate_tokens_per_s * _ESTIMATE_LOW)
@@ -154,17 +209,13 @@ def observed_tokens_per_s(
     engine: list[tuple[int | None, float]] = []
     proxy: list[tuple[int | None, float]] = []
     absurd = 0
-    for row in rows:
-        if not row.output_tokens or not row.generation_ms or row.generation_ms <= 0:
-            continue
-        rate = row.output_tokens * 1000.0 / row.generation_ms
+    for user, rate, source in _read_capped(db, kind, deployment_id, since):
         if not (low <= rate <= high):
             absurd += 1
             continue
-        bucket = engine if getattr(row, "timing_source", TIMING_PROXY) == TIMING_ENGINE else proxy
-        bucket.append((getattr(row, "user_id", None), rate))
+        (engine if source == TIMING_ENGINE else proxy).append((user, rate))
     _count_dropped("implausible_rate", absurd)
-    kept = _cap_per_principal(engine) if engine else None
+    kept = _cap_per_principal(engine)
     if kept is None:
         kept = _cap_per_principal(proxy)
     return float(statistics.median(kept)) if kept else None
