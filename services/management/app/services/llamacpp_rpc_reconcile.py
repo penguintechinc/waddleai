@@ -168,9 +168,22 @@ class LlamaCppRpcReconciler:
         }
         if all(getattr(link, key, None) == value for key, value in values.items()):
             return False
+        if not self._still_live(dep):
+            return False  # removed/stopped since we observed it: never route to it
         self.db(table.id == link.id).update(**values)
         self.db.commit()
+        if not self._still_live(dep):
+            # a /remove landed between the check and the write: converge back to disabled
+            self.db(table.id == link.id).update(enabled=False)
+            self.db.commit()
+            return False
         return True
+
+    def _still_live(self, dep: Any) -> bool:
+        """True while the row exists and still holds a serving status (re-read, never cached)."""
+        table = self.db.llamacpp_deployments
+        row = self.db((table.id == dep.id) & table.status.belongs(("running", "degraded"))).select()
+        return row.first() is not None
 
     async def _enabled(self, dep: Any) -> bool:
         """True when the deployment's org has both GPU Fleet flags on (unowned rows never)."""

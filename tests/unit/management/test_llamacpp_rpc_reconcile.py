@@ -514,3 +514,45 @@ async def test_recovery_restart_refuses_a_row_without_an_object_name(world):
     rec, restarts = world.reconciler(Observed(obs()))
     counts = await rec.tick()
     assert restarts.calls == [] and counts["reconcile_errors"] >= 1 and counts["head_restarts"] == 0
+
+
+async def test_link_stays_disabled_when_remove_lands_between_observe_and_sync(world):
+    """M5 follow-up: with status AND message unchanged, only the link sync runs.
+
+    It must re-check the row and refuse to re-enable a link /remove just disabled.
+    """
+    row_id = world.make_row(
+        status="running", status_message="serving across 5 GPUs on 2 nodes"
+    )  # nothing changes, so no status write; the link (seeded disabled) would be enabled
+
+    def observer_then_remove(dep: Any) -> RpcObservation:
+        """Observe healthy while a concurrent /remove stops the row and disables the link."""
+        world.db(world.db.llamacpp_deployments.id == row_id).update(status="stopped")
+        world.db(world.db.connection_links.id > 0).update(enabled=False)
+        world.db.commit()
+        return obs()
+
+    rec, _ = world.reconciler(observer_then_remove)
+    counts = await rec.tick()
+    assert world.link(row_id).enabled is False and counts["links_synced"] == 0
+    assert world.row(row_id).status == "stopped"
+
+
+async def test_link_is_disabled_again_if_remove_lands_during_the_enable(world, monkeypatch):
+    """M5 follow-up: a /remove between the live check and the link write converges to disabled."""
+    row_id = world.make_row(status="running")
+    rec, _ = world.reconciler(Observed(obs()))
+    real = rec._still_live
+    calls = {"n": 0}
+
+    def live_then_removed(dep: Any) -> bool:
+        """First check passes; /remove stops the row before the second (post-write) check."""
+        calls["n"] += 1
+        if calls["n"] == 2:
+            world.db(world.db.llamacpp_deployments.id == row_id).update(status="stopped")
+            world.db.commit()
+        return real(dep)
+
+    monkeypatch.setattr(rec, "_still_live", live_then_removed)
+    await rec.tick()
+    assert world.link(row_id).enabled is False
