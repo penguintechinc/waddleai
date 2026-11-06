@@ -23,6 +23,8 @@ from tests.unit.fixtures.otel import points
 
 MSGS = [{"role": "user", "content": "hello"}]
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 @pytest.fixture
 def db(tmp_path: Path) -> Any:

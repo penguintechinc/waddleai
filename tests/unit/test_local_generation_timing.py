@@ -20,6 +20,8 @@ from tests.unit.test_local_usage_kind import MSGS, _serve
 
 STALL = 0.3  # seconds a slow consumer parks the generator after every chunk
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 def _vllm(server: Any) -> VllmConnector:
     """A vLLM connector wired to the in-process fake server."""

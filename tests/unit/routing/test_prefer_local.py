@@ -35,6 +35,8 @@ ROUTE = {
 }
 MATCH = {"model_prefix": "auto"}
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 def _rule(
     priority: int = 50, match: dict | None = None, action: dict | None = None

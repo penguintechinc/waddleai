@@ -25,6 +25,8 @@ CAPS = {
 }
 MSGS = [{"role": "user", "content": "say hello to the world please"}]
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 def make(
     server: FakeOpenAIServer, caps: dict[str, Any] | None = None, api_key: str | None = "dep-key"

@@ -16,6 +16,8 @@ from tests.conformance._fake_dal import FakeDAL
 from tests.conformance._fake_ray import FakeRayServeClient
 from tests.conformance.test_vllm_ray_behavior import CFG, _insert
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 def _config(model: str, providers: list[str]) -> dict[str, Any]:
     """A model_configs row."""

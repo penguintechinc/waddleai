@@ -20,6 +20,8 @@ from tests.unit.test_local_usage_kind import MSGS, _caps, _collect, _serve
 
 CAPS = {"local_deployment_id": 7, "fleet_status": 5, "max_model_len": 4096}
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 @pytest.mark.parametrize(
     ("value", "cap", "expected"),

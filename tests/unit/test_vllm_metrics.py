@@ -10,6 +10,8 @@ from shared.fleet.vllm_ray.inventory import GpuRecord
 from shared.observability import vllm_metrics
 from tests.unit.fixtures.otel import points
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 def _gpu(
     node: str, cls: str, total: int, used: int, vendor: GpuVendor = GpuVendor.NVIDIA, index: int = 0

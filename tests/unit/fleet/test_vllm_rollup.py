@@ -14,6 +14,8 @@ from shared.fleet.vllm_ray.rollup import chargeback, savings
 
 TODAY = date.today()
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 @pytest.fixture
 def db(tmp_path: Path) -> Any:

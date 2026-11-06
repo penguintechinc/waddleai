@@ -15,19 +15,31 @@ from shared.observability import metrics as obs_metrics
 from shared.observability import vllm_metrics
 
 
-@pytest.fixture(autouse=True)
-def _leave_meter_cache_as_found() -> Iterator[None]:
-    """Undo a meter the test itself initialized on the process default provider.
+def _snapshot() -> tuple[Any, bool, Any]:
+    """The shared metrics module's cached (meter, initialized, pii counter)."""
+    return obs_metrics._meter, obs_metrics._initialized, obs_metrics._pii_detected
 
-    Code under test lazily caches a meter (and instruments) on first use; left behind, a later
-    test that installs its own MeterProvider records into the stale cache and sees nothing.
-    Only acts when the test started with no cached meter, so a deliberately preset one stays.
+
+def _restore(state: tuple[Any, bool, Any]) -> None:
+    """Put the shared metrics module's cache back EXACTLY as it was found."""
+    obs_metrics._meter, obs_metrics._initialized, obs_metrics._pii_detected = state
+    vllm_metrics.reset_for_testing()
+
+
+@pytest.fixture
+def restore_obs_meter_cache() -> Iterator[None]:
+    """Leave ``shared.observability.metrics``' lazily cached meter exactly as found.
+
+    Code under test caches a meter (and instruments) on first use; left behind, a later test
+    that installs its own MeterProvider records into the stale cache and sees nothing. Use via
+    ``pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")`` in modules that emit
+    metrics without installing their own provider.
     """
-    started_clean = obs_metrics._meter is None
-    yield
-    if started_clean and obs_metrics._meter is not None:
-        obs_metrics.reset_for_testing()
-        vllm_metrics.reset_for_testing()
+    state = _snapshot()
+    try:
+        yield
+    finally:
+        _restore(state)
 
 
 @pytest.fixture
@@ -39,6 +51,12 @@ def metric_reader() -> Iterator[InMemoryMetricReader]:
     """
     prev_provider = otel_metrics._internal._METER_PROVIDER
     prev_once = otel_metrics._internal._METER_PROVIDER_SET_ONCE
+    prev_cache = _snapshot()
+    # set_meter_provider also points the process-wide PROXY provider at the new provider for
+    # good; without undoing that, every meter created later through the proxy would come from
+    # THIS test's dead provider (and a later test installing its own provider sees nothing).
+    proxy = otel_metrics._internal._PROXY_METER_PROVIDER
+    prev_proxy_real = getattr(proxy, "_real_meter_provider", None)
     reader = InMemoryMetricReader()
     otel_metrics._internal._METER_PROVIDER = None
     otel_metrics._internal._METER_PROVIDER_SET_ONCE = Once()
@@ -50,8 +68,9 @@ def metric_reader() -> Iterator[InMemoryMetricReader]:
     finally:
         otel_metrics._internal._METER_PROVIDER = prev_provider
         otel_metrics._internal._METER_PROVIDER_SET_ONCE = prev_once
-        obs_metrics.reset_for_testing()
-        vllm_metrics.reset_for_testing()
+        if hasattr(proxy, "_real_meter_provider"):
+            proxy._real_meter_provider = prev_proxy_real
+        _restore(prev_cache)
 
 
 def points(reader: InMemoryMetricReader, name: str) -> list[Any]:

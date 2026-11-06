@@ -19,7 +19,8 @@ from shared.fleet.throughput import (
     prune_generation_samples,
     record_generation_sample,
 )
-from tests.unit.fixtures.otel import points
+
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
 
 
 @pytest.fixture
@@ -150,15 +151,27 @@ def test_anonymous_samples_are_a_single_capped_principal(db) -> None:
     assert observed_tokens_per_s(db, 1, 7) == 100.0
 
 
-def test_implausible_rates_dropped_and_counted(db, metric_reader) -> None:
+def test_implausible_rates_dropped_and_counted(db, monkeypatch) -> None:
     """Rates >10x or <0.01x the GPU-class estimate are dropped and counted, not averaged in."""
+    counted: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        throughput, "_count_dropped", lambda reason, n: counted.append((reason, n)) if n else None
+    )
     _crowd(db, 100)
     _crowd(db, 5000, users=2, per_user=1)  # > 10 x 100
     _sample(db, 8, 3_600_000, user=900)  # ~0.002 tok/s < 0.01 x estimate
     assert observed_tokens_per_s(db, 1, 7, estimate_tokens_per_s=100.0) == 100.0
-    dropped = points(metric_reader, "waddleai_local_throughput_samples_dropped_total")
-    assert sum(p.value for p in dropped) == 3
-    assert {p.attributes["reason"] for p in dropped} == {"implausible_rate"}
+    assert counted == [("implausible_rate", 3)]
+
+
+def test_dropped_counter_emits_the_named_metric(metric_reader) -> None:
+    """The drop counter is waddleai_local_throughput_samples_dropped_total{reason}."""
+    from shared.observability.vllm_metrics import throughput_sample_dropped_counter
+    from tests.unit.fixtures.otel import points
+
+    throughput_sample_dropped_counter().add(3, {"reason": "implausible_rate"})
+    (pt,) = points(metric_reader, "waddleai_local_throughput_samples_dropped_total")
+    assert pt.value == 3 and pt.attributes["reason"] == "implausible_rate"
 
 
 @pytest.mark.parametrize(

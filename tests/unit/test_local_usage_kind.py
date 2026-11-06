@@ -19,6 +19,8 @@ from shared.utils.llm_connectors import (
 
 MSGS = [{"role": "user", "content": "count to three please"}]
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 async def _serve(handlers: dict[str, Any]) -> TestServer:
     """A throwaway aiohttp server with the given path handlers."""

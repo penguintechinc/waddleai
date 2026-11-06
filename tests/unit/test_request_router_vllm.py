@@ -14,6 +14,8 @@ from shared.utils.llm_connectors import (
 )
 from shared.utils.request_router import LLMRequestRouter, ProviderStats
 
+pytestmark = pytest.mark.usefixtures("restore_obs_meter_cache")
+
 
 def _vllm(
     name: str, models: list[str], owner: int | None = 1, status: int | None = 5
