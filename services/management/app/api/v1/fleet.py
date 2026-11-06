@@ -32,6 +32,7 @@ from quart import g, jsonify, request
 from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
+from shared.fleet.azure_ai import validate_endpoint_url as _validate_azure_endpoint
 from shared.fleet.base import BackendType, ManagementScope
 from shared.fleet.registry import build_backend
 from shared.security.credential_encryption import encrypt_credential
@@ -384,6 +385,11 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
         return _validation_error("ollama_cloud only supports management_scope='register_and_route'")
     if not isinstance(config, dict):
         return _validation_error("config must be an object")
+    if backend_type == BackendType.AZURE_AI.value and config.get("endpoint_url"):
+        try:
+            _validate_azure_endpoint(str(config["endpoint_url"]))
+        except ValueError as exc:
+            return _validation_error(str(exc))
 
     if backend_type in _PRO_GATED_TYPES and not await _hybrid_targets_entitled():
         return (
@@ -508,6 +514,11 @@ async def update_fleet_backend(backend_id: int):
     if body.get("config") is not None:
         if not isinstance(body["config"], dict):
             return _validation_error("config must be an object")
+        if row.type == BackendType.AZURE_AI.value and body["config"].get("endpoint_url"):
+            try:
+                _validate_azure_endpoint(str(body["config"]["endpoint_url"]))
+            except ValueError as exc:
+                return _validation_error(str(exc))
         update_fields["config"] = body["config"]
     if body.get("credentials"):
         update_fields["credentials_ref"] = encrypt_credential(body["credentials"])

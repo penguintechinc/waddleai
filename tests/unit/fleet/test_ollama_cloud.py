@@ -7,12 +7,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from shared.fleet.base import BackendType, ManagementScope, ProvisionSpec
-from shared.fleet.ollama_cloud import (
-    OllamaCloudFleetBackend,
-    _is_forbidden,
-    _PinnedResolver,
+from shared.fleet.egress_guard import (
+    PinnedResolver as _PinnedResolver,
+)
+from shared.fleet.egress_guard import (
+    is_forbidden as _is_forbidden,
+)
+from shared.fleet.egress_guard import (
     resolve_public_addresses,
 )
+from shared.fleet.ollama_cloud import OllamaCloudFleetBackend
 
 PUBLIC = "104.18.7.1"
 
@@ -34,7 +38,7 @@ def _gai(*addrs):
 @pytest.fixture(autouse=True)
 def _public_dns():
     """Default every hostname lookup to a public address."""
-    with patch("shared.fleet.ollama_cloud.socket.getaddrinfo", return_value=_gai(PUBLIC)) as gai:
+    with patch("shared.fleet.egress_guard.socket.getaddrinfo", return_value=_gai(PUBLIC)) as gai:
         yield gai
 
 

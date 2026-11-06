@@ -2,6 +2,7 @@
 
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -15,6 +16,7 @@ from shared.fleet.base import (
     NodeInfo,
     ProvisionSpec,
 )
+from shared.fleet.egress_guard import resolve_public_addresses, validate_https_url
 from shared.fleet.registry import register
 from shared.utils.feature_flags import is_feature_enabled
 
@@ -22,6 +24,20 @@ _ARM = "https://management.azure.com"
 _ARM_SCOPE = "https://management.azure.com/.default"
 _API_VERSION = "2024-10-01"
 _FLAG_KEY = "waddleai.fleet_v2"
+_LABEL = "Azure AI"
+AZURE_HOST_SUFFIXES = (
+    ".openai.azure.com",
+    ".cognitiveservices.azure.com",
+    ".services.ai.azure.com",
+)
+
+
+def validate_endpoint_url(raw: str) -> str:
+    """Validate an Azure AI endpoint_url (HTTPS, credential-free, Azure host suffix only).
+
+    Used at create/update time and again at request time; raises ValueError.
+    """
+    return validate_https_url(raw, _LABEL, AZURE_HOST_SUFFIXES)
 
 
 def _fleet_v2_enabled(org_id: Any) -> bool:
@@ -190,11 +206,15 @@ class AzureAIFleetBackend(InferenceFleetBackend):
 
         Used by routing to reach the deployed model.
         """
-        endpoint = self.config.get("endpoint_url")
-        if not endpoint:
+        raw = self.config.get("endpoint_url")
+        if not raw:
             return []
+        endpoint = validate_endpoint_url(str(raw))
+        parsed = urlparse(endpoint)
+        # Vet every A/AAAA now; the resolver is pinned again at connect by the consumer.
+        await resolve_public_addresses(parsed.hostname or "", parsed.port or 443, _LABEL)
         return [
-            Endpoint(str(endpoint), n.node_id, n.loaded_models, n.healthy)
+            Endpoint(endpoint, n.node_id, n.loaded_models, n.healthy)
             for n in await self.list_nodes()
             if n.healthy and model in n.loaded_models
         ]
