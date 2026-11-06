@@ -37,9 +37,14 @@ def upgrade() -> None:
         sa.Column("local_deployment_id", sa.BigInteger(), nullable=False),
         sa.Column("output_tokens", sa.Integer(), nullable=False),
         sa.Column("generation_ms", sa.Integer(), nullable=False),
+        # 1 = engine-reported decode time, 2 = proxy-measured (consumer stalls excluded)
+        sa.Column("timing_source", sa.SmallInteger(), nullable=False, server_default="2"),
+        # the user whose request produced the sample: caps any one principal's influence
+        sa.Column("user_id", sa.BigInteger(), nullable=True),
         sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
         sa.CheckConstraint("output_tokens > 0", name="ck_local_generation_samples_tokens"),
         sa.CheckConstraint("generation_ms > 0", name="ck_local_generation_samples_ms"),
+        sa.CheckConstraint("timing_source IN (1, 2)", name="ck_local_generation_samples_source"),
     )
     op.create_index(_INDEX, _TABLE, ["local_deployment_kind", "local_deployment_id", "created_at"])
 

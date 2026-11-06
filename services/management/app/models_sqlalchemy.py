@@ -669,9 +669,13 @@ class LocalGenerationSample(Base):
     local_deployment_id = Column(BigInteger, nullable=False)
     output_tokens = Column(Integer, nullable=False)
     generation_ms = Column(Integer, nullable=False)
+    # 1 = engine-reported decode time, 2 = proxy-measured (consumer stalls excluded)
+    timing_source = Column(SmallInteger, nullable=False, default=2, server_default="2")
+    user_id = Column(BigInteger, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     __table_args__ = (
+        CheckConstraint("timing_source IN (1, 2)", name="ck_local_generation_samples_source"),
         Index(
             "ix_local_generation_samples_dep_created",
             "local_deployment_kind",

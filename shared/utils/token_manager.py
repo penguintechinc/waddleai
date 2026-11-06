@@ -15,7 +15,7 @@ from typing import Any
 
 import tiktoken
 
-from shared.fleet.throughput import record_generation_sample
+from shared.fleet.throughput import TIMING_ENGINE, TIMING_PROXY, record_generation_sample
 from shared.quota.virtual_price import (
     LocalDeployment,
     LocalRateMissingError,
@@ -225,6 +225,8 @@ class TokenManager:
         unit_price_input: Decimal | None = None,
         unit_price_output: Decimal | None = None,
         generation_ms: int | None = None,
+        timing_source: str | None = None,
+        timed_tokens: int | None = None,
     ) -> TokenUsage:
         """Process token usage for a request.
 
@@ -294,17 +296,34 @@ class TokenManager:
         )
 
         if local is not None and not estimated and generation_ms is not None:
-            self._record_generation_sample(local, usage.llm_tokens_output, generation_ms)
+            self._record_generation_sample(
+                local,
+                timed_tokens or usage.llm_tokens_output,
+                generation_ms,
+                timing_source,
+                user_id,
+            )
 
         return usage
 
     def _record_generation_sample(
-        self, local: LocalDeployment, output_tokens: int, generation_ms: int
+        self,
+        local: LocalDeployment,
+        output_tokens: int,
+        generation_ms: int,
+        timing_source: str | None,
+        user_id: int,
     ) -> None:
         """Best-effort throughput sample; never fails billing (estimated counts never sample)."""
         try:
             record_generation_sample(
-                self.db, local.kind, local.deployment_id, output_tokens, generation_ms
+                self.db,
+                local.kind,
+                local.deployment_id,
+                output_tokens,
+                generation_ms,
+                TIMING_ENGINE if timing_source == "engine" else TIMING_PROXY,
+                user_id,
             )
         except Exception:  # noqa: BLE001 -- observed throughput is advisory, billing is not
             logger.warning("could not record generation sample", exc_info=True)

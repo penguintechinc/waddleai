@@ -22,6 +22,7 @@ class FakeOpenAIServer:
     requests: list[dict[str, Any]] = field(default_factory=list)
     headers: list[dict[str, str]] = field(default_factory=list)
     usage_override: dict[str, Any] | None = None
+    timings: dict[str, Any] | None = None  # engine-reported decode timings (llama-server style)
     app: Quart = field(default_factory=lambda: Quart("fake_openai"))
 
     def sdk_client(self, api_key: str = "test-key") -> openai.AsyncOpenAI:
@@ -63,6 +64,8 @@ def _build() -> FakeOpenAIServer:
             }
             if server.mode == "json_usage":
                 payload["usage"] = usage
+            if server.timings is not None:
+                payload["timings"] = server.timings
             return Response(json.dumps(payload), content_type="application/json")
 
         def chunk(delta: dict[str, Any], **extra: Any) -> str:
@@ -79,6 +82,8 @@ def _build() -> FakeOpenAIServer:
             yield chunk({"content": "there"})
             if server.mode == "sse_usage":
                 final = {**base, "object": "chat.completion.chunk", "choices": [], "usage": usage}
+                if server.timings is not None:
+                    final["timings"] = server.timings
                 yield f"data: {json.dumps(final)}\n\n"
             yield "data: [DONE]\n\n"
 

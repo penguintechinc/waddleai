@@ -388,6 +388,8 @@ def define_tables(db):
         Field("local_deployment_id", "bigint", notnull=True),
         Field("output_tokens", "integer", notnull=True),
         Field("generation_ms", "integer", notnull=True),
+        Field("timing_source", "integer", default=2),  # 1 engine-reported, 2 proxy-measured
+        Field("user_id", "bigint"),
         Field("created_at", "datetime", default=datetime.utcnow),
     )
 

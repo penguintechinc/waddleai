@@ -53,6 +53,8 @@ def test_upgrade_creates_table_index_and_constraints_downgrade_drops(at_029) -> 
         "local_deployment_id",
         "output_tokens",
         "generation_ms",
+        "timing_source",
+        "user_id",
         "created_at",
     }
     assert "ix_local_generation_samples_dep_created" in {
@@ -67,5 +69,12 @@ def test_upgrade_creates_table_index_and_constraints_downgrade_drops(at_029) -> 
     for tokens, ms in ((0, 800), (64, 0)):
         with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:
             conn.execute(ins, {"t": tokens, "m": ms})
+    with pytest.raises(sa.exc.IntegrityError), engine.begin() as conn:  # unknown timing source
+        conn.execute(
+            sa.text(
+                "INSERT INTO local_generation_samples (local_deployment_kind, local_deployment_id, "
+                "output_tokens, generation_ms, timing_source) VALUES (1, 7, 64, 800, 9)"
+            )
+        )
     command.downgrade(_cfg(url), PREV)
     assert "local_generation_samples" not in sa.inspect(sa.create_engine(url)).get_table_names()

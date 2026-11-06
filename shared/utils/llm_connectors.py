@@ -336,6 +336,71 @@ def elapsed_ms(start: float) -> int:
     return max(1, int((time.monotonic() - start) * 1000))
 
 
+class StreamTimer:
+    """Decode-time stopwatch for a stream that a slow consumer cannot inflate.
+
+    ``receive()`` stamps each upstream chunk when it is RECEIVED, and ``suspended()`` brackets
+    the ``yield`` so time spent parked in the consumer is subtracted. ``ms()`` is first-to-last
+    receipt minus the consumer stalls that happened in between. A client that reads slowly
+    therefore cannot change the number (it would otherwise drag the p50 and the AUTO price).
+    """
+
+    __slots__ = ("_first", "_last", "_stalled", "_stalled_at_last")
+
+    def __init__(self) -> None:
+        """Start with no chunks seen."""
+        self._first: float | None = None
+        self._last: float | None = None
+        self._stalled = 0.0
+        self._stalled_at_last = 0.0
+
+    def receive(self) -> None:
+        """Stamp a content chunk at receipt (call BEFORE yielding it)."""
+        now = time.monotonic()
+        if self._first is None:
+            self._first = now
+        self._last = now
+        self._stalled_at_last = self._stalled
+
+    def stalled(self, parked_for: float) -> None:
+        """Add ``parked_for`` seconds the consumer held the generator suspended."""
+        self._stalled += max(0.0, parked_for)
+
+    def ms(self) -> int | None:
+        """Consumer-independent first-to-last milliseconds, or None with < 1 chunk."""
+        if self._first is None or self._last is None:
+            return None
+        active = (self._last - self._first) - self._stalled_at_last
+        return max(1, int(active * 1000))
+
+
+def engine_timing(ms: Any, tokens: Any) -> tuple[int, int] | None:
+    """Validated engine-reported ``(generation_ms, tokens)``; None unless both are plausible.
+
+    The engine's own decode timer is preferred over wall-clock because the proxy's wall-clock
+    includes queueing and the client; it is still untrusted input, so it is bounds-checked.
+    """
+    if isinstance(ms, bool) or not isinstance(ms, int | float) or ms != ms:  # NaN guard
+        return None
+    if isinstance(tokens, bool) or not isinstance(tokens, int):
+        return None
+    if not (0 < ms <= MAX_GENERATION_MS) or not (0 < tokens <= USAGE_COUNT_CAP):
+        return None
+    return max(1, round(ms)), tokens
+
+
+def stamp_timing(
+    usage: dict[str, Any], engine: tuple[int, int] | None, proxy_ms: int | None
+) -> None:
+    """Record the generation time on ``usage``: engine-reported when valid, else proxy-measured."""
+    if engine is not None:
+        usage["generation_ms"], usage["timed_tokens"] = engine
+        usage["timing_source"] = "engine"
+    elif proxy_ms is not None:
+        usage["generation_ms"] = proxy_ms
+        usage["timing_source"] = "proxy"
+
+
 def validate_token_count(value: Any, cap: int) -> int | None:
     """An engine-reported count is trusted only if it is a non-bool int in ``[0, cap]``.
 
@@ -485,8 +550,12 @@ class OpenAIConnector(LLMConnector):
         """Hook to annotate a usage dict before it leaves the connector (identity by default)."""
         return usage_info
 
-    def _note_generation_ms(self, usage_info: dict[str, Any], ms: int) -> None:
-        """Hook to record wall-clock generation time on a usage dict (no-op for OpenAI proper)."""
+    def _note_timing(self, usage_info: dict[str, Any], proxy_ms: int | None, extra: Any) -> None:
+        """Hook to record generation time on a usage dict (no-op for OpenAI proper).
+
+        ``proxy_ms`` is the consumer-independent wall-clock measurement; ``extra`` is the
+        provider response's unmodelled fields (where an engine may report its own timings).
+        """
 
     async def _validate_usage(
         self,
@@ -541,7 +610,7 @@ class OpenAIConnector(LLMConnector):
                     "finish_reason": response.choices[0].finish_reason,
                     "cached_tokens": 0,
                 }
-                self._note_generation_ms(usage_info, call_ms)
+                self._note_timing(usage_info, call_ms, getattr(response, "model_extra", None))
                 return content, self._stamp_usage(usage_info)
             usage_info = {
                 "input_tokens": usage.prompt_tokens,
@@ -561,7 +630,7 @@ class OpenAIConnector(LLMConnector):
             usage_info = await self._validate_usage(
                 usage_info, "non_stream", model, messages, content, kwargs
             )
-            self._note_generation_ms(usage_info, call_ms)
+            self._note_timing(usage_info, call_ms, getattr(response, "model_extra", None))
             return content, self._stamp_usage(usage_info)
 
         except openai.APITimeoutError as e:
@@ -626,15 +695,20 @@ class OpenAIConnector(LLMConnector):
             stream = cast(AsyncStream[ChatCompletionChunk], raw_stream)
             usage: dict[str, Any] | None = None
             text_parts: list[str] = []
-            first_token: float | None = None
-            last_token: float | None = None
+            timer = StreamTimer()
+            engine_extra: Any = None
             async for chunk in stream:
+                # Stamp on RECEIPT, before any yield: a slow consumer must not stretch the time.
                 if chunk.choices and chunk.choices[0].delta.content:
-                    last_token = time.monotonic()
-                    if first_token is None:
-                        first_token = last_token
+                    timer.receive()
+                chunk_extra = getattr(chunk, "model_extra", None)
+                if isinstance(chunk_extra, dict) and chunk_extra.get("timings"):
+                    engine_extra = chunk_extra
+                if chunk.choices and chunk.choices[0].delta.content:
                     text_parts.append(chunk.choices[0].delta.content)
+                    parked = time.monotonic()
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
+                    timer.stalled(time.monotonic() - parked)
                 # The usage-bearing chunk arrives last and carries no choices.
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage:
@@ -649,9 +723,7 @@ class OpenAIConnector(LLMConnector):
                 usage = await self._validate_usage(usage, "stream", model, messages, text, kwargs)
             usage = await self._finalize_stream_usage(usage, model, messages, text)
             if usage is not None:
-                if first_token is not None and last_token is not None:
-                    # first token to last: excludes queueing/prefill, measures decode speed
-                    self._note_generation_ms(usage, max(1, int((last_token - first_token) * 1000)))
+                self._note_timing(usage, timer.ms(), engine_extra)
                 usage = self._stamp_usage(usage)
             yield StreamChunk(delta="", usage=usage, done=True)
 
@@ -880,9 +952,15 @@ class VllmConnector(OpenAIConnector):
         estimated = await self._estimate(model, messages, text, "stream")
         return {**estimated, "model": model}
 
-    def _note_generation_ms(self, usage_info: dict[str, Any], ms: int) -> None:
-        """Record wall-clock generation time for the observed-throughput samples."""
-        usage_info["generation_ms"] = ms
+    def _note_timing(self, usage_info: dict[str, Any], proxy_ms: int | None, extra: Any) -> None:
+        """Engine ``timings`` (llama-server/vLLM-fork style) when valid, else proxy-measured."""
+        timings = extra.get("timings") if isinstance(extra, dict) else None
+        engine = (
+            engine_timing(timings.get("predicted_ms"), timings.get("predicted_n"))
+            if isinstance(timings, dict)
+            else None
+        )
+        stamp_timing(usage_info, engine, proxy_ms)
 
     def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
         """Attach the chargeback snapshot: kind, deployment id and the unit prices in force."""
@@ -1983,7 +2061,15 @@ class OllamaConnector(LLMConnector):
                     kwargs,
                 )
                 usage_info["finish_reason"] = result.get("done_reason", "stop")
-                usage_info["generation_ms"] = call_ms
+                eval_ns = result.get("eval_duration")
+                stamp_timing(
+                    usage_info,
+                    engine_timing(
+                        eval_ns / 1e6 if isinstance(eval_ns, int | float) else None,
+                        result.get("eval_count"),
+                    ),
+                    call_ms,
+                )
 
                 return content, usage_info
 
@@ -2153,8 +2239,8 @@ class OllamaConnector(LLMConnector):
                 # Read NDJSON stream line by line
                 reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
-                first_token: float | None = None
-                last_token: float | None = None
+                timer = StreamTimer()
+                final_chunk: dict[str, Any] = {}
                 async for line in response.content:
                     if not line:
                         continue
@@ -2165,12 +2251,13 @@ class OllamaConnector(LLMConnector):
                         if "message" in chunk and "content" in chunk["message"]:
                             content = chunk["message"]["content"]
                             if content:
-                                last_token = time.monotonic()
-                                if first_token is None:
-                                    first_token = last_token
+                                timer.receive()  # on receipt, before the yield
                                 text_parts.append(content)
+                                parked = time.monotonic()
                                 yield StreamChunk(delta=content, done=False)
+                                timer.stalled(time.monotonic() - parked)
                         if chunk.get("done"):
+                            final_chunk = chunk
                             reported = (chunk.get("prompt_eval_count"), chunk.get("eval_count"))
                     except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                         continue
@@ -2179,8 +2266,15 @@ class OllamaConnector(LLMConnector):
                 usage = await self._usage_from_counts(
                     reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
                 )
-                if first_token is not None and last_token is not None:
-                    usage["generation_ms"] = max(1, int((last_token - first_token) * 1000))
+                eval_ns = final_chunk.get("eval_duration")
+                stamp_timing(
+                    usage,
+                    engine_timing(
+                        eval_ns / 1e6 if isinstance(eval_ns, int | float) else None,
+                        final_chunk.get("eval_count"),
+                    ),
+                    timer.ms(),
+                )
                 yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
@@ -2359,7 +2453,14 @@ class LlamaCppConnector(LLMConnector):
                     "non_stream",
                     kwargs,
                 )
-                usage["generation_ms"] = call_ms
+                timings = data.get("timings")
+                stamp_timing(
+                    usage,
+                    engine_timing(timings.get("predicted_ms"), timings.get("predicted_n"))
+                    if isinstance(timings, dict)
+                    else None,
+                    call_ms,
+                )
                 return content, usage
         except ProviderError:
             raise
@@ -2460,8 +2561,8 @@ class LlamaCppConnector(LLMConnector):
                 # Read SSE stream
                 reported: tuple[Any, Any] = (None, None)
                 text_parts: list[str] = []
-                first_token: float | None = None
-                last_token: float | None = None
+                timer = StreamTimer()
+                engine_timings: Any = None
                 async for line in response.content:
                     if not line:
                         continue
@@ -2478,11 +2579,13 @@ class LlamaCppConnector(LLMConnector):
                         if "choices" in chunk and chunk["choices"]:
                             delta = chunk["choices"][0].get("delta", {})
                             if "content" in delta and delta["content"]:
-                                last_token = time.monotonic()
-                                if first_token is None:
-                                    first_token = last_token
+                                timer.receive()  # on receipt, before the yield
                                 text_parts.append(delta["content"])
+                                parked = time.monotonic()
                                 yield StreamChunk(delta=delta["content"], done=False)
+                                timer.stalled(time.monotonic() - parked)
+                        if isinstance(chunk.get("timings"), dict):
+                            engine_timings = chunk["timings"]
                         chunk_usage = chunk.get("usage")
                         if isinstance(chunk_usage, dict):
                             reported = (
@@ -2496,8 +2599,15 @@ class LlamaCppConnector(LLMConnector):
                 usage = await self._usage_from_counts(
                     reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
                 )
-                if first_token is not None and last_token is not None:
-                    usage["generation_ms"] = max(1, int((last_token - first_token) * 1000))
+                stamp_timing(
+                    usage,
+                    engine_timing(
+                        engine_timings.get("predicted_ms"), engine_timings.get("predicted_n")
+                    )
+                    if isinstance(engine_timings, dict)
+                    else None,
+                    timer.ms(),
+                )
                 yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:

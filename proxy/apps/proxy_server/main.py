@@ -2150,6 +2150,8 @@ async def chat_completions():
                     local_deployment_kind=usage.get("local_deployment_kind"),
                     local_deployment_id=usage.get("local_deployment_id"),
                     generation_ms=usage.get("generation_ms"),
+                    timing_source=usage.get("timing_source"),
+                    timed_tokens=usage.get("timed_tokens"),
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
@@ -2583,6 +2585,8 @@ async def claude_messages():
                     local_deployment_kind=usage_info.get("local_deployment_kind"),
                     local_deployment_id=usage_info.get("local_deployment_id"),
                     generation_ms=usage_info.get("generation_ms"),
+                    timing_source=usage_info.get("timing_source"),
+                    timed_tokens=usage_info.get("timed_tokens"),
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:

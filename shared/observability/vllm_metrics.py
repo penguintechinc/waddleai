@@ -16,6 +16,7 @@ from shared.observability.metrics import get_meter
 
 __all__ = [
     "PLACEMENT_OUTCOMES",
+    "throughput_sample_dropped_counter",
     "local_rate_missing_counter",
     "record_deployment_counts",
     "record_inventory",
@@ -38,6 +39,7 @@ _VENDOR_NAMES = {
 _usage_missing: Any = None
 _local_rate_missing: Any = None
 _placement: Any = None
+_sample_dropped: Any = None
 _gauges_ready = False
 _vram_total: dict[tuple[str, str, str], int] = {}
 _vram_used: dict[tuple[str, str, str], int] = {}
@@ -66,6 +68,18 @@ def local_rate_missing_counter() -> Any:
             description="Local-deployment requests refused: no virtual rate row (fail closed)",
         )
     return _local_rate_missing
+
+
+def throughput_sample_dropped_counter() -> Any:
+    """Counter ``waddleai_local_throughput_samples_dropped_total{reason}``: implausible samples."""
+    global _sample_dropped
+    if _sample_dropped is None:
+        _sample_dropped = get_meter().create_counter(
+            "waddleai_local_throughput_samples_dropped_total",
+            unit="1",
+            description="Observed-throughput samples ignored as implausible or over-represented",
+        )
+    return _sample_dropped
 
 
 def _observe(snapshot: dict[tuple[str, str, str], int]) -> Any:
@@ -171,10 +185,11 @@ def record_placement(outcome: str) -> None:
 
 def reset_for_testing() -> None:
     """Drop cached instruments/snapshots so a test can install its own meter provider."""
-    global _usage_missing, _local_rate_missing, _placement, _gauges_ready
+    global _usage_missing, _local_rate_missing, _placement, _gauges_ready, _sample_dropped
     _usage_missing = None
     _local_rate_missing = None
     _placement = None
+    _sample_dropped = None
     _gauges_ready = False
     _vram_total.clear()
     _vram_used.clear()

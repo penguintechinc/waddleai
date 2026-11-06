@@ -289,14 +289,19 @@ async def test_dispatch_refuses_local_deployment_without_rate_before_any_request
 
 
 async def test_timed_local_request_records_one_generation_sample(db) -> None:
-    """A timed, non-estimated local request records a sample the p50 helper can read."""
-    from shared.fleet.throughput import observed_tokens_per_s
-
+    """A timed, non-estimated request records a sample with its source and user."""
     dep = _deployment(db, "2.0", "4.0")
     await _price(db, 1, dep)
     tm = TokenManager(db)
-    _usage(db, tm, dep, tin=100, tout=64, generation_ms=800)
-    assert observed_tokens_per_s(db, 1, dep.id) == 80.0
+    _usage(db, tm, dep, tin=100, tout=64, generation_ms=800, timing_source="proxy")
+    _usage(
+        db, tm, dep, tin=100, tout=64, generation_ms=800, timing_source="engine", timed_tokens=40
+    )
+    rows = sorted(db(db.local_generation_samples.id > 0).select(), key=lambda r: r.id)
+    assert [
+        (r.local_deployment_id, r.output_tokens, r.generation_ms, r.timing_source, r.user_id)
+        for r in rows
+    ] == [(dep.id, 64, 800, 2, 1), (dep.id, 40, 800, 1, 1)]
 
 
 async def test_estimated_untimed_or_commercial_requests_never_sample(db) -> None:
