@@ -167,7 +167,7 @@ async def dry_run_decision(data: DryRunRequest) -> tuple:
         return jsonify({"status": "error", "error": "Feature not enabled"}), 403
 
     try:
-        offers = await load_offers_from_model_configs(db)
+        offers = await load_offers_from_model_configs(db, org_id=target_org_id)
     except Exception as exc:  # pragma: no cover - defensive, DB I/O failure
         logger.warning("routing_dry_run: failed to load candidate offers: %s", exc)
         return jsonify({"status": "error", "error": "Failed to load candidate models"}), 500

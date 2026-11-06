@@ -12,6 +12,9 @@ from unittest.mock import MagicMock, Mock
 
 import pytest
 
+# Shared fixtures for the vLLM fleet / local-metering tests (Plan C).
+pytest_plugins = ["tests.unit.fixtures.otel", "tests.unit.fixtures.fake_openai"]
+
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

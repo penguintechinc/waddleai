@@ -70,6 +70,11 @@ from shared.routing.aliases import explicit_tool_type
 from shared.routing.capability import ModelOffer
 from shared.routing.engine import RoutingEngine, RoutingInput
 from shared.routing.heuristics import HeuristicRule, RequestSignals
+from shared.routing.providers import (
+    LOCAL_PROVIDERS,
+    foreign_only_models,
+    visible_model_configs,
+)
 from shared.security.content_filter import ContentFilter
 from shared.security.prompt_security import PromptSecurityScanner
 from shared.utils.llm_connectors import (
@@ -80,6 +85,8 @@ from shared.utils.llm_connectors import (
     ProviderServerError,
     ProviderTimeoutError,
     StreamChunk,
+    connector_visible_to,
+    local_deployment_of,
 )
 from shared.utils.metering import MeteringBuffer, MeteringEvent
 from shared.utils.metrics import get_proxy_metrics
@@ -167,6 +174,9 @@ class PipelineContext:
     # lets routing report the actually-served model rather than the requested one.
     provider: str | None = None
     requested_model: str | None = None
+    # Connector name chosen by a prefer-local rule (RouteDecision.destination); DispatchStage
+    # passes it to select_provider, which honours it only from the org-visible routable set.
+    destination: str | None = None
     finish_reason: str | None = None
     # Stashed by TokenBudgetStage for MeterStage to reconcile
     reservation_id: str | None = None
@@ -885,7 +895,7 @@ class RoutingStage(Stage):
             explicit_tool_type=explicit,
             requested_model=ctx.model,
             signals=signals,
-            rules=self.rules,
+            rules=[*self.rules, *await self._load_prefer_local_rules(org_id)],
             offers=offers,
             pii_detected=ctx.pii_detected,
             explicit_escalate_hint=ctx.escalate_hint,
@@ -902,7 +912,45 @@ class RoutingStage(Stage):
         ctx.model = decision.model
         ctx.fallback_chain = decision.fallback_chain
         ctx.routed_from = decision.routed_from
+        ctx.destination = decision.destination
         return ctx
+
+    async def _load_prefer_local_rules(self, org_id: int) -> list[HeuristicRule]:
+        """The org's enabled prefer-local rules (``action.route``) from ``routing_rules_v2``.
+
+        Only route-action rows are loaded: plain tool-type heuristic rules were never fed to
+        the engine here and stay that way. A load failure is logged and yields no rules (the
+        request routes as if no prefer-local rule existed); it never breaks dispatch.
+        """
+        db = self.db
+        if not org_id or not hasattr(db, "routing_rules_v2"):
+            return []
+
+        def _select() -> list[Any]:
+            table = db.routing_rules_v2
+            return list(
+                db((table.enabled == True) & (table.organization_id == org_id)).select()  # noqa: E712
+            )
+
+        try:
+            rows = await asyncio.to_thread(_select)
+        except Exception as exc:  # noqa: BLE001 -- rule loading must never break routing
+            logger.warning("RoutingStage: prefer-local rule load failed: %s", exc)
+            return []
+        rules: list[HeuristicRule] = []
+        for row in rows:
+            action = getattr(row, "action", None)
+            match = getattr(row, "match", None)
+            if isinstance(action, dict) and "route" in action and isinstance(match, dict):
+                rules.append(
+                    HeuristicRule(
+                        priority=int(getattr(row, "priority", 100)),
+                        match=match,
+                        action=action,
+                        name=str(getattr(row, "name", "")),
+                    )
+                )
+        return rules
 
     async def _load_offers(self, org_id: int | None = None) -> list[ModelOffer]:
         """Build the candidate ModelOffer universe from model_configs (penguin-dal).
@@ -922,10 +970,13 @@ class RoutingStage(Stage):
         rows = await asyncio.to_thread(
             lambda: self.db(self.db.model_configs.enabled == True).select()  # noqa: E712
         )
+        hidden = await foreign_only_models(self.db, org_id) if org_id is not None else set()
         offers: list[ModelOffer] = []
-        for row in rows:
+        for row in visible_model_configs(list(rows), org_id):
+            if row.model_name in hidden:
+                continue
             providers = row.preferred_providers or []
-            is_local = any(p in ("ollama", "llamacpp") for p in providers)
+            is_local = any(p in LOCAL_PROVIDERS for p in providers)
             location = "local" if is_local else "commercial"
             costs = list((row.cost_per_token or {}).values())
             avg_cost = sum(costs) / len(costs) if costs else 0.0
@@ -965,6 +1016,7 @@ class DispatchStage(Stage):
         upstream_filter: Any = None,
         policy_resolver: Any = None,
         features: Any = None,
+        local_rate_guard: Callable[[int | None, int | None], bool] | None = None,
     ) -> None:
         """Initialize DispatchStage.
 
@@ -973,6 +1025,8 @@ class DispatchStage(Stage):
             router: LLMRequestRouter for provider selection
             connectors: Dict mapping provider name to LLMConnector instance
             flag: Optional feature flag to gate this stage
+            local_rate_guard: ``(kind, deployment_id) -> bool``; False refuses a local
+                deployment that has no virtual rate (fail closed, AM27)
             upstream_filter: Optional §8.7 UpstreamFilter (security_v2 only)
             policy_resolver: Optional §8.1 PolicyResolver (security_v2 only)
             features: Feature flag helper; when upstream_filter is also
@@ -987,6 +1041,7 @@ class DispatchStage(Stage):
         self.upstream_filter = upstream_filter
         self.policy_resolver = policy_resolver
         self.features = features
+        self.local_rate_guard = local_rate_guard
 
     async def __call__(self, ctx: PipelineContext) -> PipelineContext:
         """Route to provider and dispatch request, fully buffering a streamed response.
@@ -1186,11 +1241,13 @@ class DispatchStage(Stage):
         # falsy or raised -- this is the chaos-failover path, not a general
         # retry loop; DispatchStage still calls the router exactly once per
         # candidate model.
+        request_org_id = getattr(ctx.user, "organization_id", None)
         try:
             model = ctx.model or "gpt-4"
             try:
+                extra: dict[str, Any] = {"destination": ctx.destination} if ctx.destination else {}
                 selection = self.router.select_provider(
-                    model, preferred_backend=ctx.preferred_backend
+                    model, preferred_backend=ctx.preferred_backend, org_id=request_org_id, **extra
                 )
             except Exception as e:
                 # A primary-selection failure still leaves the chaos-failover
@@ -1203,7 +1260,7 @@ class DispatchStage(Stage):
                 selection = None
             if not selection:
                 for fallback_model in ctx.fallback_chain:
-                    selection = self.router.select_provider(fallback_model)
+                    selection = self.router.select_provider(fallback_model, org_id=request_org_id)
                     if selection:
                         model = fallback_model
                         break
@@ -1222,12 +1279,28 @@ class DispatchStage(Stage):
             return None
 
         connector = self.connectors.get(provider)
+        # Defence in depth (AM3): even a selected name never resolves to another org's link.
+        if connector is not None and not connector_visible_to(connector, request_org_id):
+            logger.error("DispatchStage: connector %s is not visible to this org", provider)
+            connector = None
         if not connector:
             logger.error("DispatchStage: no connector for provider %s", provider)
             ctx.blocked = True
             ctx.status_code = 500
             ctx.block_reason = "no_connector"
             return None
+
+        # AM27: a local deployment with no virtual rate is refused BEFORE any tokens are spent
+        # (never billed at the default rate), and counted.
+        local = local_deployment_of(connector)
+        if local is not None and self.local_rate_guard is not None:
+            has_rate = await asyncio.to_thread(self.local_rate_guard, local[0], local[1])
+            if not has_rate:
+                logger.error("DispatchStage: local deployment %s has no virtual rate", local)
+                ctx.blocked = True
+                ctx.status_code = 503
+                ctx.block_reason = "local_rate_missing"
+                return None
 
         ctx.provider = provider
         ctx.requested_model = ctx.model

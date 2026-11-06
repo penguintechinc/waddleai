@@ -88,7 +88,7 @@ class StubDispatchConnector:
 class StubRouter:
     """Always routes to the single "stub" provider, requested model unchanged."""
 
-    def select_provider(self, model, preferred_backend=None):
+    def select_provider(self, model, preferred_backend=None, **_kw):
         """Always route to the "stub" provider with the model unchanged.
 
         Accepts ``preferred_backend`` because DispatchStage always passes it

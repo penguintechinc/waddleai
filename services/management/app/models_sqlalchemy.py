@@ -659,6 +659,34 @@ class TokenUsage(Base):
     unit_price_output = Column(Numeric(12, 6), nullable=True)
 
 
+class LocalGenerationSample(Base):
+    """One timed local-model generation (migration 030): feeds the observed-throughput p50."""
+
+    __tablename__ = "local_generation_samples"
+
+    id = Column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
+    local_deployment_kind = Column(Integer, nullable=False)
+    local_deployment_id = Column(BigInteger, nullable=False)
+    output_tokens = Column(Integer, nullable=False)
+    generation_ms = Column(Integer, nullable=False)
+    # 1 = engine-reported decode time, 2 = proxy-measured (consumer stalls excluded)
+    timing_source = Column(SmallInteger, nullable=False, default=2, server_default="2")
+    user_id = Column(BigInteger, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        CheckConstraint("timing_source IN (1, 2)", name="ck_local_generation_samples_source"),
+        Index(
+            "ix_local_generation_samples_dep_created",
+            "local_deployment_kind",
+            "local_deployment_id",
+            "created_at",
+        ),
+        CheckConstraint("output_tokens > 0", name="ck_local_generation_samples_tokens"),
+        CheckConstraint("generation_ms > 0", name="ck_local_generation_samples_ms"),
+    )
+
+
 class UsageCache(Base):
     """A precomputed daily/monthly usage snapshot for a virtual key or organization."""
 

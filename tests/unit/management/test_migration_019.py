@@ -192,4 +192,4 @@ def test_single_alembic_head_no_divergent_branches() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "029_model_config_offer_scope"
+    assert heads[0] == "030_local_generation_samples"

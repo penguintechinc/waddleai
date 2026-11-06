@@ -316,6 +316,12 @@ SUPPORTED_PROVIDERS = {
         "requires_api_key": False,
         "default_endpoint": "http://localhost:11434",
     },
+    "vllm": {
+        "name": "vLLM (GPU fleet)",
+        "models": [],
+        "requires_api_key": True,
+        "default_endpoint": "",
+    },
     "gemini": {
         "name": "Google Gemini / Vertex AI",
         "models": ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-1.0-pro"],

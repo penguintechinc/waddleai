@@ -124,8 +124,9 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.TEAM_ORG_ADMIN.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 142  # audited require_role call sites, both migration waves,
+_EXPECTED_ROUTE_COUNT = 146  # audited require_role call sites, both migration waves,
 #   +4 net-new (not a require_role migration; +1 teams: POST /teams -> TEAM_ORG_ADMIN):
+#   +4 fleet savings/chargeback reports (+ /fleet/vllm/* aliases -> FLEET_ADMIN, Plan C8).
 #   94 from the original OIDC migration, +16 from branches cut before it landed
 #   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
 #   CRUD blueprint (POST/PUT -> MODEL_ACCESS_POLICY_WRITE, DELETE ->

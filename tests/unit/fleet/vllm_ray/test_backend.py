@@ -576,6 +576,26 @@ async def test_observes_model_load_histogram_on_serving(
     assert obs.call_args.args[0] >= 29
 
 
+async def test_reconcile_serving_transition_emits_one_load_histogram_point(
+    backend: VllmRayBackend,
+    client: FakeRayServeClient,
+    db: FakeDAL,
+    metric_reader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real backend + fake Ray: the SERVING transition lands exactly one real histogram point."""
+    from tests.unit.fixtures.otel import points
+
+    monkeypatch.setattr(backend_mod, "_load_histogram", None)
+    d = _insert_dep(db, status=int(S.STARTING), endpoint_url="http://u/v1")
+    _script(client, "RUNNING")
+    await backend.reconcile(d)
+    await backend.reconcile(_row(db, d))
+    await backend.reconcile(_row(db, d))  # steady state: no second observation
+    pts = points(metric_reader, "waddleai_vllm_model_load_seconds")
+    assert len(pts) == 1 and pts[0].count == 1 and pts[0].sum >= 29
+
+
 def test_observe_model_load_seconds_records_on_meter(monkeypatch: pytest.MonkeyPatch) -> None:
     """Check: observe model load seconds records on meter."""
     hist = MagicMock()

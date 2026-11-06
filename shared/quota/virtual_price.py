@@ -9,6 +9,7 @@ This module converts a price into those divisors and upserts the (provider, mode
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -85,3 +86,72 @@ def upsert_virtual_rate(
                 f"virtual rate upsert for {provider}/{model} did not converge: "
                 "insert collided but no existing row was updated"
             ) from exc
+
+
+# LocalDeploymentKind value -> rate-row provider and deployment table (AM10).
+LOCAL_RATE_PROVIDERS: dict[int, str] = {1: "vllm", 2: "ollama", 3: "llamacpp"}
+LOCAL_DEPLOYMENT_TABLES: dict[int, str] = {
+    1: "vllm_deployments",
+    2: "ollama_deployments",
+    3: "llamacpp_deployments",
+}
+_PRICE_QUANTUM = Decimal("0.000001")  # NUMERIC(12, 6) price columns
+
+
+class LocalRateMissingError(Exception):
+    """A local deployment has no usable virtual rate; the request is refused, never defaulted."""
+
+
+@dataclass(slots=True, frozen=True)
+class LocalDeployment:
+    """A resolved local deployment: its rate-row coordinates and the price snapshot in force."""
+
+    kind: int
+    deployment_id: int
+    provider: str
+    model_key: str
+    price_input: Decimal
+    price_output: Decimal
+
+
+def snapshot_price(value: Any) -> Decimal | None:
+    """A unit price quantized to the column's 6 places (so snapshot equality is exact)."""
+    if value is None:
+        return None
+    return Decimal(str(value)).quantize(_PRICE_QUANTUM)
+
+
+def usage_row_key(
+    kind: int | None, deployment_id: int | None, price_in: Any, price_out: Any
+) -> tuple[int | None, int | None, Decimal | None, Decimal | None]:
+    """Key identifying one ``token_usage`` rollup row: (kind, deployment, input, output price).
+
+    A price or deployment change yields a different key, so usage after the change opens a new
+    row and earlier rows keep the snapshot they were charged at (Plan C review focus 5).
+    """
+    return (kind, deployment_id, snapshot_price(price_in), snapshot_price(price_out))
+
+
+def resolve_local_deployment(
+    db: Any, kind: int, deployment_id: int | None
+) -> LocalDeployment | None:
+    """Look up the deployment row behind a usage row; ``None`` when it cannot be resolved."""
+    table_name = LOCAL_DEPLOYMENT_TABLES.get(kind)
+    if table_name is None or deployment_id is None or not hasattr(db, table_name):
+        return None
+    table = getattr(db, table_name)
+    row = db(table.id == deployment_id).select().first()
+    if row is None or getattr(row, "public_id", None) is None:
+        return None
+    price_in = snapshot_price(getattr(row, "price_input_per_1m", None))
+    price_out = snapshot_price(getattr(row, "price_output_per_1m", None))
+    if price_in is None or price_out is None:
+        return None
+    return LocalDeployment(
+        kind=kind,
+        deployment_id=deployment_id,
+        provider=LOCAL_RATE_PROVIDERS[kind],
+        model_key=rate_model_key(row),
+        price_input=price_in,
+        price_output=price_out,
+    )

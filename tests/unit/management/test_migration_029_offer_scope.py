@@ -76,11 +76,12 @@ def scratch(tmp_path, monkeypatch):
     engine.dispose()
 
 
-def test_revision_chain_head_is_029():
-    """029 revises 028 and is the single head."""
+def test_revision_chain_head_is_030():
+    """029 revises 028 and is on the single-head chain."""
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision(REV).down_revision == PREV
-    assert script.get_heads() == [REV]
+    # 030 (local_generation_samples) now sits on top of 029 in this branch.
+    assert script.get_heads() == ["030_local_generation_samples"]
 
 
 def test_upgrade_adds_nullable_scope_columns_keeping_existing_rows(scratch):
