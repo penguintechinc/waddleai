@@ -202,3 +202,21 @@ def test_zero_gpus_per_node_rejected() -> None:
     costs = {CLS: GpuClassCost(CLS, 1600, 450, 40.0, _node(gpus_per_node=0))}
     with pytest.raises(ValueError, match="gpus_per_node"):
         compute_tco(_layout(2, 1, 1, 1), costs, TcoInputs(), 12.0, 40.0)
+
+
+def test_estimate_throughput_is_per_replica_so_price_is_replica_invariant() -> None:
+    """est_tokens_per_s is per replica: 3 replicas triple cost AND throughput, same $/1M."""
+    one = compute_tco(_layout(2, 1, 1, 1), _costs(40.0), TcoInputs(), 12.0, None)
+    three = compute_tco(_layout(2, 1, 3, 3), _costs(40.0), TcoInputs(), 12.0, None)
+    assert three.tokens_per_s_used == pytest.approx(3 * one.tokens_per_s_used)
+    assert three.hourly_cost_usd == pytest.approx(3 * one.hourly_cost_usd)
+    assert three.price_output_per_1m == pytest.approx(one.price_output_per_1m)
+    assert three.price_input_per_1m == pytest.approx(one.price_input_per_1m)
+
+
+def test_observed_throughput_is_deployment_total_not_multiplied() -> None:
+    """Observed tokens/s from usage is already the deployment total across replicas."""
+    res = compute_tco(_layout(2, 1, 3, 3), _costs(), TcoInputs(), 12.0, 120.0)
+    assert (res.tokens_per_s_used, res.source) == (120.0, "observed")
+    one = compute_tco(_layout(2, 1, 1, 1), _costs(), TcoInputs(), 12.0, 40.0)
+    assert res.price_output_per_1m == pytest.approx(one.price_output_per_1m)

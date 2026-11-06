@@ -109,7 +109,8 @@ def compute_tco(
 ) -> TcoResult:
     """Compute hourly cost and per-1M-token prices for ``layout`` (spec 4.7 formulas).
 
-    Uses observed output tokens/s when given, else the class estimate scaled by model size.
+    Uses observed output tokens/s (a deployment TOTAL) when given, else the per-replica class
+    estimate scaled by model size and multiplied by the replica count.
     """
     if inputs.kwh_usd <= 0:
         raise ValueError("kwh_usd must be set")
@@ -141,7 +142,10 @@ def compute_tco(
     else:
         if params_b <= 0:
             raise ValueError("params_b must be positive")
-        tokens_per_s = cost.est_tokens_per_s * min(1.0, _REFERENCE_PARAMS_B / params_b)
+        # est_tokens_per_s is PER REPLICA; the cost above is for all replicas, so scale
+        # throughput to the deployment total. Observed usage is already a deployment total.
+        per_replica = cost.est_tokens_per_s * min(1.0, _REFERENCE_PARAMS_B / params_b)
+        tokens_per_s = per_replica * layout.replicas
         source = "estimate"
     if tokens_per_s <= 0:
         raise ValueError("tokens_per_s must be positive")
