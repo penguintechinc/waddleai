@@ -86,6 +86,9 @@ class _FakeRowSet:
         rows = self._db._tables.get(self._query.table, [])
         return _FakeSelectResult(row for row in rows if self._query(row))
 
+    def count(self) -> int:
+        return sum(1 for row in self._db._tables.get(self._query.table, []) if self._query(row))
+
     def update(self, **kwargs: Any) -> int:
         rows = self._db._tables.get(self._query.table, [])
         matched = [row for row in rows if self._query(row)]

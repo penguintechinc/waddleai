@@ -23,6 +23,12 @@ pub struct Model {
     pub cache_status: Option<String>,
     pub tokens_saved: i32,
     pub api_key_id: Option<i32>,
+    pub local_deployment_kind: Option<i32>,
+    pub local_deployment_id: Option<i64>,
+    #[sea_orm(column_type = "Decimal(Some((12, 6)))", nullable)]
+    pub unit_price_input: Option<Decimal>,
+    #[sea_orm(column_type = "Decimal(Some((12, 6)))", nullable)]
+    pub unit_price_output: Option<Decimal>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

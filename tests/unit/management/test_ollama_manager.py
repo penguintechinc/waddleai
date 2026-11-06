@@ -1465,3 +1465,88 @@ def test_docker_client_returns_none_and_logs_warning_on_failure(manager, monkeyp
 
     assert result is None
     assert any("Failed to initialize Docker client" in r.message for r in caplog.records)
+
+
+_AI_SELECTOR = {"waddleai.penguintech.io/ai-node": "true"}
+
+
+def test_create_deployment_refuses_plain_gpu_on_ai_node_when_flag_on(manager, db, monkeypatch):
+    """Flag on: a plain-GPU deployment aimed at an AI node is refused, nothing inserted."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = OllamaDeploymentConfig(name="ai", gpu_count=1, node_selector=dict(_AI_SELECTOR))
+
+    result = manager.create_deployment(config)
+
+    assert result["success"] is False
+    assert "instead of nvidia.com/gpu" in result["error"]
+    assert not db._tables.get("ollama_deployments")
+
+
+def test_create_deployment_ai_node_refused_regardless_of_flag(manager, db, monkeypatch):
+    """The refusal is NOT flag-gated: flag off still refuses on an AI node."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
+    config = OllamaDeploymentConfig(name="ai", gpu_count=1, node_selector=dict(_AI_SELECTOR))
+
+    result = manager.create_deployment(config)
+
+    assert result["success"] is False
+    assert not db._tables.get("ollama_deployments")
+
+
+def test_create_deployment_refused_on_per_class_resource_label(manager, db, monkeypatch):
+    """A selector naming an nvidia.com/<class> label is a renamed node even without the AI label."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
+    config = OllamaDeploymentConfig(
+        name="cls", gpu_count=1, node_selector={"nvidia.com/rtx4090": "1"}
+    )
+
+    assert manager.create_deployment(config)["success"] is False
+
+
+def test_create_deployment_default_selector_unaffected_when_flag_on(manager, monkeypatch):
+    """Flag on, ordinary GPU node selector: not refused."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = OllamaDeploymentConfig(name="plain", gpu_count=1)
+
+    assert manager.create_deployment(config)["success"] is True
+
+
+def test_create_deployment_k8s_no_selector_with_renamed_node_refused(manager, db, monkeypatch):
+    """Kubernetes deployment with no selector in a cluster with an AI node is refused."""
+    from shared.fleet.vllm_ray.coexistence import NodeFacts
+
+    monkeypatch.setattr(
+        "services.management.app.services.ollama_manager.default_list_nodes",
+        lambda _sel: [NodeFacts(labels={"waddleai.penguintech.io/ai-node": "true"})],
+    )
+    config = OllamaDeploymentConfig(
+        name="k", gpu_count=1, deployment_type="kubernetes", node_selector={}
+    )
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "node selector" in result["error"]
+
+
+def test_create_deployment_k8s_lookup_failure_fails_closed(manager, db, monkeypatch):
+    """Kubernetes deployment whose node lookup raises is refused with the error."""
+
+    def boom(_sel):
+        raise RuntimeError("apiserver down")
+
+    monkeypatch.setattr("services.management.app.services.ollama_manager.default_list_nodes", boom)
+    config = OllamaDeploymentConfig(name="k", gpu_count=1, deployment_type="kubernetes")
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "apiserver down" in result["error"]
+
+
+@pytest.mark.real_node_lookup
+def test_create_deployment_k8s_gpu_refused_with_no_kube_config(manager, monkeypatch, tmp_path):
+    """With no K8s config at all the real guard refuses a K8s GPU deployment (fail closed)."""
+    monkeypatch.setenv("KUBECONFIG", str(tmp_path / "missing"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    config = OllamaDeploymentConfig(name="nocfg", gpu_count=1, deployment_type="kubernetes")
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "Cannot verify the target node(s)" in result["error"]

@@ -15,7 +15,12 @@ from shared.fleet.base import (
     NodeInfo,
 )
 from shared.fleet.caps import CapEnforcer, CapExceededError, InsufficientCapacityError
-from shared.fleet.placement import ModelRegistryEntry, PlacementEngine, is_denied_origin
+from shared.fleet.placement import (
+    FleetUnavailableError,
+    ModelRegistryEntry,
+    PlacementEngine,
+    is_denied_origin,
+)
 from shared.routing.capability import ModelOffer
 from tests.conformance._fake_dal import FakeDAL
 from tests.unit.routing.conftest import FakeAsyncRedis
@@ -515,3 +520,79 @@ class TestEndpointsForAggregation:
         endpoints = await engine.endpoints_for("m1", [_backend(backend_a), _backend(backend_b)])
 
         assert [e.node_id for e in endpoints] == ["b1"]
+
+
+class TestFleetUnavailable:
+    """Every backend failing is an infra error, never an empty 'not served' list."""
+
+    async def test_all_backends_failing_raises(self) -> None:
+        """All backends raising -> FleetUnavailableError, not []."""
+        engine = _engine()
+        a, b = _FakeBackend(fleet_backend_id=1), _FakeBackend(fleet_backend_id=2)
+        a.endpoints_for = AsyncMock(side_effect=RuntimeError("down"))
+        b.endpoints_for = AsyncMock(side_effect=RuntimeError("down"))
+        with pytest.raises(FleetUnavailableError):
+            await engine.endpoints_for("m1", [_backend(a), _backend(b)])
+
+    async def test_no_backends_is_empty_not_error(self) -> None:
+        """Zero backends configured is genuinely 'nothing serves it'."""
+        assert await _engine().endpoints_for("m1", []) == []
+
+    async def test_ensure_placed_does_not_lazy_pull_when_all_unreachable(self) -> None:
+        """No place_model while every backend is unreachable; the error propagates."""
+        engine = _engine()
+        backend = _FakeBackend()
+        backend.endpoints_for = AsyncMock(side_effect=RuntimeError("down"))
+        with pytest.raises(FleetUnavailableError):
+            await engine.ensure_placed("m1", [_backend(backend)])
+        backend.place_model.assert_not_awaited()
+
+
+class TestPlaceModelGpuClassFilter:
+    """B8: place_model honours gpu_class / gpu_vendor constraints."""
+
+    async def test_place_model_passes_gpu_class_filter_to_backend(self) -> None:
+        """The class-matching node is the one threaded to the backend."""
+        engine = _engine()
+        backend = _FakeBackend()
+        backend.list_nodes = AsyncMock(
+            return_value=[
+                NodeInfo(
+                    "n1/nvidia-rtx4090",
+                    "u1",
+                    "k8s",
+                    [],
+                    48000,
+                    40000,
+                    True,
+                    gpu_class="nvidia-rtx4090",
+                ),
+                NodeInfo(
+                    "n1/nvidia-rtx4070",
+                    "u1",
+                    "k8s",
+                    [],
+                    12000,
+                    10000,
+                    True,
+                    gpu_class="nvidia-rtx4070",
+                ),
+            ]
+        )
+        await engine.place_model(_ORG_ID, "m", {"gpu_class": "nvidia-rtx4070"}, _backend(backend))
+        backend.place_model.assert_awaited_once_with(
+            "m", {"gpu_class": "nvidia-rtx4070", "node_id": "n1/nvidia-rtx4070"}
+        )
+
+    async def test_place_model_gpu_class_without_capable_node_raises_insufficient(self) -> None:
+        """No node of the class: InsufficientCapacityError, backend untouched."""
+        engine = _engine()
+        backend = _FakeBackend()
+        backend.list_nodes = AsyncMock(
+            return_value=[
+                NodeInfo("n1", "u1", "k8s", [], 48000, 40000, True, gpu_class="nvidia-rtx4090")
+            ]
+        )
+        with pytest.raises(InsufficientCapacityError):
+            await engine.place_model(_ORG_ID, "m", {"gpu_class": "nvidia-l4"}, _backend(backend))
+        backend.place_model.assert_not_awaited()

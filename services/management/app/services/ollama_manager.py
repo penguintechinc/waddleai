@@ -26,6 +26,10 @@ from shared.fleet.base import (
     ProvisionSpec,
 )
 from shared.fleet.registry import register
+from shared.fleet.vllm_ray.coexistence import (
+    default_list_nodes,
+    refuse_plain_gpu_for_target_nodes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +166,27 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
     # Deployment CRUD Operations
 
+    def _refuse_plain_gpu_on_ai_node(self, config: OllamaDeploymentConfig) -> str | None:
+        """Refuse a plain ``nvidia.com/gpu`` request aimed at a renamed-resource AI node.
+
+        Deliberately NOT feature-flag gated: a node advertising per-class GPU resources
+        can never schedule a plain request, so the refusal applies whenever the
+        selector shows one.
+        """
+        return refuse_plain_gpu_for_target_nodes(
+            dict(config.node_selector),
+            config.gpu_count,
+            default_list_nodes,
+            kubernetes=config.deployment_type.startswith("kubernetes"),
+        )
+
     def create_deployment(self, config: OllamaDeploymentConfig) -> dict[str, Any]:
         """Create a new Ollama deployment."""
         db = self.db
+
+        refusal = self._refuse_plain_gpu_on_ai_node(config)
+        if refusal:
+            return {"success": False, "error": refusal}
 
         # Check for duplicate name
         existing = db(db.ollama_deployments.name == config.name).select().first()

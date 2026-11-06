@@ -924,3 +924,94 @@ async def test_endpoints_for_empty_when_model_nowhere_served(fleet_manager, db):
     endpoints = await fleet_manager.endpoints_for("llama-3.2-3b-instruct")
 
     assert endpoints == []
+
+
+_AI_SELECTOR = {"waddleai.penguintech.io/ai-node": "true"}
+
+
+def test_create_deployment_refuses_plain_gpu_on_ai_node_when_flag_on(
+    fleet_manager, db, monkeypatch
+):
+    """Flag on: a plain-GPU deployment aimed at an AI node is refused, nothing inserted."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = LlamaCppDeploymentConfig(name="ai", model_name="m", node_selector=dict(_AI_SELECTOR))
+
+    result = fleet_manager.create_deployment(config)
+
+    assert result["success"] is False
+    assert "instead of nvidia.com/gpu" in result["error"]
+    assert not db._tables.get("llamacpp_deployments")
+
+
+def test_create_deployment_ai_node_refused_regardless_of_flag(fleet_manager, monkeypatch):
+    """The refusal is NOT flag-gated: flag off still refuses on an AI node."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", raising=False)
+    config = LlamaCppDeploymentConfig(name="ai", model_name="m", node_selector=dict(_AI_SELECTOR))
+
+    assert fleet_manager.create_deployment(config)["success"] is False
+
+
+def test_create_deployment_no_selector_unaffected_when_flag_on(fleet_manager, monkeypatch):
+    """Flag on, no node_selector, cluster of plain nodes: not refused."""
+    core = MagicMock()
+    core.list_node.return_value.items = []
+    monkeypatch.setattr(
+        "services.management.app.services.llamacpp_manager.get_k8s_core_client", lambda: core
+    )
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+    config = LlamaCppDeploymentConfig(name="plain", model_name="m")
+
+    assert fleet_manager.create_deployment(config)["success"] is True
+
+
+@pytest.mark.real_node_lookup
+def test_create_deployment_k8s_lookup_failure_fails_closed(fleet_manager, db):
+    """Kubernetes deployment whose node lookup errors is refused with the error."""
+    config = LlamaCppDeploymentConfig(name="k", model_name="m", node_selector={"pool": "x"})
+    with patch(
+        "services.management.app.services.llamacpp_manager.get_k8s_core_client",
+        side_effect=RuntimeError("no kubeconfig"),
+    ):
+        result = fleet_manager.create_deployment(config)
+    assert result["success"] is False
+    assert "no kubeconfig" in result["error"]
+    assert not db._tables.get("llamacpp_deployments")
+
+
+@pytest.mark.real_node_lookup
+def test_create_deployment_selector_resolves_to_renamed_node_refused(fleet_manager, db):
+    """A plain-looking selector matching a node with per-class allocatable is refused."""
+    node = MagicMock()
+    node.metadata.labels = {"pool": "x"}
+    node.status.allocatable = {"nvidia.com/a100": "4"}
+    core = MagicMock()
+    core.list_node.return_value.items = [node]
+    config = LlamaCppDeploymentConfig(name="k", model_name="m", node_selector={"pool": "x"})
+    with patch(
+        "services.management.app.services.llamacpp_manager.get_k8s_core_client",
+        return_value=core,
+    ):
+        result = fleet_manager.create_deployment(config)
+    assert result["success"] is False
+    core.list_node.assert_called_once_with(label_selector="pool=x")
+
+
+@pytest.mark.real_node_lookup
+def test_create_deployment_k8s_gpu_refused_with_no_kube_config(manager, monkeypatch, tmp_path):
+    """With no K8s config at all the real guard refuses a K8s GPU deployment (fail closed)."""
+    from services.management.app.services.llamacpp_manager import LlamaCppDeploymentConfig
+
+    monkeypatch.setenv("KUBECONFIG", str(tmp_path / "missing"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+    config = LlamaCppDeploymentConfig(
+        name="nocfg",
+        model_name="m",
+        model_url="https://example.com/m.gguf",
+        model_filename="m.gguf",
+        gpu_count=1,
+        deployment_type="kubernetes",
+    )
+    result = manager.create_deployment(config)
+    assert result["success"] is False
+    assert "Cannot verify the target node(s)" in result["error"]

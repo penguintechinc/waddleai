@@ -17,6 +17,10 @@ pub struct Model {
     pub resolved_digest: Option<String>,
     pub is_utility: bool,
     pub created_at: Option<DateTime>,
+    #[sea_orm(column_type = "Decimal(Some((8, 2)))", nullable)]
+    pub params_b: Option<Decimal>,
+    #[sea_orm(unique)]
+    pub public_id: Uuid,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -57,7 +57,7 @@ def test_revision_chain():
     """026 revises 025 and is the single head."""
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision("026_pooled_quota").down_revision == "025_fk_indexes"
-    assert script.get_heads() == ["027_configuration_as_code"]
+    assert script.get_heads() == ["028_vllm_ray_fleet"]
 
 
 def test_upgrade_dedups_keeps_lowest_id_enforces_unique_and_seeds(scratch):

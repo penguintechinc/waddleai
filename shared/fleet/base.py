@@ -25,6 +25,7 @@ class BackendType(StrEnum):
     BEDROCK = "bedrock"
     AZURE_AI = "azure_ai"
     OLLAMA_CLOUD = "ollama_cloud"
+    VLLM_RAY = "vllm_ray"
 
 
 class ManagementScope(StrEnum):
@@ -70,6 +71,8 @@ class NodeInfo:
     vram_total_mb: int
     vram_free_mb: int
     healthy: bool
+    gpu_vendor: int | None = None
+    gpu_class: str | None = None
 
 
 @dataclass(slots=True)
