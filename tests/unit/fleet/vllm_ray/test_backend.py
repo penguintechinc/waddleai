@@ -854,6 +854,42 @@ async def test_collect_inventory_empty_payloads_returns_empty_and_does_not_sweep
     assert up.await_args.kwargs["skip_node_uids"] == frozenset({"u1", "u2"})
 
 
+async def test_collect_inventory_passes_ray_node_list_as_authoritative(
+    backend: VllmRayBackend, client: FakeRayServeClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The trusted Ray node list reaches upsert_inventory and collect drops off-list payloads."""
+    up = AsyncMock()
+    monkeypatch.setattr(backend_mod, "upsert_inventory", up)
+    client.inventory_payloads = [_payload("u1"), _payload("rogue", "n-rogue")]
+    client.alive_node_ids = ["u1"]
+    recs = await backend.collect_inventory()
+    assert [r.node_uid for r in recs] == ["u1"]
+    assert up.await_args is not None
+    assert up.await_args.kwargs["authoritative_node_ids"] == ["u1"]
+
+
+async def test_collect_inventory_node_list_failure_marks_cycle_incomplete(
+    backend: VllmRayBackend,
+    client: FakeRayServeClient,
+    db: FakeDAL,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """RayClientError on the list: log, authoritative=None, every known node skipped (no sweep)."""
+    _gpu(db, node_uid="u9", node_name="n9")
+    up = AsyncMock()
+    monkeypatch.setattr(backend_mod, "upsert_inventory", up)
+    client.inventory_payloads = [_payload("u1")]
+    client.fail_next_nodes = RayClientError("nodes down")
+    with caplog.at_level(logging.WARNING):
+        recs = await backend.collect_inventory()
+    assert len(recs) == 1
+    assert "node list unavailable" in caplog.text
+    assert up.await_args is not None
+    assert up.await_args.kwargs["authoritative_node_ids"] is None
+    assert "u9" in up.await_args.kwargs["skip_node_uids"]
+
+
 async def test_collect_inventory_requires_org_id(db: FakeDAL, client: Any) -> None:
     """Check: collect inventory requires org id."""
     cfg = {k: v for k, v in CFG.items() if k != "org_id"}

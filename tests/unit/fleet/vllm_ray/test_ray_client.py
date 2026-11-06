@@ -334,3 +334,53 @@ async def test_fake_ray_client_roundtrip() -> None:
         await fake.get_application("a")
     fake.inventory_payloads = [{"node": "n"}]
     assert await fake.run_inventory() == [{"node": "n"}]
+
+
+def _nodes_body(rows: list[dict[str, Any]], **page: Any) -> dict[str, Any]:
+    """Build a Ray 2.60 /api/v0/nodes reply (rest_response envelope around ListApiResponse)."""
+    result = {"total": len(rows), "num_after_truncation": len(rows), "num_filtered": len(rows)}
+    result.update(page)
+    return {"result": True, "msg": "", "data": {"result": {**result, "result": rows}}}
+
+
+async def test_list_alive_node_ids_returns_only_alive_with_bearer() -> None:
+    """GET /api/v0/nodes is authenticated and DEAD nodes are dropped."""
+    seen: dict[str, Any] = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen.update(auth=req.headers["authorization"], path=req.url.path, q=dict(req.url.params))
+        rows = [
+            {"node_id": "aa", "state": "ALIVE"},
+            {"node_id": "bb", "state": "DEAD"},
+            {"node_id": "cc", "state": "ALIVE"},
+        ]
+        return httpx.Response(200, json=_nodes_body(rows))
+
+    assert await _client(handler).list_alive_node_ids() == ["aa", "cc"]
+    assert seen["auth"] == "Bearer tok"
+    assert seen["path"] == "/api/v0/nodes"
+    assert seen["q"] == {"limit": "10000"}
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"result": False, "msg": "x", "data": {}},
+        {"result": True, "msg": "", "data": {}},
+        {"result": True, "msg": "", "data": {"result": {"result": "nope"}}},
+        _nodes_body([{"node_id": "a", "state": "ALIVE"}], num_filtered=5),
+        _nodes_body([{"node_id": "a", "state": "ALIVE"}], partial_failure_warning="boom"),
+    ],
+)
+async def test_list_alive_node_ids_unusable_reply_fails_closed(body: dict[str, Any]) -> None:
+    """Malformed, partial or truncated lists raise rather than act as authoritative."""
+    client = _client(lambda r: httpx.Response(200, json=body))
+    with pytest.raises(RayClientError):
+        await client.list_alive_node_ids()
+
+
+async def test_list_alive_node_ids_http_error_raises() -> None:
+    """A 401 from the head surfaces as RayClientError."""
+    client = _client(lambda r: httpx.Response(401, text="no"))
+    with pytest.raises(RayClientError, match="401"):
+        await client.list_alive_node_ids()

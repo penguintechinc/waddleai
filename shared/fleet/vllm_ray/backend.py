@@ -501,15 +501,30 @@ class VllmRayBackend(InferenceFleetBackend):
         if org_id is None:
             raise ValueError("vLLM Ray backend config requires org_id for inventory")
         collector = InventoryCollector(self.fleet_backend_id, int(org_id), self.config["class_map"])
-        result = await collector.collect(self._client())
+        client = self._client()
+        authoritative: list[str] | None
+        try:
+            authoritative = await client.list_alive_node_ids()
+        except RayClientError as exc:
+            logger.warning(
+                "ray node list unavailable for backend %s: %s", self.fleet_backend_id, exc
+            )
+            authoritative = None
+        result = await collector.collect(client, authoritative)
         skip: frozenset[str] = result.skipped_node_uids
-        if not result.records and not result.complete:
+        # without the trusted node list the cycle is incomplete: never COLD-sweep on it
+        if authoritative is None or (not result.records and not result.complete):
             known = await self._select(
                 lambda db: db.gpu_inventory.fleet_backend_id == self.fleet_backend_id
             )
             skip = frozenset(r.node_uid for r in known)
         await upsert_inventory(
-            self.db, self.fleet_backend_id, int(org_id), result.records, skip_node_uids=skip
+            self.db,
+            self.fleet_backend_id,
+            int(org_id),
+            result.records,
+            skip_node_uids=skip,
+            authoritative_node_ids=authoritative,
         )
         if not result.records:
             logger.warning("no GPU inventory records for backend %s", self.fleet_backend_id)

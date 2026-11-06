@@ -18,6 +18,8 @@ class FakeRayServeClient:
         self.puts: list[dict[str, Any]] = []
         self.statuses: dict[str, dict[str, Any]] = {}
         self.inventory_payloads: list[dict[str, Any]] = []
+        self.alive_node_ids: list[str] | None = None  # None -> derive from payloads
+        self.fail_next_nodes: Exception | None = None
         self.fail_next_put: Exception | None = None
         self.fail_next_get: Exception | None = None
 
@@ -43,3 +45,12 @@ class FakeRayServeClient:
     async def run_inventory(self) -> list[dict[str, Any]]:
         """Return the scripted inventory payloads."""
         return list(self.inventory_payloads)
+
+    async def list_alive_node_ids(self) -> list[str]:
+        """Return the scripted alive nodes, else the node_uids of the scripted payloads."""
+        if self.fail_next_nodes is not None:
+            exc, self.fail_next_nodes = self.fail_next_nodes, None
+            raise exc
+        if self.alive_node_ids is not None:
+            return list(self.alive_node_ids)
+        return [str(p["node_uid"]) for p in self.inventory_payloads if "node_uid" in p]

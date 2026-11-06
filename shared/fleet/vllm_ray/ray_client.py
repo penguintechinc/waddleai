@@ -6,6 +6,12 @@ Endpoints verified against Ray 2.60.0 (dashboard ``serve_head.py`` / ``job_head.
 ``{"status": PENDING|RUNNING|STOPPED|SUCCEEDED|FAILED, ...}``, ``GET /api/jobs/{id}/logs``
 -> ``{"logs": str}``. Ray token auth (``RAY_AUTH_MODE=token``) is mandatory (AM11/AM12):
 the client fails closed with no token and never logs or echoes it.
+
+``GET /api/v0/nodes?limit=10000`` (state API, ``dashboard/modules/state/state_head.py``
+``list_nodes`` -> ``state_api_utils.handle_list_api``/``do_reply``) answers
+``{"result": bool, "msg": str, "data": {"result": {"total", "num_after_truncation",
+"num_filtered", "result": [NodeState...], "partial_failure_warning"}}}``; each NodeState
+(``ray/util/state/common.py``) carries ``node_id`` and ``state`` (``ALIVE``/``DEAD``).
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ ENV_RAY_AUTH = "WADDLEAI_RAY_AUTH_TOKEN"
 ENV_RAY_AUTH_FILE = "RAY_AUTH_TOKEN_PATH"
 DEFAULT_RAY_AUTH_FILE = "/etc/ray-auth/token"
 _SERVE_PATH = "/api/serve/applications/"
+_NODES_PATH = "/api/v0/nodes"
+_NODES_LIMIT = 10000  # RAY_MAX_LIMIT_FROM_API_SERVER default; the server rejects more
 _INVENTORY_ENTRYPOINT = "python3 -m shared.fleet.vllm_ray.inventory_job"
 _PAYLOAD_PREFIX = "WAGPU_JSON:"
 _TERMINAL = frozenset({"SUCCEEDED", "FAILED", "STOPPED"})
@@ -62,6 +70,10 @@ class RayServeClient(Protocol):
 
     async def run_inventory(self) -> list[dict[str, Any]]:
         """Run the per-worker GPU inventory job; return one payload per worker."""
+        ...
+
+    async def list_alive_node_ids(self) -> list[str]:
+        """Return the Ray node ids the head reports ALIVE (the trusted node list)."""
         ...
 
 
@@ -155,6 +167,31 @@ class HttpRayServeClient:
     async def delete_application(self, name: str, remaining: dict[str, Any]) -> None:
         """Delete ``name`` by PUTting the config without it."""
         await self.put_applications(remaining)
+
+    async def list_alive_node_ids(self) -> list[str]:
+        """Return ALIVE node ids from the authenticated state API; fail closed if unusable.
+
+        A failed reply, a malformed shape, a partial failure or a truncated list all raise
+        :class:`RayClientError` -- an incomplete node list must never act as authoritative.
+        """
+        async with self._http() as http:
+            resp = await self._request(http, "GET", _NODES_PATH, params={"limit": _NODES_LIMIT})
+        try:
+            body = resp.json()
+            if body.get("result") is not True:
+                raise ValueError("result flag false")
+            page = body["data"]["result"]
+            rows = page["result"]
+            if not isinstance(rows, list):
+                raise ValueError("rows not a list")
+            ids = [str(r["node_id"]) for r in rows if r.get("state") == "ALIVE"]
+            truncated = int(page.get("num_filtered", len(rows))) > len(rows)
+            partial = bool(page.get("partial_failure_warning"))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            raise RayClientError("ray nodes response malformed") from None
+        if truncated or partial:
+            raise RayClientError("ray nodes list truncated or partial")
+        return ids
 
     async def run_inventory(self) -> list[dict[str, Any]]:
         """Submit the inventory job, poll to a terminal state, parse WAGPU_JSON log lines."""
