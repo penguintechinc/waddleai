@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from penguin_dal import DAL, Field
-from sqlalchemy import DefaultClause, create_engine, text
+from sqlalchemy import BigInteger, DefaultClause, Integer, create_engine, text
 
 from services.management.app.models_sqlalchemy import Base
 from services.management.app.services.fleet_secrets import DEPLOYMENT_KEYS_SECRET
@@ -29,6 +29,8 @@ def _mirror_python_defaults() -> None:
     """
     for table in Base.metadata.tables.values():
         for column in table.columns:
+            if column.primary_key and isinstance(column.type, BigInteger):
+                column.type = Integer()  # sqlite autoincrements INTEGER PKs only
             default = column.default
             if (
                 default is not None

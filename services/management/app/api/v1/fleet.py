@@ -676,25 +676,91 @@ class FleetSecretResponse:
     meta: ActionMeta
 
 
-def _rotated_at(name: str) -> str | None:
-    """Time of the last successful rotation, from the audit trail (None when never rotated)."""
+_ROTATION_COOLDOWN_S = 300
+_ROTATION_AUDIT_PREFIX = "fleet.secret.rotated/"
+
+
+def _is_system_operator() -> bool:
+    """True for the platform operator: ``system:config`` scope AND the configured system org.
+
+    Cluster-level fleet secrets (Ray token, Ray TLS) are shared by every tenant, so they are NOT
+    ``fleet:admin`` territory. ``system:config`` is admin-exclusive in this repo's RBAC, but every
+    org's admin holds it, so the token must also belong to the reserved ``system`` tenant, mapped
+    to an org id by ``WADDLEAI_SYSTEM_ORG_ID``. Unset or malformed -> nobody qualifies.
+    """
+    user = getattr(g, "user", None) or {}
+    if Permission.SYSTEM_CONFIG.value not in set(user.get("scope") or []):
+        return False
+    configured = os.environ.get("WADDLEAI_SYSTEM_ORG_ID", "").strip()
+    return configured.isdigit() and user.get("organization_id") == int(configured)
+
+
+def _rotation_audit_rows(name: str) -> Any:
+    """Audit rows of ``name``'s rotations, newest first (claims and completed rotations)."""
     database = _db()
     table = database.audit_log
-    rows = database(
-        (table.method == "POST")
-        & (table.path == f"/api/v1/fleet/secrets/{name}/rotate")
-        & (table.status_code == 200)
-    ).select(orderby=[~table.created_at], limitby=(0, 1))
-    row = rows.first() if rows else None
-    return row.created_at.isoformat() if row is not None and row.created_at else None
+    return database(table.path == f"{_ROTATION_AUDIT_PREFIX}{name}").select(
+        orderby=[~table.created_at, ~table.id]
+    )
+
+
+def _rotated_at(name: str) -> str | None:
+    """Time of the last successful rotation, from the audit trail (None when never rotated)."""
+    for row in _rotation_audit_rows(name):
+        if row.status_code == 200 and row.created_at:
+            return row.created_at.isoformat()
+    return None
+
+
+def _claim_rotation(name: str, old_fp: str | None) -> tuple[int | None, int]:
+    """Reserve a rotation slot: ``(audit_row_id, 0)`` or ``(None, retry_after_seconds)``.
+
+    The claim row is written BEFORE the rotation so concurrent requests see it; it records the
+    actor and the old fingerprint, and is completed (new fingerprint) or removed on failure.
+    """
+    now = datetime.utcnow()
+    for row in _rotation_audit_rows(name):
+        age = (now - row.created_at).total_seconds() if row.created_at else None
+        if age is not None and age < _ROTATION_COOLDOWN_S:
+            return None, max(1, int(_ROTATION_COOLDOWN_S - age))
+        break
+    database = _db()
+    row_id = database.audit_log.insert(
+        method="POST",
+        path=f"{_ROTATION_AUDIT_PREFIX}{name}",
+        resource_id=f"{name}:{old_fp}->pending",
+        status_code=202,
+        user_id=g.user.get("user_id"),
+        organization_id=g.user.get("organization_id"),
+        created_at=now,
+    )
+    database.commit()
+    return int(row_id), 0
+
+
+def _finish_rotation(row_id: int, name: str, old_fp: str | None, new_fp: str | None) -> None:
+    """Complete a claimed rotation's audit row with the new fingerprint."""
+    database = _db()
+    database(database.audit_log.id == row_id).update(
+        resource_id=f"{name}:{old_fp}->{new_fp}", status_code=200
+    )
+    database.commit()
+
+
+def _release_rotation(row_id: int) -> None:
+    """Drop a claim whose rotation failed, so a retry is not locked out."""
+    database = _db()
+    database(database.audit_log.id == row_id).delete()
+    database.commit()
 
 
 @api_v1_bp.route("/fleet/secrets", methods=["GET"])
 @require_auth
-@require_scope(Permission.FLEET_ADMIN)
 @validate_response(FleetSecretListResponse, 200)
 async def list_fleet_secrets():
-    """List rotatable cluster secrets with source, fingerprint and last rotation time."""
+    """List rotatable cluster secrets (platform operator only; never the values)."""
+    if not _is_system_operator():
+        return jsonify({"error": "Insufficient permissions"}), 403
     org_id = g.user.get("organization_id")
     if not _vllm_ray_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
@@ -715,32 +781,58 @@ async def list_fleet_secrets():
 
 @api_v1_bp.route("/fleet/secrets/<name>/rotate", methods=["POST"])
 @require_auth
-@require_scope(Permission.FLEET_ADMIN)
 @validate_response(FleetSecretResponse, 200)
 async def rotate_fleet_secret(name: str):
-    """Rotate a generated cluster secret and roll the Ray pods; an externally managed key is 409."""
+    """Rotate a generated cluster secret and roll the Ray pods (platform operator only).
+
+    An org admin is 403 (these keys are shared by all tenants); an externally managed key is 409;
+    at most one rotation per secret per 5 minutes (429); every rotation is audit-logged with the
+    actor and the fingerprint change, never a value.
+    """
+    if not _is_system_operator():
+        return jsonify({"error": "Insufficient permissions"}), 403
     org_id = g.user.get("organization_id")
     if not _vllm_ray_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
-    try:
-        info = await fleet_secrets.rotate_secret(name)
-    except fleet_secrets.UnknownSecret:
+    if name not in fleet_secrets.SECRET_NAMES:
         return jsonify({"status": "error", "error": "unknown secret"}), 404
-    except fleet_secrets.ManagedExternally:
+    if fleet_secrets.secret_source(name) == "external":
         return (
             jsonify(
                 {"status": "error", "error": "managed externally", "reason": "managed externally"}
             ),
             409,
         )
+    current = next((i for i in await fleet_secrets.list_secrets() if i.name == name), None)
+    old_fp = current.fingerprint if current else None
+    row_id, retry_after = await asyncio.to_thread(_claim_rotation, name, old_fp)
+    if row_id is None:
+        response = jsonify(
+            {"status": "error", "error": "rotated too recently", "retry_after_s": retry_after}
+        )
+        response.headers["Retry-After"] = str(retry_after)
+        return response, 429
+    try:
+        info = await fleet_secrets.rotate_secret(name)
+    except fleet_secrets.ManagedExternally:
+        await asyncio.to_thread(_release_rotation, row_id)
+        return jsonify({"status": "error", "error": "managed externally"}), 409
     except fleet_secrets.SecretWriteFailed:
+        await asyncio.to_thread(_release_rotation, row_id)
         return (
             jsonify(
                 {"status": "error", "error": "secret write failed", "reason": "secret write failed"}
             ),
             502,
         )
-    logger.info("fleet.secret.rotated name=%s fingerprint_new=%s", info.name, info.fingerprint)
+    await asyncio.to_thread(_finish_rotation, row_id, name, old_fp, info.fingerprint)
+    logger.info(
+        "fleet.secret.rotated name=%s actor=%s fingerprint_old=%s fingerprint_new=%s",
+        info.name,
+        g.user.get("user_id"),
+        old_fp,
+        info.fingerprint,
+    )
     return {
         "status": "success",
         "data": {

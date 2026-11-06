@@ -118,6 +118,13 @@ SECRETS = "/api/v1/fleet/secrets"
 
 
 @pytest.fixture
+def operator_headers(mint_token, monkeypatch):
+    """The platform operator: an admin token whose org is the configured system org."""
+    monkeypatch.setenv("WADDLEAI_SYSTEM_ORG_ID", "99")
+    return {"Authorization": f"Bearer {mint_token(role='admin', org_id=99)}"}
+
+
+@pytest.fixture
 def cluster(vllm_db, both_flags, fake_k8s, monkeypatch):
     """Ray secrets present and no external-source env vars."""
     for var in (
@@ -132,15 +139,15 @@ def cluster(vllm_db, both_flags, fake_k8s, monkeypatch):
 
 
 async def test_secrets_list_returns_source_fingerprint_rotated_at_never_value(
-    client, cluster, auth_headers, vllm_db
+    client, cluster, operator_headers, vllm_db
 ):
     """Names, source, fingerprint and rotated_at (from the audit trail); no value key."""
     vllm_db.audit_log.insert(
-        id=1, method="POST", path="/api/v1/fleet/secrets/ray-auth-token/rotate", status_code=200,
+        method="POST", path="fleet.secret.rotated/ray-auth-token", status_code=200,
         created_at=datetime(2026, 11, 1, 12, 0, 0),
     )  # fmt: skip
     vllm_db.commit()
-    resp = await client.get(SECRETS, headers=auth_headers)
+    resp = await client.get(SECRETS, headers=operator_headers)
     assert resp.status_code == 200
     items = {i["name"]: i for i in (await resp.get_json())["data"]}
     assert set(items) == {"ray-auth-token", "ray-internal-tls"}
@@ -151,55 +158,136 @@ async def test_secrets_list_returns_source_fingerprint_rotated_at_never_value(
     assert all(i["source"] == "generated" for i in items.values())
 
 
-async def test_secrets_list_requires_fleet_admin(client, cluster, user_auth_headers):
-    """A non-admin is 403, no JWT is 401."""
+async def test_secrets_list_requires_operator_not_org_admin(
+    client, cluster, user_auth_headers, auth_headers, operator_headers
+):
+    """An org admin and a plain user are 403; no JWT is 401 (cluster keys are not org-scoped)."""
+    assert (await client.get(SECRETS, headers=auth_headers)).status_code == 403
     assert (await client.get(SECRETS, headers=user_auth_headers)).status_code == 403
     assert (await client.get(SECRETS)).status_code == 401
+    assert (await client.get(SECRETS, headers=operator_headers)).status_code == 200
+
+
+async def test_secrets_unconfigured_system_org_fails_closed(
+    client, cluster, mint_token, monkeypatch
+):
+    """With no system org configured nobody (even admin scope) can touch cluster secrets."""
+    monkeypatch.delenv("WADDLEAI_SYSTEM_ORG_ID", raising=False)
+    headers = {"Authorization": f"Bearer {mint_token(role='admin', org_id=99)}"}
+    assert (await client.get(SECRETS, headers=headers)).status_code == 403
+    assert (
+        await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=headers)
+    ).status_code == 403
+    assert cluster.patches == [] and cluster.restart == {}
+
+
+async def test_org_admin_cannot_rotate_cluster_secret(
+    client, cluster, auth_headers, operator_headers
+):
+    """An org admin's rotate is 403 and writes nothing."""
+    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=auth_headers)
+    assert resp.status_code == 403
+    assert cluster.patches == [] and cluster.restart == {} and cluster.deleted_secrets == []
+
+
+async def test_rotation_writes_audit_row_with_fingerprints_not_values(
+    client, cluster, operator_headers, vllm_db
+):
+    """Every rotation leaves an audit row: actor, secret name, fingerprint old->new."""
+    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=operator_headers)
+    assert resp.status_code == 200
+    new = cluster.secrets[fleet_secrets.RAY_AUTH_SECRET]["token"]
+    row = vllm_db(vllm_db.audit_log.path == "fleet.secret.rotated/ray-auth-token").select().first()
+    assert row.organization_id == 99 and row.user_id == 1 and row.status_code == 200
+    assert row.resource_id == (
+        f"ray-auth-token:{fleet_secrets.fingerprint(SENTINEL)}->{fleet_secrets.fingerprint(new)}"
+    )
+    assert SENTINEL not in row.resource_id and new not in row.resource_id
+
+
+async def test_rapid_repeat_rotation_is_429_until_cooldown(
+    client, cluster, operator_headers, vllm_db
+):
+    """A second rotation of the same secret within 5 minutes is 429 (other secrets unaffected)."""
+    url = f"{SECRETS}/ray-auth-token/rotate"
+    assert (await client.post(url, headers=operator_headers)).status_code == 200
+    again = await client.post(url, headers=operator_headers)
+    assert again.status_code == 429 and again.headers.get("Retry-After")
+    assert cluster.restart == {"RayCluster/waddleai-vllm-ray": 1}
+    tls = await client.post(f"{SECRETS}/ray-internal-tls/rotate", headers=operator_headers)
+    assert tls.status_code == 200
+    from datetime import datetime, timedelta
+
+    vllm_db(vllm_db.audit_log.path == "fleet.secret.rotated/ray-auth-token").update(
+        created_at=datetime.utcnow() - timedelta(minutes=6)
+    )
+    vllm_db.commit()
+    assert (await client.post(url, headers=operator_headers)).status_code == 200
+
+
+async def test_failed_rotation_does_not_start_cooldown(client, cluster, operator_headers):
+    """A failed Secret write releases the claim so an immediate retry is allowed."""
+    cluster.fail_next_patch = True
+    url = f"{SECRETS}/ray-auth-token/rotate"
+    assert (await client.post(url, headers=operator_headers)).status_code == 502
+    assert (await client.post(url, headers=operator_headers)).status_code == 200
+
+
+async def test_secrets_flag_off_is_404_for_the_operator(
+    client, cluster, operator_headers, monkeypatch
+):
+    """Even the operator gets 404 while the vLLM flags are off."""
+    monkeypatch.delenv("WADDLEAI_FLAG_FLEET_VLLM_RAY")
+    assert (await client.get(SECRETS, headers=operator_headers)).status_code == 404
+    rotate = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=operator_headers)
+    assert rotate.status_code == 404
 
 
 async def test_secrets_external_env_reports_external_and_rotate_is_409(
-    client, cluster, auth_headers, monkeypatch
+    client, cluster, operator_headers, monkeypatch
 ):
     """An env-supplied key is external; rotation is 409 and nothing is written."""
     monkeypatch.setenv("WADDLEAI_RAY_AUTH_TOKEN", "from-vault")
     listed = {
         i["name"]: i
-        for i in (await (await client.get(SECRETS, headers=auth_headers)).get_json())["data"]
+        for i in (await (await client.get(SECRETS, headers=operator_headers)).get_json())["data"]
     }
     assert listed["ray-auth-token"]["source"] == "external"
-    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=auth_headers)
+    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=operator_headers)
     assert resp.status_code == 409 and (await resp.get_json())["reason"] == "managed externally"
     assert cluster.patches == [] and cluster.restart == {}
 
 
-async def test_secrets_rotate_generated_bumps_restart_generation(client, cluster, auth_headers):
+async def test_secrets_rotate_generated_bumps_restart_generation(client, cluster, operator_headers):
     """Rotating the Ray token writes a 48-char alnum token, bumps the RayCluster generation."""
-    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=auth_headers)
+    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=operator_headers)
     assert resp.status_code == 200
     new = cluster.secrets[fleet_secrets.RAY_AUTH_SECRET]["token"]
     assert len(new) == 48 and new.isalnum() and new != SENTINEL
     assert cluster.restart == {"RayCluster/waddleai-vllm-ray": 1}
-    again = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=auth_headers)
-    assert again.status_code == 200 and cluster.restart["RayCluster/waddleai-vllm-ray"] == 2
 
 
-async def test_secrets_rotate_tls_deletes_secret_for_reissue(client, cluster, auth_headers):
+async def test_secrets_rotate_tls_deletes_secret_for_reissue(client, cluster, operator_headers):
     """TLS rotation deletes the Secret so cert-manager reissues it, and rolls the pods."""
-    resp = await client.post(f"{SECRETS}/ray-internal-tls/rotate", headers=auth_headers)
+    resp = await client.post(f"{SECRETS}/ray-internal-tls/rotate", headers=operator_headers)
     assert resp.status_code == 200
     assert fleet_secrets.RAY_TLS_SECRET in cluster.deleted_secrets
     assert cluster.restart["RayCluster/waddleai-vllm-ray"] == 1
 
 
-async def test_secrets_rotate_unknown_name_404_and_write_failure_502(client, cluster, auth_headers):
+async def test_secrets_rotate_unknown_name_404_and_write_failure_502(
+    client, cluster, operator_headers
+):
     """Unknown name is 404; a failed write is 502 and nothing is rolled."""
-    assert (await client.post(f"{SECRETS}/nope/rotate", headers=auth_headers)).status_code == 404
+    assert (
+        await client.post(f"{SECRETS}/nope/rotate", headers=operator_headers)
+    ).status_code == 404
     cluster.fail_next_patch = True
-    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=auth_headers)
+    resp = await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=operator_headers)
     assert resp.status_code == 502 and cluster.restart == {}
 
 
-async def test_secrets_rotate_auth_matrix(client, cluster, user_auth_headers):
+async def test_secrets_rotate_auth_matrix(client, cluster, user_auth_headers, operator_headers):
     """401 without JWT, 403 without fleet:admin."""
     assert (await client.post(f"{SECRETS}/ray-auth-token/rotate")).status_code == 401
     assert (
@@ -207,15 +295,15 @@ async def test_secrets_rotate_auth_matrix(client, cluster, user_auth_headers):
     ).status_code == 403
 
 
-async def test_value_never_in_any_response_or_log(client, cluster, auth_headers, caplog):
+async def test_value_never_in_any_response_or_log(client, cluster, operator_headers, caplog):
     """The sentinel token is absent from list, rotate responses and the log."""
     with caplog.at_level(logging.DEBUG):
         bodies = [
-            await (await client.get(SECRETS, headers=auth_headers)).get_data(),
+            await (await client.get(SECRETS, headers=operator_headers)).get_data(),
             await (
-                await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=auth_headers)
+                await client.post(f"{SECRETS}/ray-auth-token/rotate", headers=operator_headers)
             ).get_data(),
-            await (await client.get(SECRETS, headers=auth_headers)).get_data(),
+            await (await client.get(SECRETS, headers=operator_headers)).get_data(),
         ]
     new = cluster.secrets[fleet_secrets.RAY_AUTH_SECRET]["token"]
     for body in bodies:

@@ -507,7 +507,6 @@ async def test_every_route_404_when_second_flag_off(client, vllm_db, auth_header
         ("get", DEPS), ("post", DEPS), ("get", f"{DEPS}/{pid}"), ("patch", f"{DEPS}/{pid}"),
         ("delete", f"{DEPS}/{pid}"), ("get", f"{DEPS}/{pid}/events"),
         ("post", f"{DEPS}/{pid}/rotate-token"), ("delete", "/api/v1/fleet/models/org/m/weights"),
-        ("get", "/api/v1/fleet/secrets"), ("post", "/api/v1/fleet/secrets/ray-auth-token/rotate"),
     ]  # fmt: skip
     for method, path in calls:
         resp = await getattr(client, method)(
