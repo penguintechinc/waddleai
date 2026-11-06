@@ -25,6 +25,10 @@ from shared.fleet.base import (
     ProvisionSpec,
 )
 from shared.fleet.registry import register
+from shared.fleet.vllm_ray.coexistence import (
+    default_list_nodes,
+    refuse_plain_gpu_for_target_nodes,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,11 @@ def get_k8s_core_client():
         logger.debug("Not running in-cluster, falling back to kubeconfig")
         k8s_config.load_kube_config()
     return client.CoreV1Api()
+
+
+def _list_candidate_nodes(node_selector: dict[str, str]) -> list[Any]:
+    """Resolve candidate K8s nodes for the co-tenancy guard (test seam; raises -> fail closed)."""
+    return default_list_nodes(node_selector, get_k8s_core_client())
 
 
 @dataclass(slots=True)
@@ -359,9 +368,27 @@ class LlamaCppManager(InferenceFleetBackend):
     # Deployment CRUD (factored out of api/v1/llamacpp.py's create/delete
     # routes so InferenceFleetBackend.provision/deprovision have one path)
 
+    def _refuse_plain_gpu_on_ai_node(self, config: LlamaCppDeploymentConfig) -> str | None:
+        """Refuse a plain ``nvidia.com/gpu`` request aimed at a renamed-resource AI node.
+
+        Deliberately NOT feature-flag gated: a node advertising per-class GPU resources
+        can never schedule a plain request, so the refusal applies whenever the
+        selector shows one.
+        """
+        return refuse_plain_gpu_for_target_nodes(
+            dict(config.node_selector or {}),
+            config.gpu_count,
+            _list_candidate_nodes,
+            kubernetes=config.deployment_type == "kubernetes",
+        )
+
     def create_deployment(self, config: LlamaCppDeploymentConfig) -> dict[str, Any]:
         """Insert a new ``llamacpp_deployments`` row. Does not deploy it — see provision()."""
         db = self.db
+
+        refusal = self._refuse_plain_gpu_on_ai_node(config)
+        if refusal:
+            return {"success": False, "error": refusal}
         existing = db(db.llamacpp_deployments.name == config.name).select().first()
         if existing:
             return {"success": False, "error": "Deployment with this name already exists"}

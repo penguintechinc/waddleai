@@ -1,0 +1,4 @@
+{"device_list": [
+  {"device_id": 0, "device_name": "Intel(R) Data Center GPU Max 1100", "memory_physical_size_byte": 51539607552, "pci_bdf_address": "0000:03:00.0"},
+  {"device_id": 1, "device_name": "Intel(R) Data Center GPU Max 1100", "memory_physical_size_byte": 51539607552, "pci_bdf_address": "0000:04:00.0"}
+]}

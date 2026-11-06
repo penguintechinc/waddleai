@@ -37,6 +37,7 @@ _MODULE_MAP: dict[BackendType, str] = {
     BackendType.BEDROCK: "shared.fleet.bedrock",
     BackendType.AZURE_AI: "shared.fleet.azure_ai",
     BackendType.OLLAMA_CLOUD: "shared.fleet.ollama_cloud",
+    BackendType.VLLM_RAY: "shared.fleet.vllm_ray.backend",
 }
 
 

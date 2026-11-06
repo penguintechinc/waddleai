@@ -91,6 +91,7 @@ def test_backend_type_enum_values() -> None:
         "bedrock",
         "azure_ai",
         "ollama_cloud",
+        "vllm_ray",
     }
 
 

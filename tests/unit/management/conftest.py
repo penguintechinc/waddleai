@@ -37,6 +37,24 @@ TEST_ONLY_PASSWORD = "password123"  # noqa: S105 -- test fixture, not a real cre
 TEST_ONLY_ENCRYPTION_KEY = "test-encryption-key"  # noqa: S105 -- test fixture, not a real key
 
 
+@pytest.fixture(autouse=True)
+def _no_k8s_node_lookup(request, monkeypatch):
+    """Keep manager tests hermetic: the GPU co-tenancy node lookup reports no AI nodes.
+
+    The production guard fails closed when nodes cannot be listed (no kube config), which
+    made K8s-mode deployment tests depend on the developer machine having a kubeconfig.
+    Tests of the guard itself opt out with ``@pytest.mark.real_node_lookup``.
+    """
+    if request.node.get_closest_marker("real_node_lookup"):
+        return
+    for mod in ("ollama_manager", "llamacpp_manager"):
+        target = f"services.management.app.services.{mod}"
+        if mod == "ollama_manager":
+            monkeypatch.setattr(f"{target}.default_list_nodes", lambda _sel, core=None: [])
+        else:
+            monkeypatch.setattr(f"{target}._list_candidate_nodes", lambda _sel: [])
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _credential_encryption_key():
     """Give every management test a credential-encryption key, as production has.
