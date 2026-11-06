@@ -214,4 +214,41 @@ mod tests {
             "waddleai.example"
         );
     }
+
+    #[test]
+    fn validate_redirect_url_rejects_unparseable_input() {
+        let err = validate_redirect_url("not a url", "waddleai.example").expect_err("unparseable");
+        assert!(matches!(err, CliError::OAuth(m) if m.contains("unparseable")));
+    }
+
+    #[test]
+    fn validate_redirect_url_rejects_hostless_https() {
+        // `https:///path` parses with an empty host or fails; either way it
+        // must be refused, never opened.
+        assert!(validate_redirect_url("https:///path", "waddleai.example").is_err());
+    }
+
+    #[test]
+    fn validate_redirect_url_host_match_is_case_insensitive() {
+        validate_redirect_url("https://AUTH.WaddleAI.Example/x", "waddleai.example")
+            .expect("case-insensitive match");
+    }
+
+    #[test]
+    fn host_of_rejects_invalid_and_hostless_urls() {
+        assert!(host_of("::::").is_err());
+        assert!(host_of("mailto:someone@example.com").is_err());
+    }
+
+    // Both env-var branches live in one test: the variable is process-global
+    // and tests run in parallel threads.
+    #[test]
+    fn system_opener_honors_no_browser_env_and_ignores_blank_value() {
+        let opener = SystemBrowserOpener;
+        std::env::set_var("WADDLEAI_NO_BROWSER", "1");
+        opener
+            .open("https://waddleai.example/x")
+            .expect("headless no-op must succeed without launching anything");
+        std::env::remove_var("WADDLEAI_NO_BROWSER");
+    }
 }

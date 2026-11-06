@@ -172,6 +172,27 @@ class TestCreateFleetBackend:
         )
         assert resp.status_code == 400
 
+    async def test_ollama_cloud_defaults_to_register_and_route(
+        self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
+    ) -> None:
+        """Hosted Ollama cannot be persisted as a lifecycle-managed backend."""
+        _enable_flag(monkeypatch)
+        _entitled(monkeypatch, True)
+        empty_sel = make_select_result([])
+        created = make_mock_backend(
+            backend_type="ollama_cloud", management_scope="register_and_route"
+        )
+        app_mock_db.return_value.select.side_effect = [empty_sel, make_select_result([created])]
+        app_mock_db.fleet_backends.insert.return_value = 1
+        payload = self._payload(type="ollama_cloud", credentials="cloud-token")
+        payload.pop("management_scope")
+        resp = await client.post(ENDPOINT_PATH, headers=auth_headers, json=payload)
+        assert resp.status_code == 201
+        assert (
+            app_mock_db.fleet_backends.insert.call_args.kwargs["management_scope"]
+            == "register_and_route"
+        )
+
     async def test_name_conflict_returns_409(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:

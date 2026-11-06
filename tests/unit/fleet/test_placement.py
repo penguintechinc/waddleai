@@ -43,7 +43,10 @@ class _FakeLicenseClient:
 
 
 def _engine(
-    valkey=None, tier: str = "professional", hot_model_pins: dict[str, str] | None = None
+    valkey=None,
+    tier: str = "professional",
+    hot_model_pins: dict[str, str] | None = None,
+    idle_teardown=None,
 ) -> PlacementEngine:
     """A PlacementEngine with `professional` tier by default.
 
@@ -56,6 +59,7 @@ def _engine(
         valkey=valkey,
         license_client=_FakeLicenseClient(tier=tier),
         hot_model_pins=hot_model_pins,
+        idle_teardown=idle_teardown,
     )
 
 
@@ -210,6 +214,20 @@ class TestEnsurePlaced:
 
         backend.place_model.assert_not_awaited()
         assert result == []
+
+    async def test_cold_lifecycle_backend_uses_idle_controller_before_lazy_pull(self) -> None:
+        """A controller can recreate idle cloud capacity before generic lazy placement."""
+        controller = AsyncMock()
+        controller.ensure_deployed = AsyncMock(return_value=True)
+        engine = _engine(idle_teardown=controller)
+        backend = _FakeBackend()
+        backend.endpoints_for = AsyncMock(side_effect=[[], [_endpoint("redeployed")]])
+
+        result = await engine.ensure_placed("cold-model", [_backend(backend)])
+
+        controller.ensure_deployed.assert_awaited_once_with(_backend(backend), "cold-model")
+        backend.place_model.assert_not_awaited()
+        assert result[0].node_id == "redeployed"
 
 
 class TestOriginDenyList:

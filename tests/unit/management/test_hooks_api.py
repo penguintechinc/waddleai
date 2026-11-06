@@ -263,6 +263,8 @@ class TestHooksContractResponseSchema:
             "reason",
             "rule_id",
             "evaluated_in_ms",
+            "redirect_model",
+            "active_skills",
         }
 
     async def test_policy_field_set_is_exact(

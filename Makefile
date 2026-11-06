@@ -42,6 +42,9 @@ venv: ## Create .venv (3.13) from the hash-pinned lockfiles -- published deps on
 	@uv pip install --python $(VENV)/bin/python -r requirements.txt
 	@uv pip install --python $(VENV)/bin/python -r services/management/requirements.txt
 	@uv pip install --python $(VENV)/bin/python -r proxy/requirements.txt
+	@# tests/unit/classification imports opentelemetry-exporter-prometheus, declared only in
+	@# the classification CI lockfile -- CI installs it, so the local venv must too.
+	@uv pip install --python $(VENV)/bin/python -r services/classification/requirements-ci.txt
 	@uv pip install --python $(VENV)/bin/python pytest pytest-asyncio pytest-cov pip-audit
 	@echo "venv ready: $(VENV) ($$($(VENV)/bin/python -V))"
 

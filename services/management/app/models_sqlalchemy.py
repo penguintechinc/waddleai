@@ -339,7 +339,7 @@ class FleetBackend(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
-    type = Column(String(20), nullable=False)  # ollama|llamacpp|exo|vertex_ai|bedrock
+    type = Column(String(20), nullable=False)  # see shared.fleet.base.BackendType
     mode = Column(String(50), nullable=True)
     # register_and_route|full_lifecycle
     management_scope = Column(String(30), nullable=False, default="full_lifecycle")
@@ -1450,6 +1450,70 @@ class McpUserLink(Base):
     __table_args__ = (
         UniqueConstraint("endpoint_id", "user_uuid", name="uq_mcp_user_links_endpoint_user"),
     )
+
+
+class ManagedMcpServer(Base):
+    """An operator-owned immutable MCP workload and its gateway endpoint (§11/Wave 5)."""
+
+    __tablename__ = "managed_mcp_servers"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    endpoint_id = Column(
+        Integer, ForeignKey("mcp_endpoints.id", ondelete="SET NULL"), nullable=True
+    )
+    name = Column(String(255), nullable=False)
+    namespace = Column(String(255), nullable=False)
+    k8s_name = Column(String(63), nullable=False)  # org-scoped K8s object name; globally unique
+    image = Column(String(1024), nullable=False)  # digest-pinned; validated before persistence
+    transport = Column(String(32), nullable=False)
+    status = Column(String(32), nullable=False, default="pending")
+    discovered_tools = Column(JSON, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("org_id", "name", name="uq_managed_mcp_servers_org_name"),
+        UniqueConstraint("namespace", "k8s_name", name="uq_managed_mcp_servers_k8s_name"),
+    )
+
+
+class ConfigurationRevision(Base):
+    """Redacted, immutable DAC source revision; secrets are never persisted here (§20)."""
+
+    __tablename__ = "configuration_revisions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String(255), nullable=False)
+    manifest_digest = Column(String(64), nullable=False)
+    manifest_redacted = Column(JSON, nullable=False)
+    created_by = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "name", "manifest_digest", name="uq_configuration_revisions_identity"
+        ),
+    )
+
+
+class ManifestApplyRun(Base):
+    """Auditable reviewed DAC plan and its per-resource outcomes (§20.3)."""
+
+    __tablename__ = "manifest_apply_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    revision_id = Column(
+        Integer, ForeignKey("configuration_revisions.id", ondelete="SET NULL"), nullable=True
+    )
+    org_id = Column(Integer, ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False)
+    plan_id = Column(String(128), nullable=False)
+    plan = Column(JSON, nullable=False)
+    outcomes = Column(JSON, nullable=True)
+    status = Column(String(32), nullable=False)
+    actor_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class LocalVectorCollection(Base):

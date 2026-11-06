@@ -36,6 +36,7 @@ from shared.fleet.caps import (
     InsufficientCapacityError,
     select_capable_node,
 )
+from shared.fleet.idle_teardown import IdleTeardownController
 from shared.routing.aliases import split_provider_prefix
 from shared.routing.capability import ModelOffer
 
@@ -150,6 +151,9 @@ class PlacementEngine:
             from the same node class.
         ttl_seconds: Session-affinity TTL, sliding on every successful
             lookup (mirrors ``shared.cache.affinity.SessionAffinityMap``).
+        idle_teardown: Optional lifecycle controller. When supplied, a cold
+            full-lifecycle cloud target is given a chance to redeploy before
+            the ordinary lazy-placement fallback runs.
 
     """
 
@@ -160,6 +164,7 @@ class PlacementEngine:
         license_client: Any,
         hot_model_pins: dict[str, str] | None = None,
         ttl_seconds: int = _AFFINITY_TTL_SECONDS,
+        idle_teardown: IdleTeardownController | None = None,
     ) -> None:
         """Bind shared (non-org-specific) dependencies -- see the class docstring."""
         self.db = db
@@ -167,6 +172,7 @@ class PlacementEngine:
         self.license_client = license_client
         self.hot_model_pins = hot_model_pins or {}
         self.ttl_seconds = ttl_seconds
+        self.idle_teardown = idle_teardown
 
     def _cap_enforcer(self, org_id: int) -> CapEnforcer:
         """Build a fresh org-scoped CapEnforcer -- cheap, no I/O until called."""
@@ -278,6 +284,21 @@ class PlacementEngine:
         existing = await self.endpoints_for(model, backends)
         if existing:
             return existing
+
+        if self.idle_teardown is not None:
+            for backend in backends:
+                if backend.management_scope != ManagementScope.FULL_LIFECYCLE:
+                    continue
+                try:
+                    if await self.idle_teardown.ensure_deployed(backend, model):
+                        return await self.endpoints_for(model, backends)
+                except Exception as exc:
+                    logger.warning(
+                        "PlacementEngine: on-demand redeploy of %r failed on backend_id=%s: %s",
+                        model,
+                        getattr(backend, "fleet_backend_id", "?"),
+                        exc,
+                    )
 
         for backend in backends:
             if backend.management_scope != ManagementScope.FULL_LIFECYCLE:

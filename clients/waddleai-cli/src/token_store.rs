@@ -63,28 +63,45 @@ impl KeyringTokenStore {
 
 impl TokenStore for KeyringTokenStore {
     fn save(&self, tokens: &StoredTokens) -> Result<()> {
-        let serialized = serde_json::to_string(tokens)?;
-        self.entry()?.set_password(&serialized)?;
-        Ok(())
+        save_to_entry(&self.entry()?.inner, tokens)
     }
 
     fn load(&self) -> Result<Option<StoredTokens>> {
-        match self.entry()?.get_password() {
-            Ok(raw) => {
-                let tokens: StoredTokens =
-                    serde_json::from_str(&raw).map_err(|_| CliError::InvalidSession)?;
-                Ok(Some(tokens))
-            }
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(err) => Err(err.into()),
-        }
+        load_from_entry(&self.entry()?.inner)
     }
 
     fn clear(&self) -> Result<()> {
-        match self.entry()?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(err) => Err(err.into()),
+        clear_entry(&self.entry()?.inner)
+    }
+}
+
+/// Serializes `tokens` as JSON into the credential `entry`. Split out from
+/// the trait impl so the logic is testable against a mock credential store.
+fn save_to_entry(entry: &keyring_core::Entry, tokens: &StoredTokens) -> Result<()> {
+    let serialized = serde_json::to_string(tokens)?;
+    entry.set_password(&serialized)?;
+    Ok(())
+}
+
+/// Reads and decodes the session from `entry`; a missing entry is `None`,
+/// an undecodable payload is `InvalidSession` (never a panic).
+fn load_from_entry(entry: &keyring_core::Entry) -> Result<Option<StoredTokens>> {
+    match entry.get_password() {
+        Ok(raw) => {
+            let tokens: StoredTokens =
+                serde_json::from_str(&raw).map_err(|_| CliError::InvalidSession)?;
+            Ok(Some(tokens))
         }
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// Deletes the credential; deleting an already-absent entry is success.
+fn clear_entry(entry: &keyring_core::Entry) -> Result<()> {
+    match entry.delete_credential() {
+        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -123,6 +140,7 @@ pub mod test_support {
 mod tests {
     use super::test_support::InMemoryTokenStore;
     use super::*;
+    use keyring_core::api::CredentialStoreApi;
 
     fn sample_tokens() -> StoredTokens {
         StoredTokens {
@@ -158,5 +176,60 @@ mod tests {
     fn mask_token_never_exposes_middle() {
         assert_eq!(mask_token("wa-abcdefghijklmnop"), "wa-a...mnop");
         assert_eq!(mask_token("short"), "****");
+    }
+
+    fn mock_entry(user: &str) -> keyring_core::Entry {
+        let store = keyring_core::mock::Store::new().expect("mock store");
+        store.build(SERVICE_NAME, user, None).expect("mock entry")
+    }
+
+    fn inject_error(entry: &keyring_core::Entry) {
+        entry
+            .as_any()
+            .downcast_ref::<keyring_core::mock::Cred>()
+            .expect("mock cred")
+            .set_error(keyring_core::Error::NoStorageAccess("locked".into()));
+    }
+
+    #[test]
+    fn entry_round_trips_tokens_as_json() {
+        let entry = mock_entry("rt");
+        assert!(load_from_entry(&entry).expect("load").is_none());
+        save_to_entry(&entry, &sample_tokens()).expect("save");
+        assert_eq!(
+            load_from_entry(&entry).expect("load").expect("some"),
+            sample_tokens()
+        );
+        clear_entry(&entry).expect("clear");
+        assert!(load_from_entry(&entry).expect("load").is_none());
+    }
+
+    #[test]
+    fn clear_on_absent_entry_is_ok() {
+        clear_entry(&mock_entry("absent")).expect("idempotent clear");
+    }
+
+    #[test]
+    fn corrupt_payload_is_invalid_session_not_panic() {
+        let entry = mock_entry("corrupt");
+        entry.set_password("{not json").expect("set");
+        assert!(matches!(
+            load_from_entry(&entry),
+            Err(CliError::InvalidSession)
+        ));
+    }
+
+    #[test]
+    fn store_backend_errors_propagate_as_keyring_errors() {
+        let entry = mock_entry("errs");
+        inject_error(&entry);
+        assert!(matches!(
+            save_to_entry(&entry, &sample_tokens()),
+            Err(CliError::Keyring(_))
+        ));
+        inject_error(&entry);
+        assert!(matches!(load_from_entry(&entry), Err(CliError::Keyring(_))));
+        inject_error(&entry);
+        assert!(matches!(clear_entry(&entry), Err(CliError::Keyring(_))));
     }
 }

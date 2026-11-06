@@ -8,12 +8,16 @@
         "baseURL": "https://{your-waddleai-host}/v1",
         "apiKey": "{env:WADDLEAI_API_KEY}"
       },
-      "models": {
-        "waddleai-router": {
-          "name": "WaddleAI Smart Router",
-          "id": "smart-router"
+        "models": {
+          "waddleai-router": {
+            "name": "WaddleAI Smart Router",
+            "id": "smart-router"
+          },
+          "devstral-small-2": {
+            "name": "Devstral Small 2",
+            "id": "devstral-small-2"
+          }
         }
-      }
     }
   },
   "mcp": {

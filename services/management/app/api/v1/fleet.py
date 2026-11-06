@@ -32,6 +32,7 @@ from quart import g, jsonify, request
 from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
+from shared.fleet.azure_ai import validate_endpoint_url as _validate_azure_endpoint
 from shared.fleet.base import BackendType, ManagementScope
 from shared.fleet.registry import build_backend
 from shared.security.credential_encryption import encrypt_credential
@@ -65,9 +66,29 @@ _HYBRID_TARGETS_FEATURE = "hybrid_targets"
 # creation -- Ollama/llama.cpp/EXO are available at any tier once fleet_v2
 # is on (spec §2.4 "Deployment targets: K8s/local only" is Free-tier; Vertex
 # AI/Bedrock are the Professional-gated "+ hybrid" row).
-_PRO_GATED_TYPES = frozenset({BackendType.VERTEX_AI.value, BackendType.BEDROCK.value})
+_PRO_GATED_TYPES = frozenset(
+    {
+        BackendType.VERTEX_AI.value,
+        BackendType.BEDROCK.value,
+        BackendType.AZURE_AI.value,
+        BackendType.OLLAMA_CLOUD.value,
+    }
+)
 
-_VALID_TYPES = frozenset(t.value for t in BackendType)
+# Public backend types. Each entry has a concrete lazy-registered backend in
+# ``shared.fleet.registry``; keeping this explicit prevents an enum addition
+# from accidentally creating an unusable API surface.
+_VALID_TYPES = frozenset(
+    {
+        BackendType.OLLAMA.value,
+        BackendType.LLAMACPP.value,
+        BackendType.EXO.value,
+        BackendType.VERTEX_AI.value,
+        BackendType.BEDROCK.value,
+        BackendType.AZURE_AI.value,
+        BackendType.OLLAMA_CLOUD.value,
+    }
+)
 _VALID_SCOPES = frozenset(s.value for s in ManagementScope)
 _VALID_STATUSES = frozenset({"pending", "active", "disabled", "error"})
 _STATUS_ERROR = "status must be one of ['pending', 'active', 'disabled', 'error']"
@@ -343,7 +364,11 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
     name = (data.name or "").strip()
     backend_type = data.type
     mode = data.mode
-    management_scope = data.management_scope or ManagementScope.FULL_LIFECYCLE.value
+    management_scope = data.management_scope or (
+        ManagementScope.REGISTER_AND_ROUTE.value
+        if backend_type == BackendType.OLLAMA_CLOUD.value
+        else ManagementScope.FULL_LIFECYCLE.value
+    )
     config = data.config if data.config is not None else {}
     credentials = data.credentials
 
@@ -353,8 +378,18 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
         return _validation_error(f"type must be one of {sorted(_VALID_TYPES)}")
     if management_scope not in _VALID_SCOPES:
         return _validation_error(f"management_scope must be one of {sorted(_VALID_SCOPES)}")
+    if (
+        backend_type == BackendType.OLLAMA_CLOUD.value
+        and management_scope != ManagementScope.REGISTER_AND_ROUTE.value
+    ):
+        return _validation_error("ollama_cloud only supports management_scope='register_and_route'")
     if not isinstance(config, dict):
         return _validation_error("config must be an object")
+    if backend_type == BackendType.AZURE_AI.value and config.get("endpoint_url"):
+        try:
+            _validate_azure_endpoint(str(config["endpoint_url"]))
+        except ValueError as exc:
+            return _validation_error(str(exc))
 
     if backend_type in _PRO_GATED_TYPES and not await _hybrid_targets_entitled():
         return (
@@ -479,6 +514,11 @@ async def update_fleet_backend(backend_id: int):
     if body.get("config") is not None:
         if not isinstance(body["config"], dict):
             return _validation_error("config must be an object")
+        if row.type == BackendType.AZURE_AI.value and body["config"].get("endpoint_url"):
+            try:
+                _validate_azure_endpoint(str(body["config"]["endpoint_url"]))
+            except ValueError as exc:
+                return _validation_error(str(exc))
         update_fields["config"] = body["config"]
     if body.get("credentials"):
         update_fields["credentials_ref"] = encrypt_credential(body["credentials"])
