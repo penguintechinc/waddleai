@@ -21,6 +21,8 @@ __all__ = [
     "record_deployment_counts",
     "record_inventory",
     "record_placement",
+    "record_rpc_load_seconds",
+    "record_rpc_workers_up",
     "reset_for_testing",
     "usage_missing_counter",
 ]
@@ -44,6 +46,8 @@ _gauges_ready = False
 _vram_total: dict[tuple[str, str, str], int] = {}
 _vram_used: dict[tuple[str, str, str], int] = {}
 _deployment_counts: dict[int, int] = {}
+_rpc_workers_up: dict[str, int] = {}
+_rpc_load: Any = None
 
 
 def usage_missing_counter() -> Any:
@@ -105,6 +109,13 @@ def _observe_status(_options: Any) -> Iterable[Any]:
     ]
 
 
+def _observe_rpc_workers(_options: Any) -> Iterable[Any]:
+    """Observations for ``waddleai_llamacpp_rpc_workers_up{deployment}``."""
+    from opentelemetry.metrics import Observation
+
+    return [Observation(up, {"deployment": name}) for name, up in dict(_rpc_workers_up).items()]
+
+
 def _ensure_gauges() -> None:
     """Create the observable gauges once per meter provider (idempotent)."""
     global _gauges_ready
@@ -129,7 +140,38 @@ def _ensure_gauges() -> None:
         unit="1",
         description="vLLM deployments by status",
     )
+    meter.create_observable_gauge(
+        "waddleai_llamacpp_rpc_workers_up",
+        callbacks=[_observe_rpc_workers],
+        unit="1",
+        description="Ready rpc-server worker pods per llama.cpp RPC deployment",
+    )
     _gauges_ready = True
+
+
+def record_rpc_workers_up(by_deployment: dict[str, int]) -> None:
+    """Replace the per-deployment worker gauge snapshot (a deleted deployment stops reporting)."""
+    try:
+        _ensure_gauges()
+        _rpc_workers_up.clear()
+        _rpc_workers_up.update({str(k): int(v) for k, v in by_deployment.items()})
+    except Exception:  # noqa: BLE001 -- a dead exporter never breaks a reconcile
+        logger.warning("could not record RPC worker gauge", exc_info=True)
+
+
+def record_rpc_load_seconds(seconds: float) -> None:
+    """Record ``waddleai_vllm_model_load_seconds{engine="llamacpp_rpc"}`` (never raises)."""
+    global _rpc_load
+    try:
+        if _rpc_load is None:
+            _rpc_load = get_meter().create_histogram(
+                "waddleai_vllm_model_load_seconds",
+                unit="s",
+                description="Seconds from deployment start to first SERVING",
+            )
+        _rpc_load.record(seconds, {"engine": "llamacpp_rpc"})
+    except Exception:  # noqa: BLE001
+        logger.warning("could not record RPC model load histogram", exc_info=True)
 
 
 def record_inventory(records: list[Any]) -> None:
@@ -186,6 +228,9 @@ def record_placement(outcome: str) -> None:
 def reset_for_testing() -> None:
     """Drop cached instruments/snapshots so a test can install its own meter provider."""
     global _usage_missing, _local_rate_missing, _placement, _gauges_ready, _sample_dropped
+    global _rpc_load
+    _rpc_load = None
+    _rpc_workers_up.clear()
     _usage_missing = None
     _local_rate_missing = None
     _placement = None

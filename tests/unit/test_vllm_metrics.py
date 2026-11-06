@@ -110,3 +110,33 @@ def test_recorders_never_raise_when_meter_broken(monkeypatch) -> None:
     vllm_metrics.record_deployment_counts({5: 1})
     vllm_metrics.record_placement("placed")
     vllm_metrics.reset_for_testing()
+
+
+def test_rpc_workers_gauge_replaces_snapshot_and_drops_deleted(metric_reader) -> None:
+    """The per-deployment worker gauge reports the latest snapshot; vanished deployments go."""
+    vllm_metrics.record_rpc_workers_up({"a": 3, "b": 1})
+    got = _by_labels(points(metric_reader, "waddleai_llamacpp_rpc_workers_up"), "deployment")
+    assert got == {("a",): 3, ("b",): 1}
+    vllm_metrics.record_rpc_workers_up({"a": 2})
+    got = _by_labels(points(metric_reader, "waddleai_llamacpp_rpc_workers_up"), "deployment")
+    assert got == {("a",): 2}
+
+
+def test_rpc_load_histogram_is_labelled_with_the_engine(metric_reader) -> None:
+    """RPC load time lands on the shared load histogram with engine=llamacpp_rpc."""
+    vllm_metrics.record_rpc_load_seconds(42.0)
+    (pt,) = points(metric_reader, "waddleai_vllm_model_load_seconds")
+    assert (pt.count, pt.sum, dict(pt.attributes)) == (1, 42.0, {"engine": "llamacpp_rpc"})
+
+
+def test_rpc_recorders_never_raise_when_meter_broken(monkeypatch) -> None:
+    """A dead exporter never breaks the RPC reconcile."""
+
+    def boom() -> None:
+        raise RuntimeError("exporter down")
+
+    vllm_metrics.reset_for_testing()
+    monkeypatch.setattr(vllm_metrics, "get_meter", boom)
+    vllm_metrics.record_rpc_workers_up({"a": 1})
+    vllm_metrics.record_rpc_load_seconds(1.0)
+    vllm_metrics.reset_for_testing()
