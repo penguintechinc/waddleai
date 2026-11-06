@@ -21,6 +21,22 @@ _MESSAGE = (
 )
 
 
+def _resource_domain(key: str) -> tuple[str, str]:
+    """Split a K8s label/resource key into ``(domain, name)`` on the first ``/``.
+
+    Structural parse (no prefix matching) so ``evilnvidia.com/x`` or ``nvidia.com.evil/x``
+    can never pass as the ``nvidia.com`` domain. A key with no slash has an empty domain.
+    """
+    domain, sep, name = key.partition("/")
+    return (domain, name) if sep else ("", key)
+
+
+def _is_per_class_gpu_key(key: str) -> bool:
+    """True for ``nvidia.com/<class>`` keys, not plain ``gpu`` or ``gpu.*`` feature labels."""
+    domain, name = _resource_domain(key)
+    return domain == "nvidia.com" and bool(name) and name != "gpu" and not name.startswith("gpu.")
+
+
 def node_has_renamed_gpu_resources(
     node_labels: dict[str, str], allocatable: dict[str, str] | None = None
 ) -> bool:
@@ -34,10 +50,7 @@ def node_has_renamed_gpu_resources(
     if node_labels.get(AI_NODE_LABEL) == "true":
         return True
     keys = list(node_labels) + list(allocatable or {})
-    return any(
-        k.startswith("nvidia.com/") and k != _PLAIN_GPU and not k.startswith("nvidia.com/gpu.")
-        for k in keys
-    )
+    return any(_is_per_class_gpu_key(k) for k in keys)
 
 
 def refuse_plain_gpu_request_on_renamed_node(
@@ -81,7 +94,7 @@ NodeLister = Callable[[dict[str, str]], list[NodeFacts]]
 def selector_targets_gpu_nodes(node_selector: dict[str, str]) -> bool:
     """True when a node selector steers the pod at GPU / AI nodes."""
     return any(
-        k == AI_NODE_LABEL or k.startswith("nvidia.com/") or "gpu" in k.lower()
+        k == AI_NODE_LABEL or _resource_domain(k)[0] == "nvidia.com" or "gpu" in k.lower()
         for k in node_selector
     )
 

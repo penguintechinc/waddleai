@@ -1,5 +1,7 @@
 """AI-node co-tenancy: a plain nvidia.com/gpu request on a renamed AI node is refused."""
 
+import pytest
+
 from shared.fleet.vllm_ray.coexistence import refuse_plain_gpu_request_on_renamed_node
 
 _AI = {"waddleai.penguintech.io/ai-node": "true"}
@@ -113,3 +115,39 @@ def test_non_kubernetes_deployment_never_lists_nodes() -> None:
         raise AssertionError("must not list nodes")
 
     assert refuse_plain_gpu_for_target_nodes({"gpu": "true"}, 1, boom, kubernetes=False) is None
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("nvidia.com/gpu", ("nvidia.com", "gpu")),
+        ("nvidia.com/rtx4090", ("nvidia.com", "rtx4090")),
+        ("evilnvidia.com/x", ("evilnvidia.com", "x")),
+        ("nvidia.com.evil/x", ("nvidia.com.evil", "x")),
+        ("nvidia.com", ("", "nvidia.com")),
+    ],
+)
+def test_resource_domain_is_structural(key: str, expected: tuple[str, str]) -> None:
+    """Domain split is exact, never a prefix match."""
+    from shared.fleet.vllm_ray.coexistence import _resource_domain
+
+    assert _resource_domain(key) == expected
+
+
+@pytest.mark.parametrize(
+    ("key", "renamed"),
+    [
+        ("nvidia.com/gpu", False),
+        ("nvidia.com/gpu.product", False),
+        ("nvidia.com/rtx4090", True),
+        ("evilnvidia.com/x", False),
+        ("nvidia.com.evil/x", False),
+        ("nvidia.com", False),
+        ("nvidia.com/", False),
+    ],
+)
+def test_renamed_gpu_detection_ignores_lookalike_domains(key: str, renamed: bool) -> None:
+    """Only the exact nvidia.com domain with a per-class name counts."""
+    from shared.fleet.vllm_ray.coexistence import node_has_renamed_gpu_resources
+
+    assert node_has_renamed_gpu_resources({}, {key: "1"}) is renamed
