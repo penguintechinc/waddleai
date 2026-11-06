@@ -245,6 +245,7 @@ def test_ensure_imported_swallows_missing_optional_module(caplog) -> None:
     [
         (BackendType.AZURE_AI, "shared.fleet.azure_ai"),
         (BackendType.OLLAMA_CLOUD, "shared.fleet.ollama_cloud"),
+        (BackendType.VLLM_RAY, "shared.fleet.vllm_ray.backend"),
     ],
 )
 def test_new_cloud_types_have_lazy_module_entries(backend_type: BackendType, module: str) -> None:
