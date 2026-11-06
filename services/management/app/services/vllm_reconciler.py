@@ -301,6 +301,7 @@ class VllmReconciler:
         self._last_reconciled: dict[int, float] = {}
         self._last_inventory: dict[int, float] = {}
         self._last_priced: dict[tuple[int, int], float] = {}
+        self._warned_no_rule_fn: set[int] = set()
 
     def _select(self, build: Callable[[Any], Any]) -> list[Any]:
         """Blocking DAL select (run via ``asyncio.to_thread``)."""
@@ -485,9 +486,14 @@ class VllmReconciler:
     async def _prefer_local(self, dep: Any) -> None:
         """Create the prefer-local rule exactly once and persist its id."""
         prefer = dep.prefer_local
-        if self.prefer_local_fn is None or not isinstance(prefer, dict):
+        if not isinstance(prefer, dict) or prefer.get("rule_id") is not None:
             return
-        if prefer.get("rule_id") is not None:
+        if self.prefer_local_fn is None:
+            if dep.id not in self._warned_no_rule_fn:
+                self._warned_no_rule_fn.add(dep.id)
+                logger.warning(
+                    "deployment %s requests prefer_local but no rule factory is configured", dep.id
+                )
             return
         rule_id = await self.prefer_local_fn(
             self.db, dep.org_id, dep, prefer.get("fallback_model"), prefer.get("match") or {}
