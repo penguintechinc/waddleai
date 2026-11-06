@@ -152,10 +152,20 @@ def _find_link(db: Any, dep: Any) -> Any | None:
     return db(db.connection_links.name == link_name(dep)).select().first()
 
 
+def _owns_offer(offer: Any, dep: Any) -> bool:
+    """True when ``offer`` is the one this deployment published (scoped by its public_id)."""
+    owner = getattr(offer, "deployment_public_id", None)
+    return owner is not None and str(owner) == str(dep.public_id)
+
+
 def _remove_offer(db: Any, dep: Any) -> bool:
-    """Delete the ``model_configs`` offer only when it is vLLM-owned; True when removed."""
+    """Delete the ``model_configs`` offer ONLY when this deployment owns it; True if removed.
+
+    An offer another deployment, org or a commercial provider still uses (or any unscoped
+    legacy row) is never touched, whatever its ``preferred_providers`` say.
+    """
     row = db(db.model_configs.model_name == dep.served_model_name).select().first()
-    if row is not None and list(row.preferred_providers or []) == ["vllm"]:
+    if row is not None and _owns_offer(row, dep):
         db(db.model_configs.id == row.id).delete()
         return True
     return False
@@ -206,8 +216,16 @@ def _sync(db: Any, dep: Any) -> tuple[int | None, bool, bool]:
             context_length=int(dep.max_model_len),
             capabilities=[],
             enabled=True,
+            owner_org_id=dep.org_id,
+            deployment_public_id=str(dep.public_id),
         )
         changed = True
+    elif not _owns_offer(existing, dep):
+        logger.warning(
+            "model offer %r already exists and is not owned by deployment %s; not publishing",
+            dep.served_model_name,
+            dep.id,
+        )
     return link_id, changed, False
 
 

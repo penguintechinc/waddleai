@@ -1160,6 +1160,19 @@ async def create_vllm_deployment() -> Any:
     if params_b is None or layout is None:
         return _err(NO_PARAMS_B, 422)
 
+    taken = await asyncio.to_thread(
+        lambda: (
+            database(database.model_configs.model_name == spec.served_model_name).select().first()
+        )
+    )
+    if taken is not None:
+        # Generic on purpose: never say whose offer (another org or deployment) holds the name.
+        return _err(
+            "A model offer with this served_model_name already exists; "
+            "choose a different served_model_name.",
+            409,
+        )
+
     public_id = uuid.uuid4()
     slug = derive_slug(spec.name, public_id)
     config = backend_row.config or {}

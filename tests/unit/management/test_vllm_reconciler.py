@@ -527,3 +527,48 @@ def test_vllm_deployments_of_another_org_on_a_backend_are_ignored(env) -> None:
     rec, backend, _ = _reconciler(env)
     _tick(rec)
     assert [c for c in backend.calls if c[0] == "reconcile"] == []
+
+
+# --- deployment-scoped offers (security review) -----------------------------------------------
+
+
+def test_offer_carries_org_and_deployment_scope(env) -> None:
+    """The offer is stamped with the owning org and the deployment's public_id."""
+    b = seed_backend(env)
+    dep = seed_deployment(env, b, status=5)
+    rec, _, _ = _reconciler(env)
+    _tick(rec)
+    offer = env(env.model_configs.model_name == "model-7b").select().first()
+    assert offer.owner_org_id == 1 and str(offer.deployment_public_id) == str(dep.public_id)
+
+
+def test_second_deployment_with_same_served_name_never_takes_over_the_offer(env, caplog) -> None:
+    """A later deployment never takes another deployment's offer; its unlink is a no-op."""
+    b = seed_backend(env)
+    first = seed_deployment(env, b, name="a", status=5, slug="a-1")
+    second = seed_deployment(env, b, name="b", status=5, slug="b-1")
+    rec, _, _ = _reconciler(env)
+    with caplog.at_level(logging.WARNING):
+        _tick(rec)
+    offers = list(env(env.model_configs.id > 0).select())
+    assert len(offers) == 1 and str(offers[0].deployment_public_id) == str(first.public_id)
+    assert "offer" in caplog.text
+    asyncio.run(unlink_deployment(env, second))
+    assert env(env.model_configs.id > 0).count() == 1  # A's offer survives B's deletion
+    asyncio.run(unlink_deployment(env, first))
+    assert env(env.model_configs.id > 0).count() == 0
+
+
+def test_unlink_never_deletes_an_offer_owned_by_someone_else(env) -> None:
+    """Even a vllm-only offer is kept when it belongs to another deployment or is unscoped."""
+    b = seed_backend(env)
+    dep = seed_deployment(env, b, status=5)
+    _offer(
+        env, ["vllm"], deployment_public_id="99999999-9999-9999-9999-999999999999", owner_org_id=2
+    )
+    asyncio.run(unlink_deployment(env, dep))
+    assert env(env.model_configs.id > 0).count() == 1
+    env(env.model_configs.id > 0).delete()
+    _offer(env, ["vllm"])  # legacy, unscoped
+    asyncio.run(unlink_deployment(env, dep))
+    assert env(env.model_configs.id > 0).count() == 1

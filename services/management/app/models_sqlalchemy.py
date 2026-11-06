@@ -1165,6 +1165,10 @@ class ModelConfig(Base):
     capabilities = Column(JSON, nullable=False, default=list)
     enabled = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Deployment scope (migration 029): NULL for global/commercial offers. A vLLM deployment's
+    # offer carries its org and public_id so only that deployment may remove or replace it.
+    owner_org_id = Column(Integer, nullable=True)
+    deployment_public_id = Column(Uuid, nullable=True, index=True)
 
 
 class ModelAlias(Base):

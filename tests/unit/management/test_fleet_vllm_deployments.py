@@ -551,3 +551,44 @@ async def test_dtos_have_exact_field_sets(client, three, vllm_db, auth_headers):
         "data"
     ]
     assert set(detail) == {f.name for f in fields(DeploymentDetail)}
+
+
+def _offer(db, name, providers, **over):
+    """Insert a model_configs offer."""
+    values = {"cost_per_token": {}, "max_tokens": 1, "context_length": 1, "capabilities": []}
+    db.model_configs.insert(model_name=name, preferred_providers=providers, **{**values, **over})
+    db.commit()
+
+
+async def test_create_refuses_served_name_colliding_with_a_global_offer(
+    client, ready, auth_headers, vllm_db, fake_backend
+):
+    """A served name equal to an existing global/commercial offer is a 409; nothing is created."""
+    _offer(vllm_db, "Model-7B", ["openai"])
+    resp = await _create(client, auth_headers, ready)
+    assert resp.status_code == 409
+    assert "model offer" in (await resp.get_json())["error"]
+    assert vllm_db(vllm_db.vllm_deployments.id > 0).count() == 0 and fake_backend.calls == []
+
+
+async def test_create_refuses_served_name_owned_by_another_deployment_or_org(
+    client, ready, auth_headers, vllm_db
+):
+    """Another deployment's (or org's) offer blocks the name, without revealing whose it is."""
+    _offer(
+        vllm_db, "Model-7B", ["vllm"], owner_org_id=2,
+        deployment_public_id="99999999-9999-9999-9999-999999999999",
+    )  # fmt: skip
+    resp = await _create(client, auth_headers, ready)
+    body = await resp.get_json()
+    assert resp.status_code == 409 and "org" not in body["error"].lower().replace("model offer", "")
+    assert "99999999" not in str(body)
+
+
+async def test_create_allows_served_name_with_no_offer_even_if_it_matches_a_commercial_name(
+    client, ready, auth_headers
+):
+    """No offer row exists: the name is free (a commercial rate row is not an offer)."""
+    assert (
+        await _create(client, auth_headers, ready, served_model_name="gpt-4o")
+    ).status_code == 201
