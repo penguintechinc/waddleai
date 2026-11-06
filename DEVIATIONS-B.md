@@ -1,0 +1,11 @@
+# Plan B deviations (B1, B2)
+- Integer (not BIGINT) PKs/FKs: repo convention + SQLite autoincrement; FK targets are Integer.
+- connection_links has no ORM class and no Alembic creator (PyDAL-created): owner_org_id added by 028 only when the table exists; added Field("owner_org_id","integer") to shared/database/models.py; vllm_deployments.connection_link_id FK exists only when table existed at migration time; ORM column is a plain Integer.
+- public_id: sa.Uuid(); PG server_default gen_random_uuid() (penguin_dal inserts omit it). Unverified on a real Postgres (SQLite only).
+- LlamaCppTopology added to enums.py (F1) and F columns folded into 028 (AM17).
+- Bumped head assertions in test_migration_019.py and test_migration_026_rates.py to 028.
+- Co-tenancy refusal (Ollama/llama.cpp managers) is no longer PostHog-flag gated; it keys off AI-node label or any nvidia.com/<class> label/allocatable key.
+- Ray node list: GET /api/v0/nodes (Ray 2.60 state API); fails closed on truncated/partial/malformed reply; list failure => authoritative=None + no COLD sweep that cycle.
+- Migration 028 verified on real Postgres using the repo's pinned pgvector/pgvector:pg17 image (postgres:16 lacks the `vector` extension required by the 023 chain), not postgres:16.
+- `make lint` needs VENV=<primary venv> in a worktree without its own .venv (else system python, no google-genai); stale .mypy_cache gave a false new-error.
+- Makefile `venv` already installed classification requirements-ci.txt (31b28ade); no change needed.
