@@ -545,3 +545,98 @@ class TestUpsertReadFailures:
 
         assert status.degraded is True
         assert status.applied == []
+
+
+# ---------------------------------------------------------------------------
+# AM25: the four chart-owned waddleai-vllm-ray-* CiliumNetworkPolicies
+# ---------------------------------------------------------------------------
+
+RAY_CNPS = [
+    "waddleai-vllm-ray-head",
+    "waddleai-vllm-ray-workers",
+    "waddleai-vllm-ray-serve",
+    "waddleai-vllm-ray-egress",
+]
+
+
+class _StatefulCustomObjects:
+    """A tiny in-memory Cilium custom-objects API recording every mutation by name."""
+
+    def __init__(self, existing):
+        self.objects = {
+            name: {"metadata": {"name": name, "resourceVersion": "1"}} for name in existing
+        }
+        self.mutations: list[tuple[str, str]] = []
+
+    def get_namespaced_custom_object(self, group, version, namespace, plural, name):
+        from kubernetes.client.rest import ApiException
+
+        if name not in self.objects:
+            raise ApiException(status=404)
+        return self.objects[name]
+
+    get_cluster_custom_object = lambda self, g, v, plural, name: self.get_namespaced_custom_object(  # noqa: E731
+        g, v, None, plural, name
+    )
+
+    def _put(self, verb, obj):
+        name = obj["metadata"]["name"]
+        self.mutations.append((verb, name))
+        obj["metadata"]["resourceVersion"] = "2"
+        self.objects[name] = obj
+
+    def create_namespaced_custom_object(self, group, version, namespace, plural, obj):
+        self._put("create", obj)
+
+    def replace_namespaced_custom_object(self, group, version, namespace, plural, name, obj):
+        self._put("replace", obj)
+
+    def create_cluster_custom_object(self, group, version, plural, obj):
+        self._put("create", obj)
+
+    def replace_cluster_custom_object(self, group, version, plural, name, obj):
+        self._put("replace", obj)
+
+    def __getattr__(self, name):
+        if name.startswith("delete"):
+            raise AssertionError(f"reconciler must never delete ({name})")
+        raise AttributeError(name)
+
+
+def test_reconcile_leaves_the_four_ray_cnps_intact(monkeypatch):
+    """A reconcile pass never creates, replaces or deletes a waddleai-vllm-ray-* policy."""
+    fake = _StatefulCustomObjects(RAY_CNPS)
+    before = {n: dict(fake.objects[n]) for n in RAY_CNPS}
+    monkeypatch.setattr(cp, "get_k8s_custom_objects_client", lambda: fake)
+    monkeypatch.setattr(
+        cp,
+        "cilium_capabilities",
+        lambda: {"available": True, "envoy_config": True, "network_policy": True},
+    )
+    monkeypatch.setattr(cp, "is_native_rate_limit_enabled", lambda: True)
+    for _ in range(2):  # a repeat pass must also leave them alone
+        status = cp.CiliumPolicyReconciler(_mock_db(), topology=TOPOLOGY).reconcile()
+        assert status.degraded is False and status.applied
+    assert all(not name.startswith("waddleai-vllm-ray-") for _verb, name in fake.mutations)
+    assert {n: fake.objects[n] for n in RAY_CNPS} == before
+
+
+def test_rendered_set_never_uses_the_reserved_ray_prefix():
+    """The reconciler's own policy names stay clear of the chart-owned Ray prefix."""
+    names = [p["metadata"]["name"] for p in cp.render_network_policies(TOPOLOGY)]
+    names.append(cp.render_envoy_config([], TOPOLOGY)["metadata"]["name"])
+    assert names and not [n for n in names if n.startswith(cp.RESERVED_NAME_PREFIXES)]
+
+
+def test_upsert_refuses_a_reserved_name(monkeypatch):
+    """Even if a render bug produced a reserved name, _upsert refuses and degrades."""
+    fake = _StatefulCustomObjects(RAY_CNPS)
+    status = cp.ReconcileStatus()
+    obj = {
+        "kind": "CiliumNetworkPolicy",
+        "metadata": {"name": "waddleai-vllm-ray-head", "namespace": "waddleai"},
+    }
+    cp.CiliumPolicyReconciler(_mock_db(), topology=TOPOLOGY)._upsert(
+        fake, cp.CNP_PLURAL, obj, status
+    )
+    assert fake.mutations == [] and status.applied == [] and status.degraded is True

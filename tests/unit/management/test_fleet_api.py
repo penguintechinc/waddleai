@@ -8,6 +8,8 @@ encrypted/never echoed, two-layer Pro gating on vertex_ai/bedrock), plus
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from shared.fleet.base import FleetHealth
 from tests.unit.management.conftest import make_select_result
 
@@ -303,15 +305,15 @@ class TestGetUpdateDeleteFleetBackend:
         resp = await client.get(f"{ENDPOINT_PATH}/999", headers=auth_headers)
         assert resp.status_code == 404
 
-    async def test_get_foreign_org_returns_403(
+    async def test_get_foreign_org_returns_404(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """A backend belonging to another org returns 403, not 404."""
+        """Another org's backend is 404 -- no existence oracle (identical to a missing id)."""
         _enable_flag(monkeypatch)
         foreign = make_mock_backend(org_id=99)
         app_mock_db.return_value.select.return_value = make_select_result([foreign])
         resp = await client.get(f"{ENDPOINT_PATH}/1", headers=auth_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     async def test_get_own_org_succeeds(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
@@ -343,17 +345,17 @@ class TestGetUpdateDeleteFleetBackend:
         body = await resp.get_json()
         assert body["data"]["management_scope"] == "register_and_route"
 
-    async def test_update_foreign_org_returns_403(
+    async def test_update_foreign_org_returns_404(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """Updating another org's backend returns 403."""
+        """Updating another org's backend is 404 (no existence oracle)."""
         _enable_flag(monkeypatch)
         foreign = make_mock_backend(org_id=99)
         app_mock_db.return_value.select.return_value = make_select_result([foreign])
         resp = await client.put(
             f"{ENDPOINT_PATH}/1", headers=auth_headers, json={"name": "hijacked"}
         )
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
     async def test_update_rejects_invalid_management_scope(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
@@ -377,15 +379,15 @@ class TestGetUpdateDeleteFleetBackend:
         resp = await client.delete(f"{ENDPOINT_PATH}/1", headers=auth_headers)
         assert resp.status_code == 200
 
-    async def test_delete_foreign_org_returns_403(
+    async def test_delete_foreign_org_returns_404(
         self, client, app_mock_db: MagicMock, auth_headers: dict, monkeypatch
     ) -> None:
-        """Deleting another org's backend returns 403."""
+        """Deleting another org's backend is 404 (no existence oracle)."""
         _enable_flag(monkeypatch)
         foreign = make_mock_backend(org_id=99)
         app_mock_db.return_value.select.return_value = make_select_result([foreign])
         resp = await client.delete(f"{ENDPOINT_PATH}/1", headers=auth_headers)
-        assert resp.status_code == 403
+        assert resp.status_code == 404
 
 
 class TestFleetBackendHealth:
@@ -527,3 +529,109 @@ class TestResponseSchemasWave2:
         body = await resp.get_json()
         assert set(body["data"].keys()) == {"backend_id", "healthy", "node_count", "detail"}
         assert set(body["meta"].keys()) == {"timestamp"}
+
+
+def _vllm_payload(**over):
+    """Valid create body for a vllm_ray backend."""
+    body = {
+        "name": "gpu",
+        "type": "vllm_ray",
+        "config": {"head_url": "http://head:8265", "serve_base_url": "http://head:8000"},
+    }
+    body.update(over)
+    return body
+
+
+def _enable_vllm(monkeypatch) -> None:
+    """Turn `waddleai.fleet-vllm-ray` on for one test."""
+    monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", "1")
+
+
+class TestVllmRayBackendType:
+    """C1: the vllm_ray backend type sits behind its own second flag."""
+
+    async def test_vllm_ray_requires_second_flag(
+        self, client, app_mock_db, auth_headers, monkeypatch
+    ):
+        """fleet_v2 alone is not enough: POST is 404."""
+        _enable_flag(monkeypatch)
+        resp = await client.post(ENDPOINT_PATH, headers=auth_headers, json=_vllm_payload())
+        assert resp.status_code == 404
+
+    async def test_vllm_ray_creates_with_both_flags(
+        self, client, app_mock_db, auth_headers, monkeypatch
+    ):
+        """Both flags on: 201 and full_lifecycle scope."""
+        _enable_flag(monkeypatch)
+        _enable_vllm(monkeypatch)
+        created = make_mock_backend(org_id=1, backend_type="vllm_ray")
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([]),
+            make_select_result([created]),
+        ]
+        app_mock_db.fleet_backends.insert.return_value = 1
+        resp = await client.post(ENDPOINT_PATH, headers=auth_headers, json=_vllm_payload())
+        assert resp.status_code == 201
+        body = await resp.get_json()
+        assert body["data"]["management_scope"] == "full_lifecycle"
+        assert body["data"]["type"] == "vllm_ray"
+
+    async def test_vllm_ray_is_not_pro_gated(self, client, app_mock_db, auth_headers, monkeypatch):
+        """An unentitled org can still create vllm_ray; the license check never runs."""
+        _enable_flag(monkeypatch)
+        _enable_vllm(monkeypatch)
+        mock_client = MagicMock()
+        mock_client.check_feature.return_value = False
+        monkeypatch.setattr(
+            "services.management.app.api.v1.fleet._get_license_client", lambda: mock_client
+        )
+        created = make_mock_backend(org_id=1, backend_type="vllm_ray")
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([]),
+            make_select_result([created]),
+        ]
+        app_mock_db.fleet_backends.insert.return_value = 1
+        resp = await client.post(ENDPOINT_PATH, headers=auth_headers, json=_vllm_payload())
+        assert resp.status_code == 201
+        mock_client.check_feature.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {},
+            {"head_url": "http://head:8265"},
+            {"serve_base_url": "http://head:8000"},
+            {"head_url": "ftp://head", "serve_base_url": "http://head:8000"},
+        ],
+    )
+    async def test_vllm_ray_requires_head_and_serve_urls(
+        self, client, app_mock_db, auth_headers, monkeypatch, config
+    ):
+        """Missing or non-http(s) URLs: 400 naming both keys."""
+        _enable_flag(monkeypatch)
+        _enable_vllm(monkeypatch)
+        resp = await client.post(
+            ENDPOINT_PATH, headers=auth_headers, json=_vllm_payload(config=config)
+        )
+        assert resp.status_code == 400
+        text = (await resp.get_json())["error"]
+        assert "config.head_url" in text and "config.serve_base_url" in text
+
+    @pytest.mark.parametrize(
+        ("fleet_v2", "vllm", "expected"),
+        [(0, 0, False), (1, 0, False), (0, 1, False), (1, 1, True)],
+    )
+    def test_vllm_ray_enabled_needs_both_flags(self, monkeypatch, fleet_v2, vllm, expected):
+        """Only (1,1) enables the vllm_ray surface."""
+        from services.management.app.api.v1 import fleet
+
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_V2", str(fleet_v2))
+        monkeypatch.setenv("WADDLEAI_FLAG_FLEET_VLLM_RAY", str(vllm))
+        assert fleet._vllm_ray_enabled(1) is expected
+        assert fleet.FLEET_VLLM_RAY_FLAG == "waddleai.fleet-vllm-ray"
+
+    def test_vllm_ray_in_valid_types(self):
+        """The type allowlist contains vllm_ray."""
+        from services.management.app.api.v1 import fleet
+
+        assert "vllm_ray" in fleet._VALID_TYPES

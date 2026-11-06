@@ -2,6 +2,7 @@
 
 import dataclasses
 import importlib
+import importlib.util
 import os
 import shutil
 import sys
@@ -11,6 +12,20 @@ from typing import Any
 from unittest.mock import MagicMock, Mock
 
 import pytest
+
+# Shared fixtures for the vLLM fleet / local-metering tests (Plan C). Each plugin is registered
+# only when the third-party SDKs it imports are installed: the slim classification test image
+# (services/classification/Dockerfile --target test) ships no ``openai`` and no fixture modules.
+# A test that needs a missing fixture still fails loudly ("fixture not found").
+_PLUGIN_DEPS = {
+    "tests.unit.fixtures.otel": ("opentelemetry.sdk",),
+    "tests.unit.fixtures.fake_openai": ("openai", "httpx", "quart"),
+}
+pytest_plugins = [
+    plugin
+    for plugin, deps in _PLUGIN_DEPS.items()
+    if all(importlib.util.find_spec(dep) is not None for dep in deps)
+]
 
 # Add project root to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))

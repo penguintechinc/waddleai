@@ -372,7 +372,39 @@ def define_tables(db):
         Field("tokens_output_total", "integer", default=0),  # Sum across all LLMs
         Field("request_count", "integer", default=0),
         Field("last_updated", "datetime", default=datetime.utcnow),
+        Field("estimated", "boolean", default=False),
+        # Chargeback snapshot for locally hosted models (migration 028, AM10)
+        Field("local_deployment_kind", "integer"),
+        Field("local_deployment_id", "bigint"),
+        Field("unit_price_input", "decimal(12,6)"),
+        Field("unit_price_output", "decimal(12,6)"),
     )
+
+    # One timed generation per local request (migration 030): observed-throughput p50 source.
+    _define_table_if_absent(
+        db,
+        "local_generation_samples",
+        Field("local_deployment_kind", "integer", notnull=True),
+        Field("local_deployment_id", "bigint", notnull=True),
+        Field("output_tokens", "integer", notnull=True),
+        Field("generation_ms", "integer", notnull=True),
+        Field("timing_source", "integer", default=2),  # 1 engine-reported, 2 proxy-measured
+        Field("user_id", "bigint"),
+        Field("created_at", "datetime", default=datetime.utcnow),
+    )
+
+    # Local deployment rows: only the columns metering reads (the schema authority is Alembic).
+    for _local_table in ("vllm_deployments", "ollama_deployments", "llamacpp_deployments"):
+        _define_table_if_absent(
+            db,
+            _local_table,
+            Field("public_id", "string", length=36),
+            Field("price_input_per_1m", "decimal(12,6)"),
+            Field("price_output_per_1m", "decimal(12,6)"),
+            Field("comparison_model", "string"),
+            # llama.cpp only: durable owner org (migration 031; NULL = legacy unowned)
+            *([Field("owner_org_id", "bigint")] if _local_table == "llamacpp_deployments" else []),
+        )
 
     # Real-time Usage Cache (for quota enforcement)
     _define_table_if_absent(
@@ -513,7 +545,9 @@ def define_tables(db):
     _define_table_if_absent(
         db,
         "model_configs",
-        Field("model_name", unique=True, notnull=True),
+        # Not globally unique (migration 029): global offers are unique by name, org-owned
+        # offers per (owner_org_id, model_name) -- enforced by partial indexes in Alembic.
+        Field("model_name", notnull=True),
         Field("preferred_providers", "json"),
         Field("cost_per_token", "json"),
         Field("max_tokens", "integer"),
@@ -521,6 +555,8 @@ def define_tables(db):
         Field("capabilities", "json"),
         Field("enabled", "boolean", default=True),
         Field("created_at", "datetime", default=datetime.utcnow),
+        Field("owner_org_id", "integer"),  # NULL = global/commercial offer (migration 029)
+        Field("deployment_public_id", "string", length=36),
     )
 
     _define_table_if_absent(

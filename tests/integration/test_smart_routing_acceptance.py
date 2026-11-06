@@ -144,7 +144,7 @@ class TestChaosFailoverThroughRealDispatch:
         # response cache's session-affinity hint, §6); a stricter lambda raises
         # TypeError and DispatchStage degrades to no_available_providers.
         router.select_provider = Mock(
-            side_effect=lambda model, preferred_backend=None: backup_selection.get(model)
+            side_effect=lambda model, preferred_backend=None, **_kw: backup_selection.get(model)
         )
         dispatch_stage = DispatchStage(
             name="dispatch", router=router, connectors={"anthropic": anthropic_connector}, flag=None

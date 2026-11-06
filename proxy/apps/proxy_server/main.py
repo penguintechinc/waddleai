@@ -1355,6 +1355,7 @@ class ProxyServer:
                     router=self.request_router,
                     connectors=connectors_dict,
                     flag=None,
+                    local_rate_guard=self.token_manager.local_rate_present,
                 ),
                 SecurityOutStage(
                     name="security_out",
@@ -2145,6 +2146,12 @@ async def chat_completions():
                     organization_id=user_context.organization_id,
                     actual_input_tokens=usage.get("input_tokens", 0),
                     actual_output_tokens=usage.get("output_tokens", 0),
+                    estimated=usage.get("estimated") is True,
+                    local_deployment_kind=usage.get("local_deployment_kind"),
+                    local_deployment_id=usage.get("local_deployment_id"),
+                    generation_ms=usage.get("generation_ms"),
+                    timing_source=usage.get("timing_source"),
+                    timed_tokens=usage.get("timed_tokens"),
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
@@ -2326,10 +2333,13 @@ async def chat_completions():
 @app.route("/v1/models", methods=["GET"])
 async def list_models():
     """List available models."""
-    await get_current_user()  # Authentication check
+    user_context = await get_current_user()  # Authentication check
     try:
-        # Get actual available models from connection links
-        models = await proxy_server.llm_manager.list_all_models()
+        # Get actual available models from connection links visible to the caller's org
+        # (a link owned by another org is never listed, AM3).
+        models = await proxy_server.llm_manager.list_all_models(
+            org_id=getattr(user_context, "organization_id", None)
+        )
 
         # If no models available, return empty list
         if not models:
@@ -2571,6 +2581,12 @@ async def claude_messages():
                     organization_id=user_context.organization_id,
                     actual_input_tokens=usage_info.get("input_tokens", 0),
                     actual_output_tokens=usage_info.get("output_tokens", 0),
+                    estimated=usage_info.get("estimated") is True,
+                    local_deployment_kind=usage_info.get("local_deployment_kind"),
+                    local_deployment_id=usage_info.get("local_deployment_id"),
+                    generation_ms=usage_info.get("generation_ms"),
+                    timing_source=usage_info.get("timing_source"),
+                    timed_tokens=usage_info.get("timed_tokens"),
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
@@ -2807,7 +2823,9 @@ async def count_tokens():
 
         # Try to use connector's count_tokens if available
         try:
-            provider, target_model = proxy_server.request_router.select_provider(model)
+            provider, target_model = proxy_server.request_router.select_provider(
+                model, org_id=getattr(user_context, "organization_id", None)
+            )
             connector = (
                 proxy_server.llm_manager.connectors.get(provider)
                 if hasattr(proxy_server.llm_manager, "connectors")

@@ -143,7 +143,7 @@ class StubConnector:
 class StaticRouter:
     """LLMRequestRouter stand-in: always routes to a fixed (provider, model)."""
 
-    def select_provider(self, model: str, preferred_backend=None):
+    def select_provider(self, model: str, preferred_backend=None, **_kw):
         # preferred_backend is always passed by DispatchStage (the response
         # cache's session-affinity hint, §6). A double omitting it raises
         # TypeError, which DispatchStage catches and turns into an empty

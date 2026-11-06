@@ -44,6 +44,13 @@
         "type": "ollama"
       },
       {
+        "default_endpoint": "",
+        "default_models": [],
+        "name": "vLLM (GPU fleet)",
+        "requires_api_key": true,
+        "type": "vllm"
+      },
+      {
         "default_endpoint": "https://generativelanguage.googleapis.com/v1",
         "default_models": [
           "gemini-1.5-pro",

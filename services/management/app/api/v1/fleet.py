@@ -39,6 +39,7 @@ from shared.security.credential_encryption import encrypt_credential
 from shared.utils.feature_flags import is_feature_enabled
 
 from ...extensions import db
+from ...services import fleet_secrets
 from . import api_v1_bp
 from ._pagination import PageRequest
 from .auth import require_auth, require_scope
@@ -60,6 +61,7 @@ def _db() -> DB:
 
 
 FLEET_V2_FLAG = "waddleai.fleet_v2"
+FLEET_VLLM_RAY_FLAG = "waddleai.fleet-vllm-ray"
 _HYBRID_TARGETS_FEATURE = "hybrid_targets"
 
 # Backend types requiring the two-layer Pro gate (flag AND check_feature) at
@@ -87,6 +89,7 @@ _VALID_TYPES = frozenset(
         BackendType.BEDROCK.value,
         BackendType.AZURE_AI.value,
         BackendType.OLLAMA_CLOUD.value,
+        BackendType.VLLM_RAY.value,
     }
 )
 _VALID_SCOPES = frozenset(s.value for s in ManagementScope)
@@ -254,6 +257,13 @@ def _fleet_v2_enabled(org_id: int) -> bool:
     return is_feature_enabled(FLEET_V2_FLAG, distinct_id=str(org_id), default=False)
 
 
+def _vllm_ray_enabled(org_id: int) -> bool:
+    """True only when both ``waddleai.fleet_v2`` and ``waddleai.fleet-vllm-ray`` are on."""
+    return _fleet_v2_enabled(org_id) and is_feature_enabled(
+        FLEET_VLLM_RAY_FLAG, distinct_id=str(org_id), default=False
+    )
+
+
 async def _hybrid_targets_entitled() -> bool:
     """Two-layer gate's entitlement half -- fail-closed on any license-client error."""
 
@@ -304,13 +314,15 @@ def _validation_error(detail: str) -> tuple[Any, int]:
 
 
 def _get_org_scoped_backend(backend_id: int, org_id: int) -> tuple[Any, str]:
-    """Return a ``fleet_backends`` row, distinguishing "not found" from "wrong org"."""
+    """Return an org-scoped ``fleet_backends`` row.
+
+    Another org's backend is reported as ``not_found`` -- identical to a missing id -- so the
+    API is not an existence oracle across tenants.
+    """
     database = _db()
     row = database(database.fleet_backends.id == backend_id).select().first()
-    if row is None:
+    if row is None or row.org_id != org_id:
         return None, "not_found"
-    if row.org_id != org_id:
-        return None, "forbidden"
     return row, "ok"
 
 
@@ -361,6 +373,9 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
     if not _fleet_v2_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
 
+    if data.type == BackendType.VLLM_RAY.value and not _vllm_ray_enabled(org_id):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+
     name = (data.name or "").strip()
     backend_type = data.type
     mode = data.mode
@@ -390,6 +405,14 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
             _validate_azure_endpoint(str(config["endpoint_url"]))
         except ValueError as exc:
             return _validation_error(str(exc))
+
+    if backend_type == BackendType.VLLM_RAY.value:
+        urls = [config.get("head_url"), config.get("serve_base_url")]
+        if not all(isinstance(u, str) and u.startswith(("http://", "https://")) for u in urls):
+            return _validation_error(
+                "config.head_url and config.serve_base_url are required for vllm_ray "
+                "(http or https URLs)"
+            )
 
     if backend_type in _PRO_GATED_TYPES and not await _hybrid_targets_entitled():
         return (
@@ -455,7 +478,7 @@ async def create_fleet_backend(data: CreateFleetBackendRequest):
 @require_scope(Permission.FLEET_ADMIN)
 @validate_response(FleetBackendResponse, 200)
 async def get_fleet_backend(backend_id: int):
-    """Fetch one registered fleet backend -- 403 across orgs, 404 if it never existed."""
+    """Fetch one registered fleet backend -- 404 for another org's backend and for a missing one."""
     org_id = g.user.get("organization_id")
     if not _fleet_v2_enabled(org_id):
         return jsonify({"status": "error", "error": "not_found"}), 404
@@ -463,8 +486,6 @@ async def get_fleet_backend(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     return {"status": "success", "data": _backend_to_dict(row), "meta": {"timestamp": _now()}}, 200
 
@@ -480,9 +501,9 @@ async def update_fleet_backend(backend_id: int):
     reinterpret ``config``/``credentials_ref`` for a different backend
     class) -- delete and recreate to change type.
 
-    Body validation runs in-handler, AFTER the flag/existence/forbidden
+    Body validation runs in-handler, AFTER the flag/existence
     checks, so a malformed body against a nonexistent or foreign-org backend
-    returns 404/403 rather than 400 -- preserving the deliberate
+    returns 404 rather than 400 -- preserving the deliberate
     existence/authz-before-input-validation order that
     tests/contract/test_management_mutations.py locks. A @validate_request
     decorator would run before the handler and invert that order
@@ -495,8 +516,6 @@ async def update_fleet_backend(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     body = (await request.get_json(silent=True)) or {}
     update_fields: dict[str, Any] = {}
@@ -557,8 +576,6 @@ async def delete_fleet_backend(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     def _delete():
         db(db.fleet_backends.id == backend_id).delete()
@@ -591,8 +608,6 @@ async def check_fleet_backend_health(backend_id: int):
     row, outcome = await asyncio.to_thread(_get_org_scoped_backend, backend_id, org_id)
     if outcome == "not_found":
         return jsonify({"status": "error", "error": "fleet backend not found"}), 404
-    if outcome == "forbidden":
-        return jsonify({"status": "error", "error": "forbidden"}), 403
 
     try:
         backend = build_backend(db, row)
@@ -619,4 +634,218 @@ async def check_fleet_backend_health(backend_id: int):
             "detail": health.detail,
         },
         "meta": {"timestamp": _now()},
+    }, 200
+
+
+# ---------------------------------------------------------------------------
+# `/api/v1/fleet/secrets` -- cluster key list + rotation (AM13, AM15; values never returned)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class FleetSecretItem:
+    """A rotatable cluster secret: identity and fingerprint only, never the value."""
+
+    name: str
+    source: str
+    fingerprint: str | None
+    rotated_at: str | None
+
+
+@dataclass(slots=True)
+class FleetSecretListResponse:
+    """Response body for GET /api/v1/fleet/secrets."""
+
+    status: str
+    data: list[FleetSecretItem]
+    meta: TimestampMeta
+
+
+@dataclass(slots=True)
+class FleetSecretResponse:
+    """Response body for POST /api/v1/fleet/secrets/<name>/rotate."""
+
+    status: str
+    data: FleetSecretItem
+    meta: ActionMeta
+
+
+_ROTATION_COOLDOWN_S = 300
+_ROTATION_AUDIT_PREFIX = "fleet.secret.rotated/"
+
+
+def _is_system_operator() -> bool:
+    """True for the platform operator: ``system:config`` scope AND the configured system org.
+
+    Cluster-level fleet secrets (Ray token, Ray TLS) are shared by every tenant, so they are NOT
+    ``fleet:admin`` territory. ``system:config`` is admin-exclusive in this repo's RBAC, but every
+    org's admin holds it, so the token must also belong to the reserved ``system`` tenant, mapped
+    to an org id by ``WADDLEAI_SYSTEM_ORG_ID``. Unset or malformed -> nobody qualifies.
+    """
+    user = getattr(g, "user", None) or {}
+    if Permission.SYSTEM_CONFIG.value not in set(user.get("scope") or []):
+        return False
+    configured = os.environ.get("WADDLEAI_SYSTEM_ORG_ID", "").strip()
+    return configured.isdigit() and user.get("organization_id") == int(configured)
+
+
+def _rotation_audit_rows(name: str) -> Any:
+    """Audit rows of ``name``'s rotations, newest first (claims and completed rotations)."""
+    database = _db()
+    table = database.audit_log
+    return database(table.path == f"{_ROTATION_AUDIT_PREFIX}{name}").select(
+        orderby=[~table.created_at, ~table.id]
+    )
+
+
+def _rotated_at(name: str) -> str | None:
+    """Time of the last successful rotation, from the audit trail (None when never rotated)."""
+    for row in _rotation_audit_rows(name):
+        if row.status_code == 200 and row.created_at:
+            return row.created_at.isoformat()
+    return None
+
+
+def _claim_rotation(name: str, old_fp: str | None) -> tuple[int | None, int]:
+    """Reserve a rotation slot: ``(audit_row_id, 0)`` or ``(None, retry_after_seconds)``.
+
+    The claim row is written BEFORE the rotation so concurrent requests see it; it records the
+    actor and the old fingerprint, and is completed (new fingerprint) or removed on failure.
+    """
+    now = datetime.utcnow()
+    for row in _rotation_audit_rows(name):
+        age = (now - row.created_at).total_seconds() if row.created_at else None
+        if age is not None and age < _ROTATION_COOLDOWN_S:
+            return None, max(1, int(_ROTATION_COOLDOWN_S - age))
+        break
+    database = _db()
+    row_id = database.audit_log.insert(
+        method="POST",
+        path=f"{_ROTATION_AUDIT_PREFIX}{name}",
+        resource_id=f"{name}:{old_fp}->pending",
+        status_code=202,
+        user_id=g.user.get("user_id"),
+        organization_id=g.user.get("organization_id"),
+        created_at=now,
+    )
+    database.commit()
+    return int(row_id), 0
+
+
+def _finish_rotation(row_id: int, name: str, old_fp: str | None, new_fp: str | None) -> None:
+    """Complete a claimed rotation's audit row with the new fingerprint."""
+    database = _db()
+    database(database.audit_log.id == row_id).update(
+        resource_id=f"{name}:{old_fp}->{new_fp}", status_code=200
+    )
+    database.commit()
+
+
+def _release_rotation(row_id: int) -> None:
+    """Drop a claim whose rotation failed, so a retry is not locked out."""
+    database = _db()
+    database(database.audit_log.id == row_id).delete()
+    database.commit()
+
+
+@api_v1_bp.route("/fleet/secrets", methods=["GET"])
+@require_auth
+@validate_response(FleetSecretListResponse, 200)
+async def list_fleet_secrets():
+    """List rotatable cluster secrets (platform operator only; never the values)."""
+    if not _is_system_operator():
+        return jsonify({"error": "Insufficient permissions"}), 403
+    org_id = g.user.get("organization_id")
+    if not _vllm_ray_enabled(org_id):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+    infos = await fleet_secrets.list_secrets()
+    items = []
+    for info in infos:
+        rotated = await asyncio.to_thread(_rotated_at, info.name)
+        items.append(
+            {
+                "name": info.name,
+                "source": info.source,
+                "fingerprint": info.fingerprint,
+                "rotated_at": rotated,
+            }
+        )
+    return {"status": "success", "data": items, "meta": {"timestamp": _now()}}, 200
+
+
+@api_v1_bp.route("/fleet/secrets/<name>/rotate", methods=["POST"])
+@require_auth
+@validate_response(FleetSecretResponse, 200)
+async def rotate_fleet_secret(name: str):
+    """Rotate a generated cluster secret and roll the Ray pods (platform operator only).
+
+    An org admin is 403 (these keys are shared by all tenants); an externally managed key is 409;
+    at most one rotation per secret per 5 minutes (429); every rotation is audit-logged with the
+    actor and the fingerprint change, never a value.
+    """
+    if not _is_system_operator():
+        return jsonify({"error": "Insufficient permissions"}), 403
+    org_id = g.user.get("organization_id")
+    if not _vllm_ray_enabled(org_id):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+    if name not in fleet_secrets.SECRET_NAMES:
+        return jsonify({"status": "error", "error": "unknown secret"}), 404
+    if fleet_secrets.secret_source(name) == "external":
+        return (
+            jsonify(
+                {"status": "error", "error": "managed externally", "reason": "managed externally"}
+            ),
+            409,
+        )
+    current = next((i for i in await fleet_secrets.list_secrets() if i.name == name), None)
+    old_fp = current.fingerprint if current else None
+    row_id, retry_after = await asyncio.to_thread(_claim_rotation, name, old_fp)
+    if row_id is None:
+        response = jsonify(
+            {"status": "error", "error": "rotated too recently", "retry_after_s": retry_after}
+        )
+        response.headers["Retry-After"] = str(retry_after)
+        return response, 429
+    try:
+        info = await fleet_secrets.rotate_secret(name)
+    except fleet_secrets.ManagedExternally:
+        await asyncio.to_thread(_release_rotation, row_id)
+        return jsonify({"status": "error", "error": "managed externally"}), 409
+    except fleet_secrets.SecretWriteFailed as exc:
+        await asyncio.to_thread(_release_rotation, row_id)
+        if exc.partially_applied:
+            logger.error("fleet.secret.rotation_partial name=%s: restart pending", name)
+            return (
+                jsonify(
+                    {
+                        "status": "error",
+                        "error": "rotated, restart pending, retry",
+                        "reason": "restart pending",
+                    }
+                ),
+                502,
+            )
+        return (
+            jsonify(
+                {"status": "error", "error": "secret write failed", "reason": "secret write failed"}
+            ),
+            502,
+        )
+    await asyncio.to_thread(_finish_rotation, row_id, name, old_fp, info.fingerprint)
+    logger.info(
+        "fleet.secret.rotated name=%s actor=%s fingerprint_old=%s fingerprint_new=%s",
+        info.name,
+        g.user.get("user_id"),
+        old_fp,
+        info.fingerprint,
+    )
+    return {
+        "status": "success",
+        "data": {
+            "name": info.name,
+            "source": info.source,
+            "fingerprint": info.fingerprint,
+            "rotated_at": _now(),
+        },
+        "meta": {"action": "rotated", "timestamp": _now()},
     }, 200

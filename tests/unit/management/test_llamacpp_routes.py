@@ -745,6 +745,12 @@ class TestAuthorizationBoundary:
 # ============================================================================
 
 _DEPLOYMENT_FIELDS = {
+    "public_id",
+    "price_mode",
+    "price_input_per_1m",
+    "price_output_per_1m",
+    "price_breakdown",
+    "comparison_model",
     "id",
     "name",
     "deployment_type",
@@ -798,7 +804,10 @@ class TestResponseSchemasWave2:
             json={"name": "d", "model_name": "m", "deployment_type": "kubernetes"},
         )
         assert resp.status_code == 201
-        assert set((await resp.get_json()).keys()) == {"deployment_id", "message"}
+        assert set((await resp.get_json()).keys()) == {
+            "deployment_id", "message", "public_id", "price_mode", "price_input_per_1m",
+            "price_output_per_1m", "price_breakdown", "comparison_model", "api_key_fingerprint",
+        }  # fmt: skip
 
     async def test_deploy_response_exact_fields(self, client, app_mock_db, auth_headers):
         """Deploy returns exactly {message, deployment_id}."""

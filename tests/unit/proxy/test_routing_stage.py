@@ -248,7 +248,7 @@ class TestDispatchStageConsumesFallbackChain:
         """The primary model has no provider; the first fallback_chain entry serves instead."""
         router = Mock()
 
-        def _select(model):
+        def _select(model, **_kw):
             if model == "primary-model":
                 return None
             if model == "fallback-model":
@@ -304,7 +304,7 @@ class TestDispatchStageConsumesFallbackChain:
         """A dead first fallback entry doesn't stop the loop from reaching a live one."""
         router = Mock()
 
-        def _select(model, preferred_backend=None):
+        def _select(model, preferred_backend=None, **_kw):
             if model in ("primary-model", "dead-fallback"):
                 return None
             if model == "live-fallback":
@@ -346,7 +346,7 @@ class TestDispatchStageConsumesFallbackChain:
         """
         router = Mock()
 
-        def _select(model, preferred_backend=None):
+        def _select(model, preferred_backend=None, **_kw):
             raise RuntimeError(f"{model} boom")
 
         router.select_provider = Mock(side_effect=_select)

@@ -339,7 +339,11 @@ class TestProcessUsage:
     def test_negative_actual_token_counts_never_raise_and_floor_waddleai_contribution(
         self, manager: TokenManager
     ) -> None:
-        """Negative actual_*_tokens don't crash -- the `> 0` guard floors WaddleAI charge to 0."""
+        """Negative actual_*_tokens don't crash and never reduce usage: clamped to 0 first.
+
+        Counts are untrusted engine output; a negative must not subtract from the persisted
+        token totals or the debit (clamp at the point of debit).
+        """
         usage = manager.process_usage(
             input_text="x",
             output_text="y",
@@ -351,7 +355,7 @@ class TestProcessUsage:
             actual_input_tokens=-10,
             actual_output_tokens=-5,
         )
-        assert (usage.llm_tokens_input, usage.llm_tokens_output) == (-10, -5)
+        assert (usage.llm_tokens_input, usage.llm_tokens_output) == (0, 0)
         assert usage.waddleai_tokens == 0
 
     def test_persists_via_update_usage_records(

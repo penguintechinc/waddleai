@@ -25,6 +25,7 @@ from shared.routing.escalation import (
 )
 from shared.routing.heuristics import HeuristicRule, RequestSignals
 from shared.routing.policy import PolicyResolver, filter_and_sort
+from shared.routing.prefer_local import resolve_prefer_local
 from shared.routing.requirements import derive_requirements
 from shared.routing.sensitivity import apply_sensitivity
 from shared.routing.tool_type import determine_tool_type
@@ -41,6 +42,9 @@ class RouteDecision:
     fallback_chain: list[str] = field(default_factory=list)
     routed_from: dict | None = None
     trace: RouteTrace | None = None
+    # Connector name chosen by a prefer-local rule; dispatch honours it only from the
+    # org-visible, healthy, routable set (None = normal strategy selection).
+    destination: str | None = None
 
 
 @dataclass(slots=True)
@@ -151,7 +155,7 @@ class RoutingEngine:
         reqs = derive_requirements(request.body, complexity=complexity)
 
         assigned_model = assignment.default_model if assignment else None
-        alias_routed_from = None
+        alias_routed_from: dict[str, Any] | None = None
         # Stage 0 (spec §7.2): admin-controlled model aliasing. Only a
         # concrete client-requested model is eligible -- a "waddleai/<tool
         # type>" pseudo-model is a routing directive, not a real model name,
@@ -173,6 +177,16 @@ class RoutingEngine:
                     "from": alias_resolution.routed_from,
                     "to": alias_resolution.model,
                 }
+        # Prefer-local rules (action.route): the local deployment when available, else the
+        # commercial fallback. Capability veto / escalation below still outrank it.
+        prefer = resolve_prefer_local(request.rules, request.signals, request.offers)
+        if prefer is not None:
+            assigned_model = prefer.model
+            alias_routed_from = {
+                "cause": "prefer_local",
+                "to": prefer.model,
+                "fell_back": prefer.fell_back,
+            }
         assigned_offer = _find_offer(request.offers, assigned_model)
         chosen_offer, veto_reason = veto_and_reroute(assigned_offer, request.offers, reqs)
         trace.capability_veto = veto_reason is not None and veto_reason != "no_assignment"
@@ -223,13 +237,22 @@ class RoutingEngine:
         )
         trace.final_model = final_model
         trace.routed_from = routed_from
+        destination = (
+            prefer.destination
+            if prefer is not None and not prefer.fell_back and final_model == prefer.model
+            else None
+        )
 
         if persist:
             await persist_trace(self.db, trace)
 
         fallback_chain = [o.model_name for o in chain if o.model_name != final_model]
         return RouteDecision(
-            model=final_model, fallback_chain=fallback_chain, routed_from=routed_from, trace=trace
+            model=final_model,
+            fallback_chain=fallback_chain,
+            routed_from=routed_from,
+            trace=trace,
+            destination=destination,
         )
 
     async def _resolve_escalation(

@@ -8,10 +8,12 @@ import asyncio
 import logging
 import random
 import threading
+import time
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, cast
 
 import aiohttp
@@ -287,6 +289,8 @@ class LLMConnector(ABC):
         self.endpoint_url = config.get("endpoint_url")
         self.api_key = config.get("api_key")
         self.model_list = config.get("model_list", [])
+        # connection_links.owner_org_id (AM3): None = shared; set = visible to that org only.
+        self.owner_org_id: int | None = config.get("owner_org_id")
 
     @abstractmethod
     async def chat_completion(
@@ -321,6 +325,276 @@ class LLMConnector(ABC):
     async def health_check(self) -> dict[str, Any]:
         """Check provider health."""
         pass
+
+
+USAGE_COUNT_CAP = 1_048_576  # generous ceiling for an engine-reported token count
+MAX_GENERATION_MS = 3_600_000  # a single generation longer than an hour is not a sample
+
+
+def elapsed_ms(start: float) -> int:
+    """Whole milliseconds since ``start`` (``time.monotonic``), at least 1."""
+    return max(1, int((time.monotonic() - start) * 1000))
+
+
+STREAM_QUEUE_MAX = 256  # chunks buffered between the upstream reader and a slow consumer
+
+
+class _ReaderFailure:
+    """An exception raised by the upstream source, carried through the queue to the consumer."""
+
+    __slots__ = ("exc",)
+
+    def __init__(self, exc: BaseException) -> None:
+        """Hold the upstream exception."""
+        self.exc = exc
+
+
+_STREAM_END = object()
+
+
+class TimedStream:
+    """Drain an upstream stream in its OWN task so receipt timing is independent of the consumer.
+
+    A reader task pulls chunks from ``source`` as fast as the engine sends them, stamps content
+    chunks on receipt, and hands them to the consumer through a bounded queue. A client that
+    reads slowly therefore cannot change first-to-last receipt time (it would otherwise stretch
+    the measurement and drag the observed-throughput p50 / AUTO price). If the bounded queue is
+    ever full the consumer is slower than the engine and backpressure reaches the engine, so the
+    measurement is no longer trustworthy: ``tainted`` is set and the sample must be discarded.
+    """
+
+    def __init__(
+        self,
+        source: AsyncIterator[Any],
+        is_content: Callable[[Any], bool],
+        maxsize: int | None = None,
+    ) -> None:
+        """Wrap ``source``; ``is_content(item)`` marks chunks that count as generated tokens."""
+        self._source = source
+        self._is_content = is_content
+        self._maxsize = STREAM_QUEUE_MAX if maxsize is None else maxsize
+        self._first: float | None = None
+        self._last: float | None = None
+        self.tainted = False
+
+    def ms(self) -> int | None:
+        """First-to-last content receipt in whole milliseconds (>= 1), or None with no content."""
+        if self._first is None or self._last is None:
+            return None
+        return max(1, int((self._last - self._first) * 1000))
+
+    async def _read(self, queue: asyncio.Queue[Any]) -> None:
+        """Reader task: stamp on receipt, then enqueue (blocking = backpressure = taint)."""
+        try:
+            async for item in self._source:
+                if self._is_content(item):
+                    now = time.monotonic()
+                    if self._first is None:
+                        self._first = now
+                    self._last = now
+                if queue.full():
+                    self.tainted = True
+                await queue.put(item)
+            await queue.put(_STREAM_END)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as exc:  # noqa: BLE001 -- re-raised in the consumer
+            await queue.put(_ReaderFailure(exc))
+
+    def __aiter__(self) -> AsyncIterator[Any]:
+        """Iterate the queued chunks; cancels the reader when the consumer stops early."""
+        return self._iterate()
+
+    async def _iterate(self) -> AsyncIterator[Any]:
+        """Start the reader and yield from the queue until the stream ends or fails."""
+        queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=self._maxsize)
+        reader = asyncio.ensure_future(self._read(queue))
+        try:
+            while True:
+                item = await queue.get()
+                if item is _STREAM_END:
+                    return
+                if isinstance(item, _ReaderFailure):
+                    raise item.exc
+                yield item
+        finally:
+            reader.cancel()
+            await asyncio.gather(reader, return_exceptions=True)
+
+
+async def _ndjson_objects(content: Any) -> AsyncIterator[dict[str, Any]]:
+    """Parse an NDJSON byte stream into dicts, skipping blank or malformed lines."""
+    import json
+
+    async for line in content:
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+async def _sse_objects(content: Any) -> AsyncIterator[dict[str, Any]]:
+    """Parse ``data: {json}`` SSE lines into dicts; stops at ``[DONE]``, skips malformed lines."""
+    import json
+
+    async for line in content:
+        if not line:
+            continue
+        line_str = line.decode("utf-8").strip()
+        if not line_str.startswith("data: "):
+            continue
+        data_str = line_str[6:]
+        if data_str == "[DONE]":
+            return
+        try:
+            obj = json.loads(data_str)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            yield obj
+
+
+def engine_timing(ms: Any, tokens: Any) -> tuple[int, int] | None:
+    """Validated engine-reported ``(generation_ms, tokens)``; None unless both are plausible.
+
+    The engine's own decode timer is preferred over wall-clock because the proxy's wall-clock
+    includes queueing and the client; it is still untrusted input, so it is bounds-checked.
+    """
+    if isinstance(ms, bool) or not isinstance(ms, int | float) or ms != ms:  # NaN guard
+        return None
+    if isinstance(tokens, bool) or not isinstance(tokens, int):
+        return None
+    if not (0 < ms <= MAX_GENERATION_MS) or not (0 < tokens <= USAGE_COUNT_CAP):
+        return None
+    return max(1, round(ms)), tokens
+
+
+def stamp_timing(
+    usage: dict[str, Any],
+    engine: tuple[int, int] | None,
+    proxy_ms: int | None,
+    tainted: bool = False,
+) -> None:
+    """Record the generation time on ``usage``.
+
+    Engine-reported timing when valid; else the proxy's receipt-time measurement, labelled
+    ``proxy`` -- or ``proxy_tainted`` when the consumer backpressured the stream (such a
+    sample is never recorded as throughput).
+    """
+    if engine is not None:
+        usage["generation_ms"], usage["timed_tokens"] = engine
+        usage["timing_source"] = "engine"
+    elif proxy_ms is not None:
+        usage["generation_ms"] = proxy_ms
+        usage["timing_source"] = "proxy_tainted" if tainted else "proxy"
+
+
+def validate_token_count(value: Any, cap: int) -> int | None:
+    """An engine-reported count is trusted only if it is a non-bool int in ``[0, cap]``.
+
+    Engines (and anything impersonating one) are untrusted input to quota debiting: a negative,
+    absurd, boolean, float or non-numeric count returns ``None`` so the caller estimates instead.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= cap else None
+
+
+def usage_count_caps(
+    config: dict[str, Any], request_kwargs: dict[str, Any] | None = None
+) -> tuple[int, int]:
+    """``(input_cap, output_cap)``: context length bounds input; output adds the request limit."""
+    caps = config.get("management_capabilities") or {}
+    ctx = validate_token_count(caps.get("max_model_len"), USAGE_COUNT_CAP) or USAGE_COUNT_CAP
+    kwargs = request_kwargs or {}
+    limit = validate_token_count(
+        kwargs.get("max_tokens", kwargs.get("max_completion_tokens")), USAGE_COUNT_CAP
+    )
+    return ctx, min(USAGE_COUNT_CAP, ctx + (limit or 0))
+
+
+async def resolve_reported_counts(
+    raw_in: Any,
+    raw_out: Any,
+    caps: tuple[int, int],
+    estimate_in: Callable[[], Awaitable[int]],
+    estimate_out: Callable[[], Awaitable[int]],
+    *,
+    prompt_text: str = "",
+    output_text: str = "",
+) -> tuple[int, int, bool]:
+    """Validated counts; each invalid/missing field is estimated and the row flagged.
+
+    Returns ``(input_tokens, output_tokens, estimated)``. A field is "real" only when the engine
+    reported a valid value for it; nothing ever defaults to 0 on a row marked not-estimated. A
+    reported 0 beside non-empty text (``prompt_text`` / ``output_text``) is a missing count, not
+    a free request, so it is estimated and flagged like any other invalid value.
+    """
+    in_t = validate_token_count(raw_in, caps[0])
+    out_t = validate_token_count(raw_out, caps[1])
+    if in_t == 0 and prompt_text.strip():
+        in_t = None
+    if out_t == 0 and output_text.strip():
+        out_t = None
+    estimated = in_t is None or out_t is None
+    if in_t is None:
+        in_t = max(0, await estimate_in())
+    if out_t is None:
+        out_t = max(0, await estimate_out())
+    return in_t, out_t, estimated
+
+
+def _count_missing(reason: str, provider: str | None = None) -> None:
+    """Bump the missing-usage counter; telemetry failure never reaches the request."""
+    try:
+        from shared.observability.vllm_metrics import usage_missing_counter
+
+        attrs = {"reason": reason} if provider is None else {"reason": reason, "provider": provider}
+        usage_missing_counter().add(1, attrs)
+    except Exception:  # noqa: BLE001 -- a dead exporter never breaks a request
+        logger.debug("usage-missing counter emission failed", exc_info=True)
+
+
+def connector_visible_to(connector: Any, org_id: int | None) -> bool:
+    """True when ``connector`` may serve a request from ``org_id`` (AM3 org isolation).
+
+    A shared connector (no owner) is visible to everyone. An owned connector is visible ONLY to
+    its owner org; an unknown org (``None``) never sees an owned connector (fail closed).
+    """
+    owner = getattr(connector, "owner_org_id", None)
+    if isinstance(owner, bool) or not isinstance(owner, int):
+        return True
+    return org_id is not None and owner == org_id
+
+
+def local_deployment_of(connector: Any) -> tuple[int, int | None] | None:
+    """``(kind, deployment_id)`` for a fleet-managed connector, ``None`` for a commercial one."""
+    if isinstance(connector, VllmConnector):
+        return (connector.local_deployment_kind, connector.local_deployment_id)
+    keys = getattr(connector, "_local_keys", None)
+    if isinstance(keys, dict) and isinstance(keys.get("local_deployment_kind"), int):
+        return (keys["local_deployment_kind"], keys.get("local_deployment_id"))
+    return None
+
+
+def connector_serves_model(connector: Any, model: str) -> bool:
+    """True when ``connector`` lists ``model``; an empty list is a wildcard for shared links only.
+
+    Owned links and fleet (vLLM) links never wildcard: an empty ``model_list`` matches nothing,
+    so a deployment can never silently answer for a model it does not serve.
+    """
+    models = getattr(connector, "model_list", None) or []
+    if model in models:
+        return True
+    if models:
+        return False
+    owner = getattr(connector, "owner_org_id", None)
+    owned = isinstance(owner, int) and not isinstance(owner, bool)
+    return not (owned or isinstance(connector, VllmConnector))
 
 
 class OpenAIConnector(LLMConnector):
@@ -363,27 +637,89 @@ class OpenAIConnector(LLMConnector):
         adapted.setdefault("max_completion_tokens", value)
         return adapted
 
+    async def _handle_missing_usage(
+        self, model: str, messages: list[dict[str, str]], content: str
+    ) -> dict[str, Any]:
+        """Non-stream response without ``usage``: OpenAI proper treats it as a provider fault."""
+        raise ProviderServerError(
+            provider="openai",
+            model=model,
+            message="OpenAI response missing usage data",
+        )
+
+    def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
+        """Hook to annotate a usage dict before it leaves the connector (identity by default)."""
+        return usage_info
+
+    def _note_timing(
+        self,
+        usage_info: dict[str, Any],
+        proxy_ms: int | None,
+        extra: Any,
+        tainted: bool = False,
+    ) -> None:
+        """Hook to record generation time on a usage dict (no-op for OpenAI proper).
+
+        ``proxy_ms`` is the consumer-independent wall-clock measurement; ``extra`` is the
+        provider response's unmodelled fields (where an engine may report its own timings).
+        """
+
+    async def _validate_usage(
+        self,
+        usage_info: dict[str, Any],
+        reason: str,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Hook to validate engine-reported counts; OpenAI proper trusts its own API.
+
+        Only normalizes a missing count to 0 (the long-standing behaviour for that provider).
+        """
+        return {
+            **usage_info,
+            "input_tokens": usage_info.get("input_tokens") or 0,
+            "output_tokens": usage_info.get("output_tokens") or 0,
+        }
+
+    async def _finalize_stream_usage(
+        self,
+        usage: dict[str, Any] | None,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+    ) -> dict[str, Any] | None:
+        """Hook run once a stream ends; subclasses may repair a missing usage chunk."""
+        return usage
+
     async def chat_completion(
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate OpenAI chat completion."""
         kwargs = self._adapt_token_limit(model, kwargs)
         try:
+            started = time.monotonic()
             response = await self.client.chat.completions.create(
                 model=model,
                 messages=cast(list[ChatCompletionMessageParam], messages),
                 **kwargs,
             )
+            call_ms = elapsed_ms(started)
 
             content = response.choices[0].message.content or ""
             usage = response.usage
             if usage is None:
-                raise ProviderServerError(
-                    provider="openai",
-                    model=model,
-                    message="OpenAI response missing usage data",
-                )
-            usage_info: dict[str, Any] = {
+                estimated = await self._handle_missing_usage(model, messages, content)
+                usage_info: dict[str, Any] = {
+                    **estimated,
+                    "model": response.model,
+                    "finish_reason": response.choices[0].finish_reason,
+                    "cached_tokens": 0,
+                }
+                self._note_timing(usage_info, call_ms, getattr(response, "model_extra", None))
+                return content, self._stamp_usage(usage_info)
+            usage_info = {
                 "input_tokens": usage.prompt_tokens,
                 "output_tokens": usage.completion_tokens,
                 "total_tokens": usage.total_tokens,
@@ -398,7 +734,11 @@ class OpenAIConnector(LLMConnector):
             cached_tokens = getattr(details, "cached_tokens", 0) if details else 0
             usage_info["cached_tokens"] = cached_tokens if isinstance(cached_tokens, int) else 0
 
-            return content, usage_info
+            usage_info = await self._validate_usage(
+                usage_info, "non_stream", model, messages, content, kwargs
+            )
+            self._note_timing(usage_info, call_ms, getattr(response, "model_extra", None))
+            return content, self._stamp_usage(usage_info)
 
         except openai.APITimeoutError as e:
             raise ProviderTimeoutError(
@@ -461,18 +801,34 @@ class OpenAIConnector(LLMConnector):
             # stream=True above guarantees the AsyncStream branch at runtime.
             stream = cast(AsyncStream[ChatCompletionChunk], raw_stream)
             usage: dict[str, Any] | None = None
-            async for chunk in stream:
+            text_parts: list[str] = []
+            timed = TimedStream(
+                stream, lambda c: bool(getattr(c, "choices", None) and c.choices[0].delta.content)
+            )
+            engine_extra: Any = None
+            async for chunk in timed:
+                chunk_extra = getattr(chunk, "model_extra", None)
+                if isinstance(chunk_extra, dict) and chunk_extra.get("timings"):
+                    engine_extra = chunk_extra
                 if chunk.choices and chunk.choices[0].delta.content:
+                    text_parts.append(chunk.choices[0].delta.content)
                     yield StreamChunk(delta=chunk.choices[0].delta.content, done=False)
                 # The usage-bearing chunk arrives last and carries no choices.
                 chunk_usage = getattr(chunk, "usage", None)
                 if chunk_usage:
                     usage = {
-                        "input_tokens": getattr(chunk_usage, "prompt_tokens", 0),
-                        "output_tokens": getattr(chunk_usage, "completion_tokens", 0),
+                        "input_tokens": getattr(chunk_usage, "prompt_tokens", None),
+                        "output_tokens": getattr(chunk_usage, "completion_tokens", None),
                         "provider": self.provider_label,
                         "model": model,
                     }
+            text = "".join(text_parts)
+            if usage is not None:
+                usage = await self._validate_usage(usage, "stream", model, messages, text, kwargs)
+            usage = await self._finalize_stream_usage(usage, model, messages, text)
+            if usage is not None:
+                self._note_timing(usage, timed.ms(), engine_extra, timed.tainted)
+                usage = self._stamp_usage(usage)
             yield StreamChunk(delta="", usage=usage, done=True)
 
         except openai.APITimeoutError as e:
@@ -576,6 +932,181 @@ class OpenAIConnector(LLMConnector):
                 "error": str(e),
                 "timestamp": datetime.utcnow().isoformat(),
             }
+
+
+class VllmConnector(OpenAIConnector):
+    """vLLM-on-Ray fleet deployment (OpenAI wire) with real-usage metering and a loud estimate.
+
+    The SDK key is the connection link's per-deployment bearer (AM11); a missing key fails
+    closed before any request. Usage the engine did not report is estimated, flagged
+    ``estimated=True`` and counted -- never silently zero (Plan C review focus 1).
+    """
+
+    provider_label: str = "vllm"
+    local_deployment_kind: int = 1  # shared.fleet.enums.LocalDeploymentKind.VLLM
+
+    def __init__(self, name: str, config: dict[str, Any]):
+        """Read fleet metadata from ``management_capabilities``; keep the SDK constructible."""
+        # The SDK refuses a None key at construction; a placeholder is never sent because
+        # every request path checks ``self.api_key`` first and fails closed.
+        super().__init__(name, {**config, "api_key": config.get("api_key") or "no-key-never-sent"})
+        self.api_key = config.get("api_key") or None
+        caps = config.get("management_capabilities") or {}
+        self.local_deployment_id: int | None = caps.get("local_deployment_id")
+        self.unit_price_input: Decimal | None = _opt_decimal(caps.get("unit_price_input"))
+        self.unit_price_output: Decimal | None = _opt_decimal(caps.get("unit_price_output"))
+        self.fleet_status: int | None = caps.get("fleet_status")
+
+    @property
+    def is_routable(self) -> bool:
+        """True unless the deployment is known and not SERVING (spec §4.6)."""
+        from shared.fleet.enums import DeploymentStatus
+
+        return self.fleet_status is None or self.fleet_status == int(DeploymentStatus.SERVING)
+
+    def _require_key(self, model: str) -> None:
+        """Fail closed when the link carries no per-deployment bearer key."""
+        if not self.api_key:
+            raise ProviderServerError(
+                provider="vllm",
+                model=model,
+                message="vllm connection link has no per-deployment api key",
+            )
+
+    async def chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> tuple[str, dict[str, Any]]:
+        """Chat completion; refuses to send without the deployment key."""
+        self._require_key(model)
+        return await super().chat_completion(messages, model, **kwargs)
+
+    async def stream_chat_completion(
+        self, messages: list[dict[str, str]], model: str, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream with ``include_usage`` forced on so the engine reports real counts."""
+        self._require_key(model)
+        kwargs["stream_options"] = {"include_usage": True}
+        async for chunk in super().stream_chat_completion(messages, model, **kwargs):
+            yield chunk
+
+    async def _estimate(
+        self, model: str, messages: list[dict[str, str]], content: str, reason: str
+    ) -> dict[str, Any]:
+        """Estimate BOTH counts locally (no usage at all), count the gap, warn (no content)."""
+        usage = await self._validate_usage(
+            {"input_tokens": None, "output_tokens": None},
+            reason,
+            model,
+            messages,
+            content,
+            {},
+        )
+        return {**usage, "provider": "vllm"}
+
+    async def _validate_usage(
+        self,
+        usage_info: dict[str, Any],
+        reason: str,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate reported counts; estimate + flag + count every missing/garbage field."""
+        prompt = "\n".join(str(m.get("content", "")) for m in messages)
+        in_t, out_t, estimated = await resolve_reported_counts(
+            usage_info.get("input_tokens"),
+            usage_info.get("output_tokens"),
+            usage_count_caps(self.config, request_kwargs),
+            lambda: self.count_tokens(prompt, model),
+            lambda: self.count_tokens(text, model),
+            prompt_text=prompt,
+            output_text=text,
+        )
+        out = {
+            **usage_info,
+            "input_tokens": in_t,
+            "output_tokens": out_t,
+            "total_tokens": in_t + out_t,
+        }
+        if estimated:
+            out["estimated"] = True
+            _count_missing(reason)
+            logger.warning(
+                "vllm deployment %s reported missing/invalid usage (%s); estimated counts",
+                self.local_deployment_id,
+                reason,
+            )
+        return out
+
+    async def _handle_missing_usage(
+        self, model: str, messages: list[dict[str, str]], content: str
+    ) -> dict[str, Any]:
+        """Non-stream body without ``usage``: estimate, flag, count."""
+        return await self._estimate(model, messages, content, "non_stream")
+
+    async def _finalize_stream_usage(
+        self,
+        usage: dict[str, Any] | None,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+    ) -> dict[str, Any] | None:
+        """Stream ended without a usage chunk: estimate, flag, count."""
+        if usage is not None:
+            return usage
+        estimated = await self._estimate(model, messages, text, "stream")
+        return {**estimated, "model": model}
+
+    def _note_timing(
+        self,
+        usage_info: dict[str, Any],
+        proxy_ms: int | None,
+        extra: Any,
+        tainted: bool = False,
+    ) -> None:
+        """Engine ``timings`` (llama-server/vLLM-fork style) when valid, else proxy-measured."""
+        timings = extra.get("timings") if isinstance(extra, dict) else None
+        engine = (
+            engine_timing(timings.get("predicted_ms"), timings.get("predicted_n"))
+            if isinstance(timings, dict)
+            else None
+        )
+        stamp_timing(usage_info, engine, proxy_ms, tainted)
+
+    def _stamp_usage(self, usage_info: dict[str, Any]) -> dict[str, Any]:
+        """Attach the chargeback snapshot: kind, deployment id and the unit prices in force."""
+        stamped = dict(usage_info)
+        stamped["provider"] = "vllm"
+        stamped.setdefault("estimated", False)
+        stamped["local_deployment_kind"] = self.local_deployment_kind
+        stamped["local_deployment_id"] = self.local_deployment_id
+        stamped["unit_price_input"] = _opt_str(self.unit_price_input)
+        stamped["unit_price_output"] = _opt_str(self.unit_price_output)
+        return stamped
+
+
+def _opt_decimal(value: Any) -> Decimal | None:
+    """Exact Decimal from a stored price, or None when absent."""
+    return None if value is None else Decimal(str(value))
+
+
+def _opt_str(value: Decimal | None) -> str | None:
+    """String form of an optional Decimal (JSON-safe)."""
+    return None if value is None else str(value)
+
+
+def _local_usage_keys(config: dict[str, Any]) -> dict[str, int | None]:
+    """``local_deployment_kind``/``local_deployment_id`` from a link's management_capabilities.
+
+    Absent capabilities (a plain commercial or legacy link) yield ``None`` for both, so usage
+    is metered exactly as before; present ones tie the usage to its chargeback deployment.
+    """
+    caps = config.get("management_capabilities") or {}
+    return {
+        "local_deployment_kind": caps.get("local_deployment_kind"),
+        "local_deployment_id": caps.get("local_deployment_id"),
+    }
 
 
 class XAIConnector(OpenAIConnector):
@@ -1535,6 +2066,24 @@ class OllamaConnector(LLMConnector):
 
         # Use OpenAI tokenizer for estimation
         self.token_estimator = tiktoken.encoding_for_model("gpt-3.5-turbo")
+        self._local_keys = _local_usage_keys(config)
+        self._fleet_managed = self._local_keys["local_deployment_kind"] is not None
+        self._headers: dict[str, str] = {}
+        if config.get("api_key"):
+            self._headers["Authorization"] = f"Bearer {config['api_key']}"
+
+    def _require_fleet_key(self, model: str) -> None:
+        """Fail closed when a fleet-managed link has no per-deployment api key (AM11).
+
+        NOTE: Ollama itself does not validate this header; server-side enforcement needs an auth
+        layer in front of fleet Ollama pods (tracked follow-up, DEVIATIONS-C-proxy.md).
+        """
+        if self._fleet_managed and "Authorization" not in self._headers:
+            raise ProviderServerError(
+                provider="ollama",
+                model=model,
+                message="ollama fleet link has no per-deployment api key",
+            )
 
     @property
     def session(self) -> aiohttp.ClientSession:
@@ -1549,7 +2098,7 @@ class OllamaConnector(LLMConnector):
         real one — turning a unit test into an outbound HTTP call.
         """
         if self._session is None or getattr(self._session, "closed", False) is True:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(headers=self._headers or None)
         return self._session
 
     @session.setter
@@ -1566,6 +2115,7 @@ class OllamaConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate Ollama chat completion."""
+        self._require_fleet_key(model)
         try:
             payload: dict[str, Any] = {
                 "model": model,
@@ -1586,6 +2136,7 @@ class OllamaConnector(LLMConnector):
             if think is not None:
                 payload["think"] = think
 
+            started = time.monotonic()
             async with self.session.post(
                 f"{self.endpoint_url}/api/chat",
                 json=payload,
@@ -1608,21 +2159,29 @@ class OllamaConnector(LLMConnector):
                         )
 
                 result = await response.json()
+                call_ms = elapsed_ms(started)
                 content = result["message"]["content"]
 
-                # Estimate token usage
-                input_text = " ".join([msg["content"] for msg in messages])
-                input_tokens = len(self.token_estimator.encode(input_text))
-                output_tokens = len(self.token_estimator.encode(content))
-
-                usage_info = {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": input_tokens + output_tokens,
-                    "model": model,
-                    "finish_reason": result.get("done_reason", "stop"),
-                    "provider": "ollama",
-                }
+                # Real counts when the engine reported valid ones; else a flagged estimate.
+                usage_info = await self._usage_from_counts(
+                    result.get("prompt_eval_count"),
+                    result.get("eval_count"),
+                    model,
+                    messages,
+                    content,
+                    "non_stream",
+                    kwargs,
+                )
+                usage_info["finish_reason"] = result.get("done_reason", "stop")
+                eval_ns = result.get("eval_duration")
+                stamp_timing(
+                    usage_info,
+                    engine_timing(
+                        eval_ns / 1e6 if isinstance(eval_ns, int | float) else None,
+                        result.get("eval_count"),
+                    ),
+                    call_ms,
+                )
 
                 return content, usage_info
 
@@ -1717,10 +2276,52 @@ class OllamaConnector(LLMConnector):
             logger.error(f"Failed to remove Ollama model {model}: {e}")
             return {"status": "error", "error": str(e)}
 
+    async def _usage_from_counts(
+        self,
+        raw_in: Any,
+        raw_out: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        reason: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Usage dict from engine counts: each invalid/missing field estimated, row flagged."""
+        prompt = " ".join(str(m.get("content", "")) for m in messages)
+
+        async def est_in() -> int:
+            return len(self.token_estimator.encode(prompt))
+
+        async def est_out() -> int:
+            return len(self.token_estimator.encode(text))
+
+        in_t, out_t, estimated = await resolve_reported_counts(
+            raw_in,
+            raw_out,
+            usage_count_caps(self.config, request_kwargs),
+            est_in,
+            est_out,
+            prompt_text=prompt,
+            output_text=text,
+        )
+        if estimated:
+            _count_missing(reason, "ollama")
+            logger.warning("ollama reported missing/invalid usage (%s); estimated counts", reason)
+        return {
+            "input_tokens": in_t,
+            "output_tokens": out_t,
+            "total_tokens": in_t + out_t,
+            "model": model,
+            "provider": "ollama",
+            "estimated": estimated,
+            **self._local_keys,
+        }
+
     async def stream_chat_completion(
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream Ollama chat completion using NDJSON streaming."""
+        self._require_fleet_key(model)
         try:
             payload = {
                 "model": model,
@@ -1754,22 +2355,38 @@ class OllamaConnector(LLMConnector):
                         )
 
                 # Read NDJSON stream line by line
-                async for line in response.content:
-                    if not line:
-                        continue
-                    try:
-                        import json
+                reported: tuple[Any, Any] = (None, None)
+                text_parts: list[str] = []
+                timed = TimedStream(
+                    _ndjson_objects(response.content),
+                    lambda c: bool((c.get("message") or {}).get("content")),
+                )
+                final_chunk: dict[str, Any] = {}
+                async for chunk in timed:
+                    message = chunk.get("message")
+                    if isinstance(message, dict) and message.get("content"):
+                        content = message["content"]
+                        text_parts.append(content)
+                        yield StreamChunk(delta=content, done=False)
+                    if chunk.get("done"):
+                        final_chunk = chunk
+                        reported = (chunk.get("prompt_eval_count"), chunk.get("eval_count"))
 
-                        chunk = json.loads(line)
-                        if "message" in chunk and "content" in chunk["message"]:
-                            content = chunk["message"]["content"]
-                            if content:
-                                yield StreamChunk(delta=content, done=False)
-                    except (json.JSONDecodeError, KeyError):
-                        continue
-
-                # Ollama streaming does not include final usage; send done=True signal
-                yield StreamChunk(delta="", usage=None, done=True)
+                # The final NDJSON object carries counts; invalid/missing ones are estimated.
+                usage = await self._usage_from_counts(
+                    reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
+                )
+                eval_ns = final_chunk.get("eval_duration")
+                stamp_timing(
+                    usage,
+                    engine_timing(
+                        eval_ns / 1e6 if isinstance(eval_ns, int | float) else None,
+                        final_chunk.get("eval_count"),
+                    ),
+                    timed.ms(),
+                    timed.tainted,
+                )
+                yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
             raise
@@ -1837,6 +2454,55 @@ class LlamaCppConnector(LLMConnector):
         self._headers = {}
         if config.get("api_key"):
             self._headers["Authorization"] = f"Bearer {config['api_key']}"
+        self._local_keys = _local_usage_keys(config)
+        # Fleet-managed deployments (AM11) always carry a per-deployment bearer key: an
+        # unauthenticated request to one is refused before it leaves, never sent bare.
+        self._fleet_managed = self._local_keys["local_deployment_kind"] is not None
+
+    def _require_fleet_key(self, model: str) -> None:
+        """Fail closed when a fleet-managed link has no per-deployment api key."""
+        if self._fleet_managed and "Authorization" not in self._headers:
+            raise ProviderServerError(
+                provider="llamacpp",
+                model=model,
+                message="llamacpp fleet link has no per-deployment api key",
+            )
+
+    async def _usage_from_counts(
+        self,
+        raw_in: Any,
+        raw_out: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        text: str,
+        reason: str,
+        request_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """A fresh usage dict from validated counts; invalid/missing fields estimated + flagged."""
+        prompt = " ".join(str(m.get("content", "")) for m in messages)
+        in_t, out_t, estimated = await resolve_reported_counts(
+            raw_in,
+            raw_out,
+            usage_count_caps(self.config, request_kwargs),
+            lambda: self.count_tokens(prompt, model),
+            lambda: self.count_tokens(text, model),
+            prompt_text=prompt,
+            output_text=text,
+        )
+        if estimated:
+            _count_missing(reason, "llamacpp")
+            logger.warning("llamacpp reported missing/invalid usage (%s); estimated counts", reason)
+        return {
+            "input_tokens": in_t,
+            "output_tokens": out_t,
+            "prompt_tokens": in_t,
+            "completion_tokens": out_t,
+            "total_tokens": in_t + out_t,
+            "model": model,
+            "provider": "llamacpp",
+            "estimated": estimated,
+            **self._local_keys,
+        }
 
     def _get_session(self) -> aiohttp.ClientSession:
         """The HTTP session, opened on first use.
@@ -1855,9 +2521,11 @@ class LlamaCppConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> tuple[str, dict[str, Any]]:
         """Generate a chat completion via llama-server's OpenAI-compatible /v1/chat/completions."""
+        self._require_fleet_key(model)
         session = self._get_session()
         payload = {"model": model or self.model_name, "messages": messages, **kwargs}
         try:
+            started = time.monotonic()
             async with session.post(
                 f"{self.endpoint_url}/v1/chat/completions",
                 json=payload,
@@ -1885,10 +2553,27 @@ class LlamaCppConnector(LLMConnector):
                         model=model,
                         message="llama-server returned empty choices",
                     )
+                call_ms = elapsed_ms(started)
                 content = data["choices"][0]["message"]["content"]
-                usage = data.get("usage", {})
-                usage["provider"] = "llamacpp"
-                usage["model"] = model
+                raw = data.get("usage")
+                raw = raw if isinstance(raw, dict) else {}
+                usage = await self._usage_from_counts(
+                    raw.get("prompt_tokens"),
+                    raw.get("completion_tokens"),
+                    model,
+                    messages,
+                    content,
+                    "non_stream",
+                    kwargs,
+                )
+                timings = data.get("timings")
+                stamp_timing(
+                    usage,
+                    engine_timing(timings.get("predicted_ms"), timings.get("predicted_n"))
+                    if isinstance(timings, dict)
+                    else None,
+                    call_ms,
+                )
                 return content, usage
         except ProviderError:
             raise
@@ -1955,11 +2640,13 @@ class LlamaCppConnector(LLMConnector):
         self, messages: list[dict[str, str]], model: str, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         """Stream llama-server chat completion using SSE format."""
+        self._require_fleet_key(model)
         session = self._get_session()
         payload = {
             "model": model or self.model_name,
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             **kwargs,
         }
         try:
@@ -1985,28 +2672,45 @@ class LlamaCppConnector(LLMConnector):
                         )
 
                 # Read SSE stream
-                async for line in response.content:
-                    if not line:
-                        continue
-                    line_str = line.decode("utf-8").strip()
-                    if not line_str.startswith("data: "):
-                        continue
-                    data_str = line_str[6:]  # Strip "data: " prefix
-                    if data_str == "[DONE]":
-                        break
-                    try:
-                        import json
+                reported: tuple[Any, Any] = (None, None)
+                text_parts: list[str] = []
+                timed = TimedStream(
+                    _sse_objects(response.content),
+                    lambda c: bool(
+                        c.get("choices") and (c["choices"][0].get("delta") or {}).get("content")
+                    ),
+                )
+                engine_timings: Any = None
+                async for chunk in timed:
+                    if chunk.get("choices"):
+                        delta = chunk["choices"][0].get("delta") or {}
+                        if delta.get("content"):
+                            text_parts.append(delta["content"])
+                            yield StreamChunk(delta=delta["content"], done=False)
+                    if isinstance(chunk.get("timings"), dict):
+                        engine_timings = chunk["timings"]
+                    chunk_usage = chunk.get("usage")
+                    if isinstance(chunk_usage, dict):
+                        reported = (
+                            chunk_usage.get("prompt_tokens"),
+                            chunk_usage.get("completion_tokens"),
+                        )
 
-                        chunk = json.loads(data_str)
-                        if "choices" in chunk and chunk["choices"]:
-                            delta = chunk["choices"][0].get("delta", {})
-                            if "content" in delta and delta["content"]:
-                                yield StreamChunk(delta=delta["content"], done=False)
-                    except (json.JSONDecodeError, KeyError):
-                        continue
-
-                # llama.cpp streaming does not include final usage; send done=True signal
-                yield StreamChunk(delta="", usage=None, done=True)
+                # Counts from the include_usage chunk; invalid/missing ones are estimated.
+                usage = await self._usage_from_counts(
+                    reported[0], reported[1], model, messages, "".join(text_parts), "stream", kwargs
+                )
+                stamp_timing(
+                    usage,
+                    engine_timing(
+                        engine_timings.get("predicted_ms"), engine_timings.get("predicted_n")
+                    )
+                    if isinstance(engine_timings, dict)
+                    else None,
+                    timed.ms(),
+                    timed.tainted,
+                )
+                yield StreamChunk(delta="", usage=usage, done=True)
 
         except ProviderError:
             raise
@@ -2407,6 +3111,8 @@ class LLMConnectionManager:
                     "model_list": link.model_list or [],
                     "rate_limits": link.rate_limits or {},
                     "tls_config": link.tls_config or {},
+                    "management_capabilities": getattr(link, "management_capabilities", None) or {},
+                    "owner_org_id": getattr(link, "owner_org_id", None),
                 }
 
                 connector: LLMConnector
@@ -2414,6 +3120,8 @@ class LLMConnectionManager:
                     connector = OpenAIConnector(link.name, config)
                 elif link.provider == "xai":
                     connector = XAIConnector(link.name, config)
+                elif link.provider == "vllm":
+                    connector = VllmConnector(link.name, config)
                 elif link.provider == "anthropic":
                     connector = AnthropicConnector(link.name, config)
                 elif link.provider == "gemini":
@@ -2488,14 +3196,23 @@ class LLMConnectionManager:
         self.connectors.clear()
         self._load_connectors()
 
-    def get_connector(self, name: str) -> LLMConnector | None:
-        """Get connector by name."""
-        return self.connectors.get(name)
+    def get_connector(self, name: str, org_id: int | None = None) -> LLMConnector | None:
+        """Get a connector by name; an owned connector is returned only to its owner org."""
+        connector = self.connectors.get(name)
+        if connector is None or not connector_visible_to(connector, org_id):
+            return None
+        return connector
 
-    def get_connector_for_model(self, model: str) -> LLMConnector | None:
-        """Get connector that supports the specified model."""
+    def get_connector_for_model(self, model: str, org_id: int | None = None) -> LLMConnector | None:
+        """Get a connector supporting ``model`` that is visible to ``org_id`` (AM3).
+
+        Owned connectors are skipped unless ``org_id`` is their owner; owned and fleet links
+        never match through an empty ``model_list``.
+        """
         for connector in self.connectors.values():
-            if model in connector.model_list or not connector.model_list:
+            if not connector_visible_to(connector, org_id):
+                continue
+            if connector_serves_model(connector, model):
                 return connector
         return None
 
@@ -2505,11 +3222,13 @@ class LLMConnectionManager:
             conn for conn in self.connectors.values() if conn.config.get("provider") == provider
         ]
 
-    async def list_all_models(self) -> list[dict[str, Any]]:
-        """List models from all connectors."""
+    async def list_all_models(self, org_id: int | None = None) -> list[dict[str, Any]]:
+        """List models from every connector visible to ``org_id`` (owned links: owner only)."""
         all_models = []
 
         for connector in self.connectors.values():
+            if not connector_visible_to(connector, org_id):
+                continue
             try:
                 models = await connector.list_models()
                 all_models.extend(models)

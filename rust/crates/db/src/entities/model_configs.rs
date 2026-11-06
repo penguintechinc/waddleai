@@ -7,7 +7,6 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key)]
     pub id: i32,
-    #[sea_orm(unique)]
     pub model_name: String,
     pub preferred_providers: Json,
     pub cost_per_token: Json,
@@ -16,6 +15,8 @@ pub struct Model {
     pub capabilities: Json,
     pub enabled: bool,
     pub created_at: Option<DateTime>,
+    pub owner_org_id: Option<i32>,
+    pub deployment_public_id: Option<Uuid>,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

@@ -192,4 +192,4 @@ def test_single_alembic_head_no_divergent_branches() -> None:
     heads = script.get_heads()
 
     assert len(heads) == 1
-    assert heads[0] == "028_vllm_ray_fleet"
+    assert heads[0] == "031_llamacpp_owner_org"

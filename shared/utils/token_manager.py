@@ -9,11 +9,20 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from enum import Enum
 from typing import Any
 
 import tiktoken
 
+from shared.fleet.throughput import TIMING_ENGINE, TIMING_PROXY, record_generation_sample
+from shared.quota.virtual_price import (
+    LocalDeployment,
+    LocalRateMissingError,
+    resolve_local_deployment,
+    snapshot_price,
+    usage_row_key,
+)
 from shared.utils.default_conversion_rates import DEFAULT_RATE_ROWS
 
 logger = logging.getLogger(__name__)
@@ -210,6 +219,14 @@ class TokenManager:
         organization_id: int,
         actual_input_tokens: int | None = None,
         actual_output_tokens: int | None = None,
+        estimated: bool = False,
+        local_deployment_kind: int | None = None,
+        local_deployment_id: int | None = None,
+        unit_price_input: Decimal | None = None,
+        unit_price_output: Decimal | None = None,
+        generation_ms: int | None = None,
+        timing_source: str | None = None,
+        timed_tokens: int | None = None,
     ) -> TokenUsage:
         """Process token usage for a request.
 
@@ -220,6 +237,14 @@ class TokenManager:
         them.
         """
         self.refresh_rates_if_stale()
+        local: LocalDeployment | None = None
+        if local_deployment_kind is not None or local_deployment_id is not None:
+            # Locally hosted: charge at THIS deployment's virtual rate (AM26/AM27) and snapshot
+            # the price in force. A missing rate is refused, never the default rate.
+            local = self.require_local_rate(local_deployment_kind, local_deployment_id)
+            provider, model = local.provider, local.model_key
+            # The connector-stamped unit_price_* arguments are advisory only; the deployment row
+            # (local.price_*) is authoritative for the snapshot.
         # Count LLM tokens: prefer the provider-reported counts when given,
         # else fall back to local estimation.
         input_tokens = (
@@ -232,6 +257,10 @@ class TokenManager:
             if actual_output_tokens is not None
             else self.count_tokens(output_text, provider, model)
         )
+
+        # Counts are untrusted engine/connector output: a negative never reduces a debit.
+        input_tokens = max(0, input_tokens)
+        output_tokens = max(0, output_tokens)
 
         # Convert to WaddleAI tokens
         waddleai_tokens = self.calculate_waddleai_tokens(
@@ -255,9 +284,95 @@ class TokenManager:
         )
 
         # Update database
-        self._update_usage_records(usage, api_key_id, user_id, organization_id, provider, model)
+        self._update_usage_records(
+            usage,
+            api_key_id,
+            user_id,
+            organization_id,
+            provider,
+            model,
+            estimated=estimated,
+            local=local,
+        )
+
+        # proxy_tainted = the consumer backpressured the stream: the timing is not a measurement
+        if (
+            local is not None
+            and not estimated
+            and generation_ms is not None
+            and timing_source != "proxy_tainted"
+        ):
+            self._record_generation_sample(
+                local,
+                timed_tokens or usage.llm_tokens_output,
+                generation_ms,
+                timing_source,
+                user_id,
+            )
 
         return usage
+
+    def _record_generation_sample(
+        self,
+        local: LocalDeployment,
+        output_tokens: int,
+        generation_ms: int,
+        timing_source: str | None,
+        user_id: int,
+    ) -> None:
+        """Best-effort throughput sample; never fails billing (estimated counts never sample)."""
+        try:
+            record_generation_sample(
+                self.db,
+                local.kind,
+                local.deployment_id,
+                output_tokens,
+                generation_ms,
+                TIMING_ENGINE if timing_source == "engine" else TIMING_PROXY,
+                user_id,
+            )
+        except Exception:  # noqa: BLE001 -- observed throughput is advisory, billing is not
+            logger.warning("could not record generation sample", exc_info=True)
+
+    def require_local_rate(self, kind: int | None, deployment_id: int | None) -> LocalDeployment:
+        """Resolve a local deployment and its rate row, or refuse (fail closed, AM27).
+
+        Reloads the rate table once on a miss (a rate written moments ago may not be loaded
+        yet); still missing -> ``waddleai_local_rate_missing_total`` +1 and
+        :class:`LocalRateMissingError`. The default conversion rate is never applied.
+        """
+        local = resolve_local_deployment(self.db, kind, deployment_id) if kind is not None else None
+        if local is not None:
+            key = f"{local.provider}:{local.model_key}"
+            if key not in self.conversion_rates:
+                try:
+                    self._load_conversion_rates()
+                except Exception as exc:  # noqa: BLE001 -- a DB blip must not become a default
+                    logger.warning("rate reload for local deployment failed: %s", exc)
+            if key in self.conversion_rates:
+                return local
+        self._count_local_rate_missing(kind)
+        raise LocalRateMissingError(
+            f"no virtual rate for local deployment kind={kind} id={deployment_id}; request refused"
+        )
+
+    def local_rate_present(self, kind: int | None, deployment_id: int | None) -> bool:
+        """True when the deployment resolves and its rate exists (pre-dispatch fail-closed gate)."""
+        try:
+            self.require_local_rate(kind, deployment_id)
+        except LocalRateMissingError:
+            return False
+        return True
+
+    @staticmethod
+    def _count_local_rate_missing(kind: int | None) -> None:
+        """Bump ``waddleai_local_rate_missing_total``; telemetry never breaks billing."""
+        try:
+            from shared.observability.vllm_metrics import local_rate_missing_counter
+
+            local_rate_missing_counter().add(1, {"kind": str(kind)})
+        except Exception:  # noqa: BLE001
+            logger.debug("local-rate-missing counter emission failed", exc_info=True)
 
     def _update_usage_records(
         self,
@@ -267,18 +382,54 @@ class TokenManager:
         organization_id: int,
         provider: str,
         model: str,
+        estimated: bool = False,
+        local: LocalDeployment | None = None,
     ):
-        """Update usage records in database."""
+        """Update usage records in database.
+
+        ``token_usage`` is a per-(api key, day) rollup. Locally hosted usage adds the snapshot
+        key (kind, deployment, unit prices) so a price or deployment change opens a NEW row and
+        earlier rows keep the price they were charged at; commercial usage only ever merges
+        into rows with no local kind.
+        """
         today = date.today()
+        usage_table = self.db.token_usage
+        condition = (usage_table.api_key_id == api_key_id) & (usage_table.date == today)
+        has_snapshot_cols = hasattr(usage_table, "local_deployment_kind")
+        if has_snapshot_cols:
+            if local is None:
+                condition = condition & (usage_table.local_deployment_kind == None)  # noqa: E711
+            else:
+                # Prices are matched in Python (below): SQL equality on a NUMERIC column is
+                # driver/dialect dependent, and only a handful of rows share a deployment/day.
+                condition = (
+                    condition
+                    & (usage_table.local_deployment_kind == local.kind)
+                    & (usage_table.local_deployment_id == local.deployment_id)
+                )
+        elif local is not None:
+            raise RuntimeError("token_usage has no chargeback snapshot columns (migration 028)")
 
         # Update daily usage record
-        existing = (
-            self.db(
-                (self.db.token_usage.api_key_id == api_key_id) & (self.db.token_usage.date == today)
+        existing = self.db(condition).select().first()
+        if local is not None and has_snapshot_cols:
+            want = usage_row_key(
+                local.kind, local.deployment_id, local.price_input, local.price_output
             )
-            .select()
-            .first()
-        )
+            existing = next(
+                (
+                    r
+                    for r in self.db(condition).select()
+                    if usage_row_key(
+                        r.local_deployment_kind,
+                        r.local_deployment_id,
+                        r.unit_price_input,
+                        r.unit_price_output,
+                    )
+                    == want
+                ),
+                None,
+            )
 
         if existing:
             # Update existing record
@@ -310,9 +461,24 @@ class TokenManager:
                 llm_tokens=json.dumps(existing_breakdown),
                 request_count=existing.request_count + 1,
                 last_updated=datetime.utcnow(),
+                **(
+                    {"estimated": bool(getattr(existing, "estimated", False)) or estimated}
+                    if has_snapshot_cols
+                    else {}
+                ),
             )
         else:
             # Create new record
+            snapshot: dict[str, Any] = {}
+            if has_snapshot_cols:
+                snapshot = {"estimated": estimated}
+                if local is not None:
+                    snapshot.update(
+                        local_deployment_kind=local.kind,
+                        local_deployment_id=local.deployment_id,
+                        unit_price_input=str(snapshot_price(local.price_input)),
+                        unit_price_output=str(snapshot_price(local.price_output)),
+                    )
             self.db.token_usage.insert(
                 api_key_id=api_key_id,
                 user_id=user_id,
@@ -323,6 +489,7 @@ class TokenManager:
                 tokens_output_total=usage.llm_tokens_output,
                 llm_tokens=json.dumps(usage.llm_tokens_breakdown),
                 request_count=1,
+                **snapshot,
             )
 
         # Update cache for quota checking

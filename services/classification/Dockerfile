@@ -77,6 +77,7 @@ COPY tests/__init__.py tests/conftest.py /app/tests/
 COPY tests/integration/__init__.py tests/integration/conftest.py /app/tests/integration/
 COPY tests/integration/classification/ /app/tests/integration/classification/
 COPY tests/unit/classification/auth_fakes.py /app/tests/unit/classification/auth_fakes.py
+COPY tests/unit/fixtures/__init__.py tests/unit/fixtures/otel.py /app/tests/unit/fixtures/
 USER appuser
 CMD ["python3", "-m", "pytest", "tests/integration/classification", "-m", "ner_model"]
 

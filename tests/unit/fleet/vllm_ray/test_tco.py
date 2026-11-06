@@ -71,7 +71,7 @@ def test_node_base_usd_explicit_override_wins() -> None:
 
 def test_two_4090_single_node_observed_matches_worked_example() -> None:
     """Spec 4.7 worked example with observed throughput."""
-    res = compute_tco(_layout(2, 1, 1, 1), _costs(), TcoInputs(), 12.0, 40.0)
+    res = compute_tco(_layout(2, 1, 1, 1), _costs(20.0), TcoInputs(), 12.0, 40.0)
     assert res.node_base_usd == 6328.0
     assert res.gpu_hourly_usd == pytest.approx(0.1985, abs=5e-5)
     assert res.node_hourly_usd == pytest.approx(0.1262, abs=5e-5)
@@ -173,7 +173,6 @@ def test_missing_cost_class_raises() -> None:
     ("kwargs", "match"),
     [
         ({"params_b": 0.0, "observed": None}, "params_b"),
-        ({"params_b": 12.0, "observed": 0.0}, "tokens_per_s"),
     ],
 )
 def test_nonpositive_throughput_inputs_rejected(
@@ -216,7 +215,18 @@ def test_estimate_throughput_is_per_replica_so_price_is_replica_invariant() -> N
 
 def test_observed_throughput_is_deployment_total_not_multiplied() -> None:
     """Observed tokens/s from usage is already the deployment total across replicas."""
-    res = compute_tco(_layout(2, 1, 3, 3), _costs(), TcoInputs(), 12.0, 120.0)
+    res = compute_tco(_layout(2, 1, 3, 3), _costs(20.0), TcoInputs(), 12.0, 120.0)
     assert (res.tokens_per_s_used, res.source) == (120.0, "observed")
-    one = compute_tco(_layout(2, 1, 1, 1), _costs(), TcoInputs(), 12.0, 40.0)
+    one = compute_tco(_layout(2, 1, 1, 1), _costs(20.0), TcoInputs(), 12.0, 40.0)
     assert res.price_output_per_1m == pytest.approx(one.price_output_per_1m)
+
+
+def test_observed_below_estimate_is_clamped_to_estimate_at_the_pricing_sink() -> None:
+    """Owner rule: throughput = max(estimate_total, observed); observed may only LOWER price."""
+    base = compute_tco(_layout(2, 1, 3, 3), _costs(40.0), TcoInputs(), 12.0, None)
+    low = compute_tco(_layout(2, 1, 3, 3), _costs(40.0), TcoInputs(), 12.0, 5.0)
+    assert (low.tokens_per_s_used, low.source) == (120.0, "estimate")
+    assert low.price_output_per_1m == pytest.approx(base.price_output_per_1m)
+    high = compute_tco(_layout(2, 1, 3, 3), _costs(40.0), TcoInputs(), 12.0, 240.0)
+    assert (high.tokens_per_s_used, high.source) == (240.0, "observed")
+    assert high.price_output_per_1m < base.price_output_per_1m

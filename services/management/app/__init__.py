@@ -93,6 +93,34 @@ def _bootstrap_cilium_reconcile_sync(app):
         app.logger.warning(f"Bootstrap Cilium reconcile failed (non-fatal): {e}")
 
 
+def build_vllm_reconciler(app):
+    """Build the vLLM lifecycle reconciler, or None when it is disabled or has no engine.
+
+    ``WADDLEAI_VLLM_RECONCILER=0`` disables it. The prefer-local rule factory is looked up from
+    ``shared.routing.prefer_local``; the reconciler defaults to its real
+    ``create_prefer_local_rule``, so a deployment requesting ``prefer_local`` gets its rule.
+    """
+    import os
+
+    if os.environ.get("WADDLEAI_VLLM_RECONCILER", "1") == "0":
+        app.logger.info("vLLM reconciler disabled by WADDLEAI_VLLM_RECONCILER=0")
+        return None
+    from .extensions import db as _db
+
+    engine = getattr(_db, "engine", None)
+    if _db is None or engine is None:
+        app.logger.warning("vLLM reconciler not started: no database engine for the leader lock")
+        return None
+    from .services.model_store import PullPoller
+    from .services.vllm_reconciler import PgAdvisoryLeaderGuard, VllmReconciler
+
+    return VllmReconciler(
+        _db,
+        guard=PgAdvisoryLeaderGuard(engine),
+        pull_poller=PullPoller(),
+    )
+
+
 def _assert_credential_encryption_configured(app) -> None:
     """Refuse to boot when provider-credential encryption is unconfigured.
 
@@ -200,6 +228,22 @@ def create_app(config_class=Config):
     @app.before_serving
     async def _bootstrap_cilium_reconcile():
         await asyncio.to_thread(_bootstrap_cilium_reconcile_sync, app)
+
+    # vLLM-on-Ray fleet lifecycle (leader-guarded; a no-op for orgs with the flags off).
+    @app.before_serving
+    async def _start_vllm_reconciler():
+        reconciler = build_vllm_reconciler(app)
+        if reconciler is not None:
+            app.extensions["vllm_reconciler"] = reconciler
+            app.extensions["vllm_reconciler_task"] = asyncio.ensure_future(reconciler.run_forever())
+
+    @app.after_serving
+    async def _stop_vllm_reconciler():
+        task = app.extensions.pop("vllm_reconciler_task", None)
+        app.extensions.pop("vllm_reconciler", None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     # Health check endpoint
     @app.route("/healthz")

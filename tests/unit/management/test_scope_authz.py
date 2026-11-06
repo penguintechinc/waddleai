@@ -124,8 +124,9 @@ _MIGRATED_SCOPES = _B_TIER_SCOPES | {
     Permission.TEAM_ORG_ADMIN.value,
 }
 
-_EXPECTED_ROUTE_COUNT = 127  # audited require_role call sites, both migration waves,
+_EXPECTED_ROUTE_COUNT = 146  # audited require_role call sites, both migration waves,
 #   +4 net-new (not a require_role migration; +1 teams: POST /teams -> TEAM_ORG_ADMIN):
+#   +4 fleet savings/chargeback reports (+ /fleet/vllm/* aliases -> FLEET_ADMIN, Plan C8).
 #   94 from the original OIDC migration, +16 from branches cut before it landed
 #   (6 fleet, 9 hook_rules, 1 hook_metrics), +3 from the model-access-policy
 #   CRUD blueprint (POST/PUT -> MODEL_ACCESS_POLICY_WRITE, DELETE ->
@@ -134,6 +135,8 @@ _EXPECTED_ROUTE_COUNT = 127  # audited require_role call sites, both migration w
 #   +3 pooled-quota overrides (GET/POST/DELETE -> QUOTA_ORG_UPDATE).
 #   +2 pooled-quota conversion rates (GET/PUT -> QUOTA_ADMIN, admin-only).
 #   +2 pooled-quota usage/rebuild (GET usage, POST rebuild -> QUOTA_ORG_UPDATE).
+#   +15 vLLM fleet (Plan C): 14 fleet_vllm.py routes + llamacpp rotate-token, all FLEET_ADMIN.
+#   (/fleet/secrets is NOT counted: operator-only, in-handler system:config + system org.)
 
 
 def _concrete_path(rule_str: str) -> str:
@@ -141,7 +144,9 @@ def _concrete_path(rule_str: str) -> str:
 
     def repl(m: re.Match) -> str:
         converter = m.group(1)
-        return "1" if converter == "int" else "test"
+        if converter == "int":
+            return "1"
+        return "00000000-0000-0000-0000-000000000001" if converter == "uuid" else "test"
 
     return re.sub(r"<(?:(\w+):)?(\w+)>", repl, rule_str)
 

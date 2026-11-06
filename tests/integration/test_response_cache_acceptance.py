@@ -240,7 +240,7 @@ class _FakeRouter:
         """Store the connector this router always routes to."""
         self.connector = connector
 
-    def select_provider(self, model, strategy=None, preferred_backend=None):
+    def select_provider(self, model, strategy=None, preferred_backend=None, **_kw):
         """Always return ("stub", model), ignoring strategy/preferred_backend."""
         return "stub", model
 

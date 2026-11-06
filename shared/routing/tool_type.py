@@ -68,7 +68,10 @@ async def determine_tool_type(
     if explicit:
         return ToolTypeDecision(tool_type=explicit, source="explicit")
 
-    action = evaluate_rules(signals, rules)
+    # Prefer-local rules (action.route) steer the model, not the tool type; evaluate_rules
+    # returns the FIRST match's whole action, so one would shadow a lower-priority tool-type rule.
+    tool_rules = [r for r in rules if not (isinstance(r.action, dict) and "route" in r.action)]
+    action = evaluate_rules(signals, tool_rules)
     if action is not None:
         tool_type = action.get("tool_type")
         if tool_type:

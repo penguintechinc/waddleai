@@ -203,8 +203,8 @@ async def apply_pricing(
     if result is not None:
         row.price_input_per_1m, row.price_output_per_1m = price_in, price_out
         row.price_breakdown = result.breakdown
-        if observed_tokens_per_s is not None:
-            row.observed_tokens_per_s = observed_tokens_per_s
+        # only an observation that actually set the price is recorded (no stale/ignored value)
+        row.observed_tokens_per_s = observed_tokens_per_s if result.source == "observed" else None
     await asyncio.to_thread(
         functools.partial(
             upsert_virtual_rate,

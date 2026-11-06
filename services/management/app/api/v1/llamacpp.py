@@ -4,21 +4,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 import requests
-from quart import jsonify, request
+from quart import g, jsonify, request
 from quart_schema import validate_request, validate_response
 
 from shared.auth.rbac import Permission
+from shared.fleet.enums import LocalDeploymentKind, PriceMode
+from shared.fleet.vllm_ray.slug import derive_slug
 
 from ...extensions import db
+from ...services import fleet_secrets
 from ...services.llamacpp_manager import LlamaCppManager
 from . import api_v1_bp
 from ._pagination import PageRequest
+from ._pricing_body import (
+    PriceFieldError,
+    PricingRefusedError,
+    parse_price_fields,
+    price_local_deployment,
+    pricing_requested,
+)
 from .auth import require_auth, require_scope
 
 logger = logging.getLogger(__name__)
@@ -73,6 +85,12 @@ class LlamaCppDeployment:
     node_affinity: dict[str, Any] | None
     created_at: str | None
     modified_at: str | None
+    public_id: str | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    price_breakdown: dict[str, Any] | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -99,6 +117,10 @@ class CreateLlamaCppDeploymentRequest:
     k8s_namespace: str | None = "waddleai"
     node_selector: dict[str, Any] | None = None
     node_affinity: dict[str, Any] | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    comparison_model: str | None = None
 
 
 @dataclass(slots=True)
@@ -107,6 +129,13 @@ class CreateLlamaCppDeploymentResponse:
 
     deployment_id: int
     message: str
+    public_id: str | None = None
+    price_mode: int | None = None
+    price_input_per_1m: str | None = None
+    price_output_per_1m: str | None = None
+    price_breakdown: dict[str, Any] | None = None
+    comparison_model: str | None = None
+    api_key_fingerprint: str | None = None
 
 
 # NOTE: the PATCH body is parsed and validated in-handler (not via a
@@ -204,6 +233,35 @@ def _validate_model_filename(filename: str) -> bool:
     return True
 
 
+_PRICE_KEYS = frozenset(
+    {"price_mode", "price_input_per_1m", "price_output_per_1m", "comparison_model"}
+)
+
+
+def _price_fields(dep: Any) -> dict[str, Any]:
+    """The identity and pricing columns of a deployment row as response fields."""
+
+    def _text(value: Any) -> str | None:
+        return None if value is None else str(value)
+
+    if dep is None:
+        return dict.fromkeys(
+            (
+                "public_id", "price_mode", "price_input_per_1m", "price_output_per_1m",
+                "price_breakdown", "comparison_model",
+            )
+        )  # fmt: skip
+    breakdown = dep.price_breakdown
+    return {
+        "public_id": _text(dep.public_id),
+        "price_mode": None if dep.price_mode is None else int(dep.price_mode),
+        "price_input_per_1m": _text(dep.price_input_per_1m),
+        "price_output_per_1m": _text(dep.price_output_per_1m),
+        "price_breakdown": breakdown if isinstance(breakdown, dict) else None,
+        "comparison_model": _text(dep.comparison_model),
+    }
+
+
 def _deployment_to_dict(dep: Any) -> dict[str, Any]:
     """Convert a LlamaCppDeployment model to a dict for JSON response."""
     return {
@@ -225,6 +283,7 @@ def _deployment_to_dict(dep: Any) -> dict[str, Any]:
         "node_affinity": dep.node_affinity,
         "created_at": dep.created_at.isoformat() if dep.created_at else None,
         "modified_at": dep.modified_at.isoformat() if dep.modified_at else None,
+        **_price_fields(dep),
     }
 
 
@@ -276,6 +335,25 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
 
     deployment_type = data.deployment_type or "kubernetes"
 
+    price_body = {
+        "price_mode": data.price_mode,
+        "price_input_per_1m": data.price_input_per_1m,
+        "price_output_per_1m": data.price_output_per_1m,
+        "comparison_model": data.comparison_model,
+    }
+    price_fields = None
+    if pricing_requested(price_body):
+        try:
+            price_fields = parse_price_fields(
+                {k: v for k, v in price_body.items() if v is not None},
+                default_mode=PriceMode.AUTO_TCO,
+            )
+        except PriceFieldError as exc:
+            return jsonify({"error": str(exc)}), 400
+
+    public_id = str(uuid.uuid4())
+    owner_org_id = g.user.get("organization_id")
+
     def _create():
         mgr = LlamaCppManager(db)
         new_id = db.llamacpp_deployments.insert(
@@ -293,12 +371,151 @@ async def create_llamacpp_deployment(data: CreateLlamaCppDeploymentRequest):
             k8s_daemonset_name=mgr._daemonset_name(name),
             node_selector=data.node_selector,
             node_affinity=data.node_affinity,
+            public_id=public_id,
+            owner_org_id=owner_org_id,
         )
         db.commit()
         return new_id
 
     dep_id = await asyncio.to_thread(_create)
-    return {"deployment_id": dep_id, "message": "Deployment created"}, 201
+    row = await asyncio.to_thread(_llamacpp_row, dep_id)
+
+    if price_fields is not None:
+        try:
+            price_extra = await price_local_deployment(
+                db,
+                int(LocalDeploymentKind.LLAMACPP),
+                g.user.get("organization_id"),
+                row,
+                price_fields,
+                data.comparison_model,
+            )
+        except PricingRefusedError as exc:
+            await asyncio.to_thread(_discard_llamacpp, dep_id)
+            return jsonify({"error": str(exc)}), 422
+
+        await asyncio.to_thread(_llamacpp_update, dep_id, price_extra)
+
+    fingerprint: str | None = None
+    if _fleet_keys_enabled(g.user.get("organization_id")):
+        try:
+            token, link_id = await fleet_secrets.provision_key_and_link(
+                db,
+                org_id=g.user.get("organization_id"),
+                slug=derive_slug(name, public_id),
+                link_name=f"llamacpp-{public_id}",
+                models=[model_name],
+                provider="llamacpp",
+            )
+        except fleet_secrets.SecretWriteFailed:
+            await asyncio.to_thread(_discard_llamacpp, dep_id)
+            return jsonify({"error": "secret write failed", "reason": "secret write failed"}), 502
+        fingerprint = fleet_secrets.fingerprint(token)
+        del link_id
+
+    row = await asyncio.to_thread(_llamacpp_row, dep_id)
+    return {
+        "deployment_id": dep_id,
+        "message": "Deployment created",
+        **{k: v for k, v in _price_fields(row).items()},
+        "api_key_fingerprint": fingerprint,
+    }, 201
+
+
+def _fleet_keys_enabled(org_id: Any) -> bool:
+    """Per-deployment key minting is part of the vLLM-on-Ray fleet: both flags must be on."""
+    from .fleet import _vllm_ray_enabled
+
+    return _vllm_ray_enabled(org_id)
+
+
+def _database() -> Any:
+    """The process-wide penguin-dal handle (narrowed away from ``None``)."""
+    if db is None:
+        raise RuntimeError("database not initialized")
+    return db
+
+
+def _llamacpp_row(deployment_id: int) -> Any:
+    """Fetch one ``llamacpp_deployments`` row (None when absent)."""
+    database = _database()
+    return database(database.llamacpp_deployments.id == deployment_id).select().first()
+
+
+def _llamacpp_row_by_public_id(public_id: str) -> Any:
+    """Fetch one ``llamacpp_deployments`` row by its public UUID (None when absent)."""
+    database = _database()
+    return database(database.llamacpp_deployments.public_id == public_id).select().first()
+
+
+def _owner_org_id(dep: Any) -> int | None:
+    """Owning org of a deployment: ``owner_org_id`` column, else backend org, else key link.
+
+    The column (migration 031) is authoritative; the backend/link fallbacks cover rows written
+    before it. Returns None for unowned legacy rows (visible to the system org only).
+    """
+    owner = getattr(dep, "owner_org_id", None)
+    if owner is not None:
+        return int(owner)
+    database = _database()
+    backend_id = getattr(dep, "fleet_backend_id", None)
+    if backend_id is not None:
+        backend = database(database.fleet_backends.id == backend_id).select().first()
+        if backend is not None:
+            return int(backend.org_id)
+    link = database(database.connection_links.name == f"llamacpp-{dep.public_id}").select().first()
+    if link is not None and link.owner_org_id is not None:
+        return int(link.owner_org_id)
+    return None
+
+
+def _is_system_org(org_id: Any) -> bool:
+    """True when ``org_id`` is the reserved system org (``WADDLEAI_SYSTEM_ORG_ID``).
+
+    Unset or malformed configuration means nobody qualifies (fail closed).
+    """
+    configured = os.environ.get("WADDLEAI_SYSTEM_ORG_ID", "").strip()
+    return configured.isdigit() and org_id == int(configured)
+
+
+def _visible_to_org(dep: Any, org_id: Any) -> bool:
+    """True when ``org_id`` may act on ``dep``; another org's deployment is invisible.
+
+    Fails closed: an unowned legacy row is visible only to the system org.
+    """
+    owner = _owner_org_id(dep)
+    if owner is None:
+        return _is_system_org(org_id)
+    return owner == org_id
+
+
+def _llamacpp_update(deployment_id: int, values: dict[str, Any]) -> None:
+    """Persist column values on one ``llamacpp_deployments`` row."""
+    database = _database()
+    database(database.llamacpp_deployments.id == deployment_id).update(**values)
+    database.commit()
+
+
+def _llamacpp_link(link_name: str) -> Any:
+    """Fetch one ``connection_links`` row by name (None when absent)."""
+    database = _database()
+    return database(database.connection_links.name == link_name).select().first()
+
+
+def _store_link_key(link_id: int, token: str) -> None:
+    """Re-encrypt a rotated token into its connection link and commit."""
+    from shared.database.models import update_connection_link_api_key
+
+    database = _database()
+    update_connection_link_api_key(database, link_id, token)
+    database.commit()
+
+
+def _discard_llamacpp(deployment_id: int) -> None:
+    """Remove a just-created deployment whose pricing or key provisioning failed."""
+    database = _database()
+    database(database.llamacpp_deployments.id == deployment_id).delete()
+    database.commit()
 
 
 @api_v1_bp.route("/llamacpp/deployments/<int:deployment_id>", methods=["GET"])
@@ -310,7 +527,7 @@ async def get_llamacpp_deployment(deployment_id):
     dep = await asyncio.to_thread(
         lambda: db(db.llamacpp_deployments.id == deployment_id).select().first()
     )
-    if not dep:
+    if not dep or not await asyncio.to_thread(_visible_to_org, dep, g.user.get("organization_id")):
         return jsonify({"error": "Deployment not found"}), 404
     return _deployment_to_dict(dep), 200
 
@@ -330,12 +547,16 @@ async def update_llamacpp_deployment(deployment_id):
     body ahead of the handler and 400 first. The body is parsed and its
     security-sensitive fields validated in-handler after those checks.
     """
+    peek = await request.get_json(silent=True)
+    price_only = (
+        isinstance(peek, dict) and bool(peek) and all(k in _PRICE_KEYS for k in peek)
+    )  # a price change never needs the deployment stopped: it affects new requests only
 
     def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found"
-        if dep.status == "running":
+        if dep.status == "running" and not price_only:
             return "running"
         return "ok"
 
@@ -359,6 +580,30 @@ async def update_llamacpp_deployment(deployment_id):
         "node_affinity",
     }
     updates: dict[str, Any] = {k: v for k, v in data.items() if k in allowed}
+
+    if pricing_requested(data):
+        current = await asyncio.to_thread(
+            lambda: db(db.llamacpp_deployments.id == deployment_id).select().first()
+        )
+        try:
+            fields = parse_price_fields(
+                {k: v for k, v in data.items() if k in _PRICE_KEYS and v is not None},
+                default_mode=PriceMode(int(current.price_mode or 1)),
+            )
+            updates.update(
+                await price_local_deployment(
+                    db,
+                    int(LocalDeploymentKind.LLAMACPP),
+                    g.user.get("organization_id"),
+                    current,
+                    fields,
+                    data.get("comparison_model") or current.comparison_model,
+                )
+            )
+        except PriceFieldError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except PricingRefusedError as exc:
+            return jsonify({"error": str(exc)}), 422
 
     # Vuln D fix: validate model_url and model_filename in PATCH too
     if "model_url" in updates:
@@ -392,7 +637,7 @@ async def delete_llamacpp_deployment(deployment_id):
 
     def _delete():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found"
 
         if dep.status == "running" and not force:
@@ -428,7 +673,7 @@ async def deploy_llamacpp(deployment_id):
 
     def _deploy():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
         mgr = LlamaCppManager(db)
@@ -461,7 +706,7 @@ async def remove_llamacpp(deployment_id):
 
     def _remove():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
         mgr = LlamaCppManager(db)
@@ -495,7 +740,7 @@ async def check_llamacpp_health(deployment_id):
 
     def _check():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return "not_found", None
 
         if not dep.endpoint_url:
@@ -530,7 +775,7 @@ async def export_llamacpp_k8s(deployment_id):
 
     def _export():
         dep = db(db.llamacpp_deployments.id == deployment_id).select().first()
-        if not dep:
+        if not dep or not _visible_to_org(dep, g.user.get("organization_id")):
             return None, None
 
         mgr = LlamaCppManager(db)
@@ -543,3 +788,101 @@ async def export_llamacpp_k8s(deployment_id):
         return jsonify({"error": "Deployment not found"}), 404
 
     return manifest, 200, {"Content-Type": "application/x-yaml"}
+
+
+@dataclass(slots=True)
+class RotateLlamaCppTokenResponse:
+    """Response body for POST /api/v1/fleet/llamacpp/deployments/<uuid>/rotate-token."""
+
+    public_id: str
+    api_key_fingerprint: str
+
+
+@api_v1_bp.route("/fleet/llamacpp/deployments/<uuid:public_id>/rotate-token", methods=["POST"])
+@require_auth
+@require_scope(Permission.FLEET_ADMIN)
+@validate_response(RotateLlamaCppTokenResponse, 200)
+async def rotate_llamacpp_token(public_id: uuid.UUID):
+    """Rotate a llama.cpp deployment's bearer token: Secret key, then head restart (AM18).
+
+    llama-server loads ``--api-key-file`` once at startup, so unlike vLLM the head pod must be
+    rolled (workers untouched). A failed Secret write leaves the old token in place; a failed
+    restart is reported as "rotated, restart pending" (Secret and link already moved).
+    """
+    if not _fleet_keys_enabled(g.user.get("organization_id")):
+        return jsonify({"status": "error", "error": "not_found"}), 404
+
+    from ...services import fleet_secrets as secrets_svc
+
+    dep = await asyncio.to_thread(_llamacpp_row_by_public_id, str(public_id))
+    if dep is None or not await asyncio.to_thread(
+        _visible_to_org, dep, g.user.get("organization_id")
+    ):
+        return jsonify({"error": "Deployment not found"}), 404
+    slug = derive_slug(dep.name, public_id)
+    link = await asyncio.to_thread(_llamacpp_link, f"llamacpp-{public_id}")
+    token = secrets_svc.mint_token()
+    try:
+        previous = await secrets_svc.read_deployment_key(slug)
+        await secrets_svc.write_deployment_key(slug, token)
+    except secrets_svc.SecretWriteFailed:
+        return jsonify({"error": "secret write failed", "reason": "secret write failed"}), 502
+    if link is not None:
+        # Keep the link in step with the Secret immediately; a restart failure below must never
+        # leave the proxy/canary holding a stale token.
+        try:
+            await asyncio.to_thread(_store_link_key, link.id, token)
+        except Exception:
+            logger.error(
+                "fleet.deployment.token_rotation_failed deployment=%s slug=%s: link update failed",
+                public_id,
+                slug,
+            )
+            try:
+                await secrets_svc.restore_deployment_key(slug, previous)
+            except secrets_svc.SecretWriteFailed:
+                logger.error(
+                    "fleet.deployment.token_rotation_restore_failed deployment=%s slug=%s",
+                    public_id,
+                    slug,
+                )
+                return (
+                    jsonify(
+                        {
+                            "error": "token rotation failed",
+                            "reason": "link update failed; restore failed, rotate again",
+                        }
+                    ),
+                    502,
+                )
+            return (
+                jsonify(
+                    {
+                        "error": "token rotation failed",
+                        "reason": "link update failed; previous token restored",
+                    }
+                ),
+                502,
+            )
+    try:
+        await secrets_svc.bump_restart("StatefulSet", dep.k8s_daemonset_name or dep.name)
+    except secrets_svc.SecretWriteFailed:
+        logger.error(
+            "fleet.deployment.token_rotation_partial deployment=%s slug=%s: restart pending",
+            public_id,
+            slug,
+        )
+        return (
+            jsonify(
+                {
+                    "error": "rotated, restart pending, retry",
+                    "reason": "restart pending",
+                }
+            ),
+            502,
+        )
+    fingerprint = secrets_svc.fingerprint(token)
+    logger.info(
+        "fleet.deployment.token_rotated deployment=%s fingerprint_new=%s", public_id, fingerprint
+    )
+    return {"public_id": str(public_id), "api_key_fingerprint": fingerprint}, 200
