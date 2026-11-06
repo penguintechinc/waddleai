@@ -37,21 +37,22 @@ COPY debs.sha256 /tmp/debs.sha256
 WORKDIR /tmp/neo
 # UMD (compute runtime + Level Zero) + xpu-smi, downloaded then sha256-verified (debs.sha256: "<sum> <url>");
 # same versions as vLLM v0.29.0 docker/Dockerfile.xpu.
-# hadolint ignore=DL3008
-RUN apt-get update -y && apt-get install -y --no-install-recommends ca-certificates curl software-properties-common \
-    libaio-dev numactl libsndfile1 libgl1 libsm6 libxext6 ffmpeg \
+# Base ships the kobuk-team PPA already; every package (Ubuntu + PPA) is pinned to the exact version the
+# digest-pinned base resolves via `apt-cache policy` (transitive deps follow from those pins).
+RUN apt-get update -y && apt-get install -y --no-install-recommends ca-certificates=20260816ubuntu0.24.04.2 curl=8.5.0-2ubuntu10.16 \
+    libaio-dev=0.3.113-6build1.1 numactl=2.0.18-1ubuntu0.24.04.1 libsndfile1=1.2.2-1ubuntu5.24.04.1 libgl1=1.7.0-1build1 \
+    libsm6=2:1.2.3-1build3 libxext6=2:1.3.4-1build2 ffmpeg=7:6.1.1-3ubuntu5 \
     && while read -r _ url; do curl -fsSLO "$url"; done < /tmp/debs.sha256 \
     && while read -r sum url; do echo "${sum}  ${url##*/}"; done < /tmp/debs.sha256 | sha256sum -c - \
     && mkdir /tmp/xpum && mv ./xpu-smi_*.deb /tmp/xpum/ \
     && dpkg -i ./*.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# xpu-smi runtime libs come from Intel's graphics PPA, as upstream does.
-# hadolint ignore=DL3008
-RUN apt-get update -y && add-apt-repository -y ppa:kobuk-team/intel-graphics && apt-get update -y \
-    && apt-get install -y --no-install-recommends libhwloc15 libpciaccess0 libigsc1 intel-metrics-library \
+# xpu-smi runtime libs: kobuk-team PPA packages (already configured in the base), exact versions.
+RUN apt-get update -y \
+    && apt-get install -y --no-install-recommends libhwloc15=2.10.0-1build1 libpciaccess0=0.17-3ubuntu0.24.04.3 \
+       libigsc1=1.3.1-1~24.04~ppa2 intel-metrics-library=1.0.240-1~24.04~ppa1 \
     && apt-get install -y --no-install-recommends /tmp/xpum/xpu-smi_*.deb \
-    && add-apt-repository --remove -y ppa:kobuk-team/intel-graphics \
     && rm -rf /tmp/neo /tmp/xpum /var/lib/apt/lists/*
 
 COPY --from=uv /uv /usr/local/bin/uv
@@ -69,20 +70,30 @@ FROM deps AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG VLLM_COMMIT=98dff2a81d747d1dba01a47f939f48c3526d4206
 ARG VLLM_VERSION=0.29.0
+ARG RUST_TOOLCHAIN=1.95
 ENV VLLM_TARGET_DEVICE=xpu CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:${PATH} \
     SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_VERSION}
 COPY build-requirements.txt /tmp/build-requirements.txt
 # hadolint ignore=DL3008
-RUN apt-get update -y && apt-get install -y --no-install-recommends git \
+RUN apt-get update -y && apt-get install -y --no-install-recommends git=1:2.43.0-1ubuntu7.4 \
     && rm -rf /var/lib/apt/lists/* \
     && uv pip install --no-cache --require-hashes --no-deps -r /tmp/build-requirements.txt
 WORKDIR /src/vllm
 RUN git init -q . && git fetch -q --depth 1 https://github.com/vllm-project/vllm.git "${VLLM_COMMIT}" \
     && git checkout -q FETCH_HEAD && test "$(git rev-parse HEAD)" = "${VLLM_COMMIT}"
-# Rust toolchain: channel comes from the pinned source tree's rust-toolchain.toml (build stage only).
-RUN TOOLCHAIN="$(grep '^channel' rust-toolchain.toml | sed 's/.*= *"\(.*\)"/\1/')" \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none \
-    && rustup toolchain install "${TOOLCHAIN}" && rustup default "${TOOLCHAIN}" \
+ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_SHA256_X86_64=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+ARG RUSTUP_SHA256_AARCH64=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
+# Rust toolchain: exact 1.95, the channel in vLLM v0.29.0 rust-toolchain.toml (asserted below). rustup-init is a
+# pinned-version binary from static.rust-lang.org, sha256-verified (official .sha256 files), never `curl | sh`.
+RUN ARCH="$(uname -m)" \
+    && case "${ARCH}" in x86_64) SUM="${RUSTUP_SHA256_X86_64}";; aarch64) SUM="${RUSTUP_SHA256_AARCH64}";; *) echo "unsupported arch ${ARCH}" >&2; exit 1;; esac \
+    && curl --proto '=https' --tlsv1.2 -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ARCH}-unknown-linux-gnu/rustup-init" \
+    && echo "${SUM}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal --no-modify-path \
+    && rm /tmp/rustup-init \
+    && grep -q "^channel *= *\"${RUST_TOOLCHAIN}\"" rust-toolchain.toml \
     && CARGO_BUILD_JOBS=4 bash build_rust.sh && test -x vllm/vllm-rs
 RUN python3 setup.py bdist_wheel --dist-dir=/dist --py-limited-api=cp38 && ls /dist/*.whl
 

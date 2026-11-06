@@ -47,22 +47,33 @@ FROM deps AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG VLLM_COMMIT=98dff2a81d747d1dba01a47f939f48c3526d4206
 ARG VLLM_VERSION=0.29.0
+ARG RUST_TOOLCHAIN=1.95
 # Default covers MI200/MI300/MI350 + RDNA3/4; narrow it to shorten the build for a known fleet.
 ARG PYTORCH_ROCM_ARCH="gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1200;gfx1201"
 ENV VLLM_TARGET_DEVICE=rocm PYTORCH_ROCM_ARCH=${PYTORCH_ROCM_ARCH} CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup \
     PATH=/opt/cargo/bin:${PATH} SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_VERSION}
 COPY build-requirements.txt /tmp/build-requirements.txt
 # hadolint ignore=DL3008
-RUN apt-get update -y && apt-get install -y --no-install-recommends git curl ca-certificates mold \
+RUN apt-get update -y && apt-get install -y --no-install-recommends git=1:2.34.1-1ubuntu1.18 curl=7.81.0-1ubuntu1.30 \
+    ca-certificates=20260816ubuntu0.22.04.2 mold=1.0.3+dfsg-2 \
     && rm -rf /var/lib/apt/lists/* \
     && uv pip install --no-cache --require-hashes --no-deps -r /tmp/build-requirements.txt
 WORKDIR /src/vllm
 RUN git init -q . && git fetch -q --depth 1 https://github.com/vllm-project/vllm.git "${VLLM_COMMIT}" \
     && git checkout -q FETCH_HEAD && test "$(git rev-parse HEAD)" = "${VLLM_COMMIT}"
-# Rust toolchain: channel comes from the pinned source tree's rust-toolchain.toml (build stage only).
-RUN TOOLCHAIN="$(grep '^channel' rust-toolchain.toml | sed 's/.*= *"\(.*\)"/\1/')" \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none \
-    && rustup toolchain install "${TOOLCHAIN}" && rustup default "${TOOLCHAIN}" \
+ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_SHA256_X86_64=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+ARG RUSTUP_SHA256_AARCH64=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
+# Rust toolchain: exact 1.95, the channel in vLLM v0.29.0 rust-toolchain.toml (asserted below). rustup-init is a
+# pinned-version binary from static.rust-lang.org, sha256-verified (official .sha256 files), never `curl | sh`.
+RUN ARCH="$(uname -m)" \
+    && case "${ARCH}" in x86_64) SUM="${RUSTUP_SHA256_X86_64}";; aarch64) SUM="${RUSTUP_SHA256_AARCH64}";; *) echo "unsupported arch ${ARCH}" >&2; exit 1;; esac \
+    && curl --proto '=https' --tlsv1.2 -fsSLo /tmp/rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ARCH}-unknown-linux-gnu/rustup-init" \
+    && echo "${SUM}  /tmp/rustup-init" | sha256sum -c - \
+    && chmod +x /tmp/rustup-init \
+    && /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal --no-modify-path \
+    && rm /tmp/rustup-init \
+    && grep -q "^channel *= *\"${RUST_TOOLCHAIN}\"" rust-toolchain.toml \
     && CARGO_BUILD_JOBS=4 bash build_rust.sh && test -x vllm/vllm-rs
 RUN LDFLAGS="-fuse-ld=mold" MAX_JOBS="${MAX_JOBS:-$(nproc)}" python3 setup.py bdist_wheel --dist-dir=/dist \
     && ls /dist/*.whl
