@@ -1,10 +1,12 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { useVllmRayEnabled } from '../hooks/useVllmFleet';
 import './Header.css';
 
 function Header() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const gpuFleetEnabled = useVllmRayEnabled();
 
   const handleLogout = () => {
     logout();
@@ -31,6 +33,7 @@ function Header() {
           <Link to="/memory" className="nav-link">Memory</Link>
           <Link to="/hooks" className="nav-link">Agent Hooks</Link>
           <Link to="/integrations" className="nav-link">Integrations</Link>
+          {gpuFleetEnabled && <Link to="/gpu-fleet" className="nav-link">GPU Fleet</Link>}
         </nav>
         <div className="header-user">
           <span className="user-name">{user?.username || 'User'}</span>

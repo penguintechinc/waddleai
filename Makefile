@@ -252,7 +252,8 @@ loadtest-classification: ## Measure warm cache-miss p99 against a live classific
 	@$(PY) scripts/classification-loadtest.py
 
 seed-mock-data:
-	@echo "No mock data seeding defined"
+	@echo "Seeding GPU fleet mock data..."
+	$(PY) scripts/seed_gpu_fleet_mock.py
 
 clean:
 	docker-compose down -v
