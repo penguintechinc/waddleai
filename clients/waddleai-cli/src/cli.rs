@@ -103,6 +103,11 @@ pub enum FleetCommand {
         #[command(subcommand)]
         action: crate::vllm::VllmCommand,
     },
+    /// GPU Fleet: llama.cpp deployments, including multi-node RPC.
+    Llamacpp {
+        #[command(subcommand)]
+        action: crate::llamacpp::LlamaCppCommand,
+    },
     /// GPU Fleet cluster keys: list and rotate (values are never shown).
     Secrets {
         #[command(subcommand)]
@@ -165,6 +170,11 @@ pub async fn run(cli: Cli, store: &dyn TokenStore, opener: &dyn BrowserOpener) -
                 let token = resolve_token(&api_url, store).await?;
                 let client = ApiClient::new(&api_url, Some(token))?;
                 crate::vllm::run(&client, action).await
+            }
+            FleetCommand::Llamacpp { action } => {
+                let token = resolve_token(&api_url, store).await?;
+                let client = ApiClient::new(&api_url, Some(token))?;
+                crate::llamacpp::run(&client, action).await
             }
             FleetCommand::Secrets { action } => {
                 let token = resolve_token(&api_url, store).await?;
@@ -526,6 +536,36 @@ mod tests {
         )
         .await
         .expect("run fleet secrets list");
+    }
+
+    #[tokio::test]
+    async fn run_fleet_llamacpp_dispatches_to_its_endpoint() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/llamacpp/deployments"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"deployments": [], "pagination": {}})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let store = logged_in_store(&server.uri());
+        let cmd = Command::Fleet {
+            action: FleetCommand::Llamacpp {
+                action: crate::llamacpp::LlamaCppCommand::List {
+                    topology: None,
+                    json: false,
+                },
+            },
+        };
+        run(
+            cli_for(&server.uri(), cmd),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await
+        .expect("run fleet llamacpp list");
     }
 
     #[tokio::test]

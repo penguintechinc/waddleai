@@ -292,6 +292,23 @@ impl ApiClient {
         .await
     }
 
+    /// `POST /api/v1/llamacpp/deployments` -- create a llama.cpp deployment (`topology` 2 = RPC).
+    pub async fn llamacpp_create_deployment(
+        &self,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json("/api/v1/llamacpp/deployments", body).await
+    }
+
+    /// `GET /api/v1/llamacpp/deployments` -- list the org's deployments; `query` holds filters.
+    pub async fn llamacpp_list_deployments(
+        &self,
+        query: &[(&str, String)],
+    ) -> Result<serde_json::Value> {
+        self.get_json_query("/api/v1/llamacpp/deployments", query)
+            .await
+    }
+
     /// `GET /api/v1/fleet/secrets` -- cluster secret names, sources and fingerprints.
     pub async fn list_fleet_secrets(&self) -> Result<serde_json::Value> {
         self.get_json("/api/v1/fleet/secrets").await
