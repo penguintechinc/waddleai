@@ -367,6 +367,15 @@ Outcome application (`apply.rs`): `Modified` → replace `ctx.body`/`ctx.message
 
 ---
 
+## Amendment (2026-11-05): `external_http` plugin kind — see `2026-11-05-external-webhooks-W0-spec-schema.md` / `-W3-proxy-hooks.md`
+
+> Marked addition; implements `docs/superpowers/specs/2026-11-05-external-webhooks-design.md` (Reuse table: decision endpoints reuse this registry).
+
+- **Task 3 (`plugins` table):** add `kind SMALLINT NOT NULL DEFAULT 1` (1 = wasm, 2 = `external_http`) with CHECK; make `digest`, `artifact_ref`, `signature`, `signer_key_id` NULLable with CHECK `kind=1 ⇒ all NOT NULL`; add `webhook_endpoint_id BIGINT NULL FK webhook_endpoints(id) ON DELETE CASCADE` with CHECK `kind=2 ⇒ NOT NULL` (if W0's migration has not merged yet, create the column without the FK and let W0 Task 2 add it). Migration number: next free at merge time (vLLM fleet reserves 028/029). Extra tests: `kind2_row_allows_null_digest`, `kind1_without_digest_rejected`, `kind2_without_endpoint_rejected`.
+- **Task 10 (`PluginRegistry`):** `PluginRow` gains `kind: PluginKind` and `webhook_endpoint_id`; existing `resolve`/`has_any` return **wasm entries only** (contract unchanged); add `resolve_split(scope, hook) -> (Arc<[PluginRef]>, Arc<[ExternalRef]>)` and `has_any_external(hook)`. Tests: `wasm_resolve_never_returns_external_rows`, `other_org_external_not_returned`.
+- **Task 11 (Management API):** `POST /api/v1/plugins` registers `kind=1` only; `kind=2` rows are created exclusively by the webhooks CRUD (W5 Task 2) in the same transaction as the `webhook_endpoints` row. Test: `plugins_api_rejects_kind_2_registration`.
+- **Task 12 (`PluginHookStage`):** wasm chains still go to `GrpcPluginHost` (`svc-plugins`). `external_http` entries are **not** invoked here: the proxy routes them to `svc-webhooks` via W3's `ExternalDecisionHost`/stages. Test: `external_rows_never_sent_to_svc_plugins`.
+
 ## Self-Review
 
 - **Spec coverage (§5.2, §6, §10.3, §11):** WASM executor with pinned wasmtime + pooling + epoch/fuel/memory + warm `InstancePre` + cwasm cache (T4–T6); MIT `penguin-bundle-host` reuse + AGPL reference-only (T1, Global Constraints, T16 legal checklist); WaddleAI WIT world + host-call set (T2, T7, T8); OCI/S3 artifact store + Ed25519 verify (T6, T11); concurrency cap + deadline backstop + wedge trip-out (T9); Rust and Python→WASM authoring (T13); Alembic `plugins` table (T3) + Management API (T11); Rust registry cache seed/lazy-load/invalidate, never fail-closed-empty (T10); scope-match → ordered chain → pooled gRPC with digest (T10, T12); proxy plugin seam via `extensions` + stage boundaries (T12); all behind flags default OFF (T12, T16).
