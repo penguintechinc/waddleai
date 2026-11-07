@@ -13,6 +13,7 @@ import {
   getPriceSuggestion,
   searchModels,
   createDeployment,
+  createLlamaCppDeployment,
   patchDeployment,
   deleteDeployment,
   listBackends,
@@ -116,6 +117,15 @@ export function useCreateDeployment() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: createDeployment,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['vllm', 'deployments'] }),
+  });
+}
+
+/** Create a llama.cpp (incl. RPC multi-node) deployment and refresh the list. */
+export function useCreateLlamaCppDeployment() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: createLlamaCppDeployment,
     onSuccess: () => qc.invalidateQueries({ queryKey: ['vllm', 'deployments'] }),
   });
 }

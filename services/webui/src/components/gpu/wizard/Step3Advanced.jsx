@@ -1,4 +1,5 @@
 import { Explain, Copy } from './explain';
+import { bytesToGb, gbToBytes } from './engineCopy';
 import { QUANT_LABEL } from '../../../api/vllmFleetLabels';
 
 const DTYPES = ['bfloat16', 'float16', 'float32'];
@@ -14,6 +15,45 @@ export default function Step3Advanced({ state, dispatch }) {
   const allowed = state.fit.result?.allowed_quantizations ?? [0];
   const layout = state.layout;
   const singleNode = state.engine === 'ollama';
+  if (state.engine === 'llamacpp_rpc') {
+    return (
+      <div className="wizard-step">
+        <label>
+          GGUF file size (GB)
+          <input
+            type="number"
+            min="0"
+            step="any"
+            value={bytesToGb(state.ggufBytes)}
+            onChange={(e) => set({ ggufBytes: gbToBytes(e.target.value) })}
+          />
+        </label>
+        <p className="explain">
+          The size of the GGUF file on disk. It is sent as bytes and used to plan the split; it is not guessed.
+        </p>
+        <label>
+          Maximum context (tokens)
+          <input
+            type="number"
+            min="1"
+            value={state.maxModelLen}
+            onChange={(e) => set({ maxModelLen: Number(e.target.value) })}
+          />
+        </label>
+        <p className="explain">{Explain.maxContext}</p>
+        <label>
+          <input
+            type="checkbox"
+            checked={state.allowMixedClass}
+            onChange={(e) => set({ allowMixedClass: e.target.checked })}
+          />
+          Allow mixed GPU models
+        </label>
+        <p className="explain">{Explain.allowMixedClass}</p>
+        {state.allowMixedClass && <p role="note">{Copy.mixedClassWarning}</p>}
+      </div>
+    );
+  }
   return (
     <div className="wizard-step">
       <label>

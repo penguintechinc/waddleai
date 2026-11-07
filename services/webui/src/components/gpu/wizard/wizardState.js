@@ -34,6 +34,9 @@ export function initialWizardState() {
     vendor: null,
     gpuClass: '',
     allowMixedClass: false,
+    ggufBytes: null,
+    modelUrl: '',
+    modelFilename: '',
     maxModelLen: 4096,
     layout: null,
     replicasMin: 1,
@@ -117,7 +120,26 @@ const positive = (n) => typeof n === 'number' && Number.isFinite(n) && n > 0;
  */
 export function validateStep(n, s) {
   const errors = [];
-  if (n === 1) {
+  const rpc = s.engine === 'llamacpp_rpc';
+  if (n === 1 && rpc) {
+    if (!s.modelName || !s.modelName.trim()) errors.push('Give the model a name.');
+    if (!s.modelUrl || !/^https:\/\//.test(s.modelUrl.trim())) {
+      errors.push('Enter the https address the GGUF file is downloaded from.');
+    }
+    if (!s.modelFilename || !s.modelFilename.trim()) errors.push('Enter the GGUF file name.');
+    if (!s.name || !s.name.trim()) errors.push('Give the deployment a name.');
+  } else if (n === 2 && rpc) {
+    // The server plans the multi-node layout at deploy time; there is no preview.
+  } else if (n === 3 && rpc) {
+    if (!Number.isInteger(s.maxModelLen) || s.maxModelLen < 1) {
+      errors.push('Maximum context must be a whole number greater than 0.');
+    }
+    if (!Number.isInteger(s.ggufBytes) || s.ggufBytes < 1) {
+      errors.push('Enter the GGUF file size in GB. It is not guessed.');
+    }
+  } else if (n === 5 && rpc) {
+    // Exposure through the proxy is automatic for llama.cpp deployments.
+  } else if (n === 1) {
     if (!s.modelRef) errors.push('Choose a model.');
     if (s.paramsB === null || s.paramsB === undefined) errors.push(Copy.paramsRequired);
     else if (!positive(s.paramsB)) errors.push('The parameter count must be greater than 0.');
@@ -175,6 +197,7 @@ export function allStepsValid(state) {
  * @returns {object}
  */
 export function buildCreateBody(s, backendId) {
+  if (s.engine === 'llamacpp_rpc') return buildRpcCreateBody(s);
   const body = {
     fleet_backend_id: backendId,
     name: s.name.trim(),
@@ -206,12 +229,40 @@ export function buildCreateBody(s, backendId) {
 }
 
 /**
+ * Build the POST body for /llamacpp/deployments with the multi-node (RPC)
+ * topology. The org and layout are decided by the server, never sent.
+ * @param {object} s - wizard state
+ * @returns {object}
+ */
+export function buildRpcCreateBody(s) {
+  const body = {
+    name: s.name.trim(),
+    model_name: (s.modelName || s.name).trim(),
+    model_url: s.modelUrl.trim(),
+    model_filename: s.modelFilename.trim(),
+    deployment_type: 'kubernetes',
+    topology: 2,
+    gguf_bytes: s.ggufBytes,
+    allow_mixed_class: s.allowMixedClass,
+    n_ctx: s.maxModelLen,
+    comparison_model: s.comparisonModel.trim(),
+    price_mode: s.priceMode,
+  };
+  if (s.priceMode === 2) {
+    body.price_input_per_1m = s.pricesInput;
+    body.price_output_per_1m = s.pricesOutput;
+  }
+  return body;
+}
+
+/**
  * The fit-check request for the current state, or null until the parameter
  * count is known and positive.
  * @param {object} s - wizard state
  * @returns {object|null}
  */
 export function buildFitBody(s) {
+  if (s.engine === 'llamacpp_rpc') return null;
   if (!positive(s.paramsB) || !Number.isInteger(s.maxModelLen) || s.maxModelLen < 1) return null;
   return {
     params_b: s.paramsB,

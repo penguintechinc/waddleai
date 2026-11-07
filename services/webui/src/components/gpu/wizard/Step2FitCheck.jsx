@@ -1,4 +1,5 @@
 import { Copy } from './explain';
+import { ENGINE_COPY } from './engineCopy';
 
 /**
  * Wizard step 2: the live fit-check result. Layout sentences and refusals come
@@ -9,6 +10,13 @@ import { Copy } from './explain';
  */
 export default function Step2FitCheck({ state, dispatch }) {
   const { fit, layout } = state;
+  if (state.engine === 'llamacpp_rpc') {
+    return (
+      <p>
+        {`llama.cpp RPC places the model across the warm GPU nodes when you deploy: ${ENGINE_COPY.llamacpp_rpc.hint}. If it does not fit, or fits on a single node, the deploy is refused with the reason.`}
+      </p>
+    );
+  }
   if (fit.status === 'idle') return <p>Enter the model&apos;s parameter count in step 1 to run the fit check.</p>;
   if (fit.status === 'loading') return <p>Checking whether this model fits…</p>;
   if (fit.status === 'error') {

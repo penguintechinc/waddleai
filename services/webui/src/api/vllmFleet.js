@@ -127,3 +127,18 @@ export function listSecrets() {
 export function rotateSecret(name) {
   return request(axios.post(`${BASE}/secrets/${encodeURIComponent(name)}/rotate`));
 }
+
+/**
+ * Create a llama.cpp deployment (the wizard sends `topology: 2` for multi-node).
+ * This route returns the bare body, not the envelope, so it is not unwrapped.
+ * @param {object} body - POST /api/v1/llamacpp/deployments body
+ * @returns {Promise<{deployment_id:number, public_id:string, explanation?:string}>}
+ */
+export async function createLlamaCppDeployment(body) {
+  try {
+    const res = await axios.post('/api/v1/llamacpp/deployments', body);
+    return res?.data?.data ?? res?.data;
+  } catch (err) {
+    throw new Error(err?.response?.data?.error || 'Request failed');
+  }
+}

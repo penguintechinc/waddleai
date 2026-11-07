@@ -1,7 +1,12 @@
 import { useEffect, useReducer } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { fitCheck } from '../api/vllmFleet';
-import { useCreateDeployment, useVllmBackend, useVllmRayEnabled } from '../hooks/useVllmFleet';
+import {
+  useCreateDeployment,
+  useCreateLlamaCppDeployment,
+  useVllmBackend,
+  useVllmRayEnabled,
+} from '../hooks/useVllmFleet';
 import {
   STEP_TITLES,
   initialWizardState,
@@ -33,7 +38,8 @@ export default function GpuFleetDeployWizard() {
   const navigate = useNavigate();
   const [state, dispatch] = useReducer(wizardReducer, undefined, initialWizardState);
   const backend = useVllmBackend();
-  const create = useCreateDeployment();
+  const createVllm = useCreateDeployment();
+  const createRpc = useCreateLlamaCppDeployment();
   const fitKey = JSON.stringify(buildFitBody(state));
 
   useEffect(() => {
@@ -63,11 +69,14 @@ export default function GpuFleetDeployWizard() {
   const Step = STEPS[state.step - 1];
   const current = validateStep(state.step, state);
   const vllm = state.engine === 'vllm_ray';
+  const rpc = state.engine === 'llamacpp_rpc';
+  const create = rpc ? createRpc : createVllm;
   const backendRow = backend.data;
-  const canDeploy = vllm && Boolean(backendRow) && allStepsValid(state) && !create.isPending;
+  const canDeploy =
+    (rpc || (vllm && Boolean(backendRow))) && allStepsValid(state) && !create.isPending;
 
   const deploy = () =>
-    create.mutate(buildCreateBody(state, backendRow.id), {
+    create.mutate(buildCreateBody(state, backendRow?.id), {
       onSuccess: () => navigate('/gpu-fleet/deployments'),
     });
 
@@ -88,9 +97,6 @@ export default function GpuFleetDeployWizard() {
           chargeback step.
         </p>
       )}
-      {state.engine === 'llamacpp' && (
-        <p>llama.cpp deployments are created through the llama.cpp deployments API for now.</p>
-      )}
       {!current.ok && (
         <ul className="wizard-errors" role="status">
           {current.errors.map((e) => (
@@ -99,7 +105,7 @@ export default function GpuFleetDeployWizard() {
         </ul>
       )}
       {create.error && <p role="alert">{create.error.message}</p>}
-      {backend.isSuccess && !backendRow && (
+      {vllm && backend.isSuccess && !backendRow && (
         <p role="alert">No vLLM backend is registered. Register one from the Fleet backends API.</p>
       )}
       <div className="wizard-nav">

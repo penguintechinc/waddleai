@@ -7,6 +7,13 @@
 export default function Step5Routing({ state, dispatch }) {
   const set = (patch) => dispatch({ type: 'SET', patch });
   const prefer = state.preferLocal;
+  if (state.engine === 'llamacpp_rpc') {
+    return (
+      <p className="wizard-step">
+        llama.cpp deployments are made available through the proxy automatically, with their own key.
+      </p>
+    );
+  }
   return (
     <div className="wizard-step">
       <label>

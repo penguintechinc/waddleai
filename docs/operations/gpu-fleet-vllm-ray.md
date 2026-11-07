@@ -48,13 +48,14 @@ Open **GPU Fleet** in the menu. The overview lists every GPU node and the saving
 
 Choose **Deploy a model**. The wizard has six steps:
 
-1. **Pick model**: choose the engine (vLLM on Ray is the multi-node option), then a registry model or a HuggingFace repo id. Enter the parameter count if the registry does not know it; it is never guessed.
-2. **Fit check**: runs live as you change settings and shows where the model will run, or why it cannot.
-3. **Advanced**: data type, compression (only options the GPUs support), maximum context, replicas.
+1. **Pick model**: choose the engine, then the model. **vLLM on Ray** is recommended (multi-node tensor and pipeline parallelism on Ray): pick a registry model or a HuggingFace repo id, and enter the parameter count if the registry does not know it; it is never guessed. **llama.cpp RPC** spreads one GGUF model over several nodes; it is slower across nodes, so use it when you need GGUF or llama.cpp-only features. For it, enter a model name, the https address the GGUF is downloaded from and the GGUF file name. **Ollama** is shown as a note only: it runs single-node, so use llama.cpp RPC or vLLM on Ray for multi-node.
+2. **Fit check**: for vLLM, runs live as you change settings and shows where the model will run, or why it cannot. llama.cpp RPC has no preview: the server plans the split when you deploy and refuses with the reason if the model does not fit, fits on one node, or the cluster lacks Cilium mutual auth.
+3. **Advanced**: for vLLM, data type, compression (only options the GPUs support), maximum context, replicas. For llama.cpp RPC, the GGUF file size in GB (sent as bytes, never guessed), maximum context, and whether different GPU models may share one deployment.
 4. **Chargeback**: the automatic price with its breakdown, or a manual price; the commercial model to compare against.
-5. **Routing**: make the model available through the proxy; optionally prefer it for requests whose model name starts with a prefix, with a commercial fallback.
+5. **Routing**: make the model available through the proxy; optionally prefer it for requests whose model name starts with a prefix, with a commercial fallback. llama.cpp deployments are always exposed through the proxy with their own key, so this step only says so.
 6. **Review & deploy**.
 
+![Engine choice with llama.cpp RPC selected](../screenshots/gpu-fleet-wizard-engine.png)
 ![Fit check step](../screenshots/gpu-fleet-wizard-fit.png)
 ![Review step](../screenshots/gpu-fleet-wizard-review.png)
 
@@ -100,7 +101,9 @@ cost with the same usage on each deployment's comparison model, for 7 or 30 days
 ## Command line
 
 `waddleai fleet vllm inventory|fit|deploy|list|scale|stop|resume|delete|rotate-token` and
-`waddleai fleet secrets list|rotate`. Destructive commands need `--yes` in scripts. See
+`waddleai fleet llamacpp deploy|list` (`deploy --topology rpc --model-url U --model-filename F
+--gguf-bytes B` creates a multi-node llama.cpp deployment; a taken name or a running deployment
+being converted is refused with 409) and `waddleai fleet secrets list|rotate`. Destructive commands need `--yes` in scripts. See
 `clients/waddleai-cli/README.md`. Mock data for demos: `make seed-mock-data`.
 
 ## Scope limits

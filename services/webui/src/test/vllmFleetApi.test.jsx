@@ -104,4 +104,16 @@ describe('vllmFleet api client', () => {
     axios.get.mockResolvedValue(undefined);
     expect(await api.getFlags()).toBeUndefined();
   });
+
+  it('createLlamaCppDeployment posts the bare-body route and surfaces the error key', async () => {
+    axios.post.mockResolvedValueOnce({ data: { deployment_id: 4, public_id: 'p' } });
+    expect(await api.createLlamaCppDeployment({ topology: 2 })).toEqual({ deployment_id: 4, public_id: 'p' });
+    expect(axios.post).toHaveBeenCalledWith('/api/v1/llamacpp/deployments', { topology: 2 });
+    axios.post.mockResolvedValueOnce({ data: { data: { deployment_id: 5 } } });
+    expect(await api.createLlamaCppDeployment({})).toEqual({ deployment_id: 5 });
+    axios.post.mockRejectedValueOnce({ response: { status: 409, data: { error: 'A deployment with that name already exists.' } } });
+    await expect(api.createLlamaCppDeployment({})).rejects.toThrow('A deployment with that name already exists.');
+    axios.post.mockRejectedValueOnce(new Error('net'));
+    await expect(api.createLlamaCppDeployment({})).rejects.toThrow('Request failed');
+  });
 });
