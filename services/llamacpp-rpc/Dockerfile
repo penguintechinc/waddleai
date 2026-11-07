@@ -43,7 +43,10 @@ WORKDIR /src
 RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.git \
     && git fetch --depth 1 origin "${LLAMACPP_COMMIT}" && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
-RUN . /opt/intel/oneapi/setvars.sh && cmake -B build \
+# The base image ENV is already oneAPI-initialised (SETVARS_COMPLETED=1, compiler on PATH):
+# re-sourcing setvars.sh returns exit 3 ("already run"), so assert the toolchain instead.
+RUN command -v icx && command -v icpx && test "${SETVARS_COMPLETED}" = 1 \
+    && cmake -B build \
       -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_SYCL=ON \
       -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
