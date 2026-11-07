@@ -18,10 +18,11 @@ export default function Step4Chargeback({ state, dispatch }) {
     replicas: state.replicasMax,
     params_b: state.paramsB,
   };
-  const q = usePriceSuggestion(params, { enabled: Boolean(l) });
+  const rpc = state.engine === 'llamacpp_rpc';
+  const q = usePriceSuggestion(params, { enabled: Boolean(l) && !rpc });
   return (
     <ChargebackStep
-      kind={1}
+      kind={rpc ? 3 : 1}
       priceMode={state.priceMode}
       pricesInput={state.pricesInput}
       pricesOutput={state.pricesOutput}

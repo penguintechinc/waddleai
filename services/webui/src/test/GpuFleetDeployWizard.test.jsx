@@ -35,12 +35,15 @@ const suggestion = {
 };
 
 let createMutate;
+let rpcMutate;
 
-function setup({ createError = null, backend = { id: 7 }, models = [{ public_id: 'u1', name: 'qwen-12b-awq', params_b: 12 }] } = {}) {
+function setup({ createError = null, rpcError = null, backend = { id: 7 }, models = [{ public_id: 'u1', name: 'qwen-12b-awq', params_b: 12 }] } = {}) {
   createMutate = vi.fn();
   hooks.useVllmRayEnabled.mockReturnValue(true);
   hooks.useVllmBackend.mockReturnValue({ data: backend, isSuccess: true });
   hooks.useCreateDeployment.mockReturnValue({ mutate: createMutate, isPending: false, error: createError });
+  rpcMutate = vi.fn();
+  hooks.useCreateLlamaCppDeployment.mockReturnValue({ mutate: rpcMutate, isPending: false, error: rpcError });
   hooks.useModelSearch.mockReturnValue({ data: models, error: null });
   hooks.usePriceSuggestion.mockReturnValue({ data: suggestion, error: null });
   return render(
@@ -85,6 +88,7 @@ describe('GpuFleetDeployWizard', () => {
     hooks.useVllmRayEnabled.mockReturnValue(false);
     hooks.useVllmBackend.mockReturnValue({ data: null });
     hooks.useCreateDeployment.mockReturnValue({});
+    hooks.useCreateLlamaCppDeployment.mockReturnValue({});
     hooks.useModelSearch.mockReturnValue({ data: [] });
     const { container } = render(
       <MemoryRouter>
@@ -94,15 +98,50 @@ describe('GpuFleetDeployWizard', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it('engine choice: Ollama shows the single-node copy and sends users to the Ollama page', () => {
+  it('engine choice: Ollama is an informational chip, not a radio', () => {
     setup();
-    fireEvent.click(screen.getByLabelText(/Ollama \(single node\)/));
+    expect(screen.getAllByRole('radio', { name: /vLLM on Ray|llama\.cpp RPC|Ollama/ })).toHaveLength(2);
+    expect(screen.queryByRole('radio', { name: /Ollama/ })).toBeNull();
     expect(
-      screen.getByText('Ollama runs single-node; use llama.cpp RPC or vLLM on Ray for multi-node.'),
+      screen.getByText(/Ollama runs single-node; use llama\.cpp RPC or vLLM on Ray for multi-node/),
     ).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Ollama page' })).toHaveAttribute('href', '/ollama');
-    fireEvent.click(screen.getByLabelText(/llama\.cpp \(set up/));
-    expect(screen.getByText(/llama\.cpp deployments are created through/)).toBeInTheDocument();
+  });
+
+  it('llama.cpp RPC: full flow posts topology 2 with GGUF bytes and skips the fit check', async () => {
+    setup();
+    fireEvent.click(screen.getByLabelText(/llama\.cpp RPC/));
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('Model name'), { target: { value: 'big-gguf' } });
+    fireEvent.change(screen.getByLabelText(/GGUF download address/), { target: { value: 'https://h/m.gguf' } });
+    fireEvent.change(screen.getByLabelText('GGUF file name'), { target: { value: 'm.gguf' } });
+    fireEvent.change(screen.getByLabelText('Deployment name'), { target: { value: 'big' } });
+    await settle();
+    expect(api.fitCheck).not.toHaveBeenCalled();
+    next();
+    expect(screen.getByText(/places the model across the warm GPU nodes/)).toBeInTheDocument();
+    next();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('GGUF file size (GB)'), { target: { value: '65' } });
+    fireEvent.click(screen.getByLabelText('Allow mixed GPU models'));
+    next();
+    fireEvent.change(screen.getByLabelText('Compare against (provider/model)'), {
+      target: { value: 'openai/gpt-4o-mini' },
+    });
+    next();
+    expect(screen.getByText(/made available through the proxy automatically/)).toBeInTheDocument();
+    next();
+    expect(screen.getByText('llama.cpp RPC (multi-node)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    expect(rpcMutate).toHaveBeenCalledTimes(1);
+    expect(createMutate).not.toHaveBeenCalled();
+    expect(rpcMutate.mock.calls[0][0]).toMatchObject({
+      topology: 2,
+      gguf_bytes: 65 * 2 ** 30,
+      allow_mixed_class: true,
+      model_filename: 'm.gguf',
+    });
+    rpcMutate.mock.calls[0][1].onSuccess();
+    expect(navigate).toHaveBeenCalledWith('/gpu-fleet/deployments');
   });
 
   it('fit check runs once, debounced 400 ms after a change', async () => {

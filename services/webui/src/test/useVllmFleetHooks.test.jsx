@@ -76,6 +76,14 @@ describe('useVllmFleet hooks', () => {
     expect(api.patchDeployment).toHaveBeenCalledWith('u', { replicas_max: 2 });
     expect(api.deleteDeployment.mock.calls[0][0]).toBe('u');
   });
+  it('llama.cpp create mutation calls the API', async () => {
+    api.createLlamaCppDeployment.mockResolvedValue({ deployment_id: 1 });
+    const create = renderHook(() => hooks.useCreateLlamaCppDeployment(), { wrapper: makeWrapper() });
+    await act(async () => {
+      await create.result.current.mutateAsync({ topology: 2 });
+    });
+    expect(api.createLlamaCppDeployment.mock.calls[0][0]).toEqual({ topology: 2 });
+  });
   it('rotate and save-config mutations call the API', async () => {
     api.rotateSecret.mockResolvedValue({});
     api.rotateDeploymentToken.mockResolvedValue({});

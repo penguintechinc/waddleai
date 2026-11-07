@@ -1,12 +1,7 @@
 import { useState } from 'react';
 import { useModelSearch } from '../../../hooks/useVllmFleet';
-import { Copy } from './explain';
+import { ENGINE_COPY, SELECTABLE_ENGINES } from './engineCopy';
 
-const ENGINES = [
-  { value: 'vllm_ray', label: 'vLLM on Ray (recommended, can span several nodes)' },
-  { value: 'llamacpp', label: 'llama.cpp (set up from the llama.cpp deployments API)' },
-  { value: 'ollama', label: 'Ollama (single node)' },
-];
 
 /**
  * Wizard step 1: engine, then model. Registry models come from the search API;
@@ -33,20 +28,55 @@ export default function Step1PickModel({ state, dispatch }) {
     <div className="wizard-step">
       <fieldset>
         <legend>Engine</legend>
-        {ENGINES.map((e) => (
-          <label key={e.value}>
+        {SELECTABLE_ENGINES.map((value) => (
+          <label key={value}>
             <input
               type="radio"
               name="engine"
-              value={e.value}
-              checked={state.engine === e.value}
-              onChange={() => set({ engine: e.value })}
+              value={value}
+              checked={state.engine === value}
+              onChange={() => set({ engine: value })}
             />
-            {e.label}
+            {ENGINE_COPY[value].label}
+            <span className="explain">{` ${ENGINE_COPY[value].hint}`}</span>
           </label>
         ))}
-        {state.engine === 'ollama' && <p>{Copy.ollamaSingleNode}</p>}
+        <p className="engine-chip" data-engine="ollama">
+          <strong>{ENGINE_COPY.ollama.label}</strong>
+          {`: ${ENGINE_COPY.ollama.hint}`}
+        </p>
       </fieldset>
+      {state.engine === 'llamacpp_rpc' ? (
+        <div>
+          <label>
+            Model name
+            <input type="text" value={state.modelName} onChange={(e) => set({ modelName: e.target.value })} />
+          </label>
+          <label>
+            GGUF download address (https)
+            <input
+              type="url"
+              value={state.modelUrl}
+              placeholder="https://host/path/model.gguf"
+              onChange={(e) => set({ modelUrl: e.target.value })}
+            />
+          </label>
+          <label>
+            GGUF file name
+            <input
+              type="text"
+              value={state.modelFilename}
+              placeholder="model.gguf"
+              onChange={(e) => set({ modelFilename: e.target.value })}
+            />
+          </label>
+          <label>
+            Deployment name
+            <input type="text" value={state.name} onChange={(e) => set({ name: e.target.value })} />
+          </label>
+        </div>
+      ) : (
+        <>
       <fieldset>
         <legend>Model source</legend>
         {[['registry', 'Model registry'], ['hf', 'HuggingFace repo id']].map(([v, l]) => (
@@ -110,6 +140,8 @@ export default function Step1PickModel({ state, dispatch }) {
         Deployment name
         <input type="text" value={state.name} onChange={(e) => set({ name: e.target.value })} />
       </label>
+        </>
+      )}
     </div>
   );
 }
