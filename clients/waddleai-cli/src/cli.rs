@@ -98,6 +98,16 @@ pub enum KnowledgeCommand {
 pub enum FleetCommand {
     /// Show inference fleet backend status.
     Status,
+    /// GPU Fleet: vLLM on Ray inventory, fit check and deployments.
+    Vllm {
+        #[command(subcommand)]
+        action: crate::vllm::VllmCommand,
+    },
+    /// GPU Fleet cluster keys: list and rotate (values are never shown).
+    Secrets {
+        #[command(subcommand)]
+        action: crate::secrets::SecretsCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -149,9 +159,19 @@ pub async fn run(cli: Cli, store: &dyn TokenStore, opener: &dyn BrowserOpener) -
         Command::Knowledge {
             action: KnowledgeCommand::Upload { path },
         } => cmd_knowledge_upload(&api_url, &path, store).await,
-        Command::Fleet {
-            action: FleetCommand::Status,
-        } => cmd_fleet_status(&api_url, store).await,
+        Command::Fleet { action } => match action {
+            FleetCommand::Status => cmd_fleet_status(&api_url, store).await,
+            FleetCommand::Vllm { action } => {
+                let token = resolve_token(&api_url, store).await?;
+                let client = ApiClient::new(&api_url, Some(token))?;
+                crate::vllm::run(&client, action).await
+            }
+            FleetCommand::Secrets { action } => {
+                let token = resolve_token(&api_url, store).await?;
+                let client = ApiClient::new(&api_url, Some(token))?;
+                crate::secrets::run(&client, action).await
+            }
+        },
         Command::Harness {
             action: HarnessCommand::Sync { output },
         } => cmd_harness_sync(&api_url, output.as_deref()),
@@ -454,6 +474,58 @@ mod tests {
         )
         .await
         .expect("run fleet status");
+    }
+
+    #[tokio::test]
+    async fn run_fleet_vllm_and_secrets_dispatch_to_their_endpoints() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/fleet/vllm/deployments"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "success", "data": []})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/fleet/secrets"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "success", "data": []})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let store = logged_in_store(&server.uri());
+        let vllm = Command::Fleet {
+            action: FleetCommand::Vllm {
+                action: crate::vllm::VllmCommand::List {
+                    status: None,
+                    json: false,
+                },
+            },
+        };
+        run(
+            cli_for(&server.uri(), vllm),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await
+        .expect("run fleet vllm list");
+        let secrets = Command::Fleet {
+            action: FleetCommand::Secrets {
+                action: crate::secrets::SecretsCommand::List { json: false },
+            },
+        };
+        run(
+            cli_for(&server.uri(), secrets),
+            &store,
+            &RecordingBrowserOpener::default(),
+        )
+        .await
+        .expect("run fleet secrets list");
     }
 
     #[tokio::test]

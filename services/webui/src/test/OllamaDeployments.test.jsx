@@ -6,6 +6,12 @@ import OllamaDeployments from '../pages/OllamaDeployments';
 // Mock CSS import
 vi.mock('../pages/OllamaDeployments.css', () => ({}));
 
+// The GPU Fleet hooks are off for the legacy Ollama tests (flag disabled).
+vi.mock('../hooks/useVllmFleet', () => ({
+  useVllmRayEnabled: () => false,
+  usePriceSuggestion: () => ({}),
+}));
+
 // Mock axios
 vi.mock('axios');
 import axios from 'axios';

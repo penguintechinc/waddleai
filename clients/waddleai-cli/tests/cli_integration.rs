@@ -154,3 +154,67 @@ fn missing_login_produces_clean_error_not_a_panic() {
         "expected a clean 'Error: ...' line, got: {stderr:?}"
     );
 }
+
+/// `waddleai fleet secrets rotate` on an externally managed key must exit 2 (a distinct,
+/// scriptable code), say "managed externally" on stderr, and send no rotate request.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fleet_secrets_rotate_external_exits_2_and_sends_no_post() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/fleet/secrets"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "success",
+            "data": [{"name": "ray-tls", "source": "external", "fingerprint": null, "rotated_at": null}]
+        })))
+        .mount(&server)
+        .await;
+
+    let output = Command::new(binary_path())
+        .args(["fleet", "secrets", "rotate", "ray-tls", "--yes"])
+        .env("WADDLEAI_API_URL", server.uri())
+        .env("WADDLEAI_API_KEY", "wa-test-key")
+        .output()
+        .expect("failed to run fleet secrets rotate");
+
+    assert_eq!(output.status.code(), Some(2), "exit code");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("managed externally"), "stderr: {stderr:?}");
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert_eq!(requests.len(), 1, "only the GET listing, no rotate POST");
+}
+
+/// `waddleai fleet vllm list` end to end through the real binary, table output.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fleet_vllm_list_prints_a_table() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/fleet/vllm/deployments"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": "success",
+            "data": [{
+                "public_id": "0b0f1f3e-8d57-4c43-9a0a-6a1c5f0d2e11", "name": "qwen", "status": 5,
+                "vendor": 1, "gpu_class": "nvidia-rtx4090", "replicas_min": 1, "replicas_max": 2
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let output = Command::new(binary_path())
+        .args(["fleet", "vllm", "list"])
+        .env("WADDLEAI_API_URL", server.uri())
+        .env("WADDLEAI_API_KEY", "wa-test-key")
+        .output()
+        .expect("failed to run fleet vllm list");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Serving"), "stdout: {stdout:?}");
+    assert!(
+        stdout.contains("NVIDIA · nvidia-rtx4090"),
+        "stdout: {stdout:?}"
+    );
+}

@@ -25,7 +25,7 @@ async fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("Error: {err}");
-            std::process::ExitCode::FAILURE
+            std::process::ExitCode::from(err.exit_code())
         }
     }
 }

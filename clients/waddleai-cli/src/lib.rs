@@ -15,4 +15,6 @@ pub mod config;
 pub mod error;
 pub mod harness_sync;
 pub mod mcp_shim;
+pub mod secrets;
 pub mod token_store;
+pub mod vllm;

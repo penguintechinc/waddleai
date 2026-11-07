@@ -55,6 +55,7 @@ nav:
   - Operations:
     - Monitoring: operations/MONITORING.md
     - Service Level Objectives: operations/SLOS.md
+    - GPU Fleet (vLLM on Ray): operations/gpu-fleet-vllm-ray.md
   - Deployment:
     - Kubernetes: deployment/kubernetes.md
     - Classification Service: deployment/classification-service.md

@@ -134,6 +134,7 @@ Enterprise-grade platform that owns the full data plane itself: a Quart-based pr
 **Key Features**:
 - 🔌 **Multi-provider support**: OpenAI, Anthropic, Google Gemini, xAI, AWS Bedrock, local Ollama, self-hosted llama.cpp
 - 🚀 **GPU inference fleet**: Ollama and llama.cpp both deploy as Kubernetes DaemonSets across GPU nodes; the llama.cpp fleet shares one RWX PVC as a model cache across every `llama-server` instance
+- 🧩 **vLLM on Ray**: deploy open-weight models across mixed NVIDIA/AMD/Intel GPU nodes from the admin UI, behind a flag; see `docs/operations/gpu-fleet-vllm-ray.md`
 - 🧠 **Memory scopes**: personal vs. organizational memory, enforced at the API layer
 - 📊 **Usage tracking**: token counting and cost analytics, with OpenTelemetry `gen_ai.*` span attributes emitted per request for tracing
 - 💰 **Budget enforcement**: Daily/monthly quotas per user, team, or API key
