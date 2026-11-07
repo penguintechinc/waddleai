@@ -35,7 +35,7 @@ RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" cmake -B build \
 RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server /out/bin/ && cp build/bin/ggml-rpc-server /out/bin/rpc-server \
     && find build -name '*.so*' -exec cp -P {} /out/lib/ \;
 
-FROM intel/oneapi-basekit:2025.1.1-0-devel-ubuntu24.04@sha256:81458504ff677db5d880b9893063faef4cb1ddde6d0d06bc1c646980c35600ef AS build-sycl
+FROM intel/oneapi-basekit:2025.3.1-0-devel-ubuntu24.04@sha256:bbe949c0126a2dd3e0017bc40e97cef5a74736940cc50b67962626a4dbb847dc AS build-sycl
 ARG LLAMACPP_COMMIT
 RUN apt-get update && apt-get install -y --no-install-recommends git cmake build-essential libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -45,10 +45,12 @@ RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.gi
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
 # The base image ENV is already oneAPI-initialised (SETVARS_COMPLETED=1, compiler on PATH):
 # re-sourcing setvars.sh returns exit 3 ("already run"), so assert the toolchain instead.
+# oneDNN 3.7's dnnl-config.cmake never sets DNNL_GPU_VENDOR (dnnl_config.h declares INTEL, SYCL GPU
+# runtime), which llama.cpp's configure check requires; pass it so oneDNN GPU stays enabled.
 RUN command -v icx && command -v icpx && test "${SETVARS_COMPLETED}" = 1 \
     && cmake -B build \
       -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_SYCL=ON \
-      -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release \
+      -DDNNL_GPU_VENDOR=INTEL -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
 RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server /out/bin/ && cp build/bin/ggml-rpc-server /out/bin/rpc-server \
     && find build -name '*.so*' -exec cp -P {} /out/lib/ \;
@@ -78,7 +80,7 @@ RUN ldconfig
 ENV LD_LIBRARY_PATH=/usr/local/lib
 USER 1000:1000
 
-FROM intel/oneapi-runtime:2025.1.1-0-devel-ubuntu24.04@sha256:d29dd4b1d26d06d9567034c86c3d55bde3557de11cf42f4f7f0d0d81a9d039bf AS runtime-sycl
+FROM intel/oneapi-runtime:2025.3.1-0-devel-ubuntu24.04@sha256:8942e89b6e6e0cd9a4ca26f12fd4b32a2f0dd1de7e631ea59101a183878d660f AS runtime-sycl
 ARG LLAMACPP_COMMIT
 LABEL org.opencontainers.image.revision="${LLAMACPP_COMMIT}"
 RUN apt-get update && apt-get install -y --no-install-recommends libssl3 libgomp1 \
