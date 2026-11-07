@@ -28,7 +28,7 @@ def test_revision_chain_030_follows_029_and_precedes_031() -> None:
     """030 revises 029 and precedes head 031."""
     script = ScriptDirectory.from_config(_cfg("sqlite://"))
     assert script.get_revision(REV).down_revision == PREV
-    assert script.get_heads() == ["031_llamacpp_owner_org"]
+    assert script.get_heads() == ["034_llamacpp_rotation_lease"]
 
 
 @pytest.fixture

@@ -499,9 +499,17 @@ class LlamaCppDeployment(Base):
     """A llama.cpp inference deployment (Kubernetes or remote) with model, GPU, resource config."""
 
     __tablename__ = "llamacpp_deployments"
+    __table_args__ = (
+        Index(
+            "uq_llamacpp_owner_name",
+            func.coalesce(text("owner_org_id"), 0),
+            "name",
+            unique=True,
+        ),
+    )
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String(255), unique=True, nullable=False)
+    name = Column(String(255), nullable=False)  # unique per owner org (migration 033)
     deployment_type = Column(String(50), nullable=False, default="kubernetes")  # kubernetes, remote
     status = Column(
         String(50), nullable=False, default="pending"
@@ -523,6 +531,10 @@ class LlamaCppDeployment(Base):
     rpc_workers = Column(JSON)  # [{node_uid, gpu_class, gpu_count, tensor_split_share}]
     tensor_split = Column(String(255))  # comma-joined 4-dp shares in device order
     allow_mixed_class = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # inventory node_uid of the RPC head (migration 032); NULL for single-node rows
+    rpc_head_node_uid = Column(String(255), nullable=True)
+    # single-flight lease for token rotation (migration 034); NULL/expired = free
+    rotation_lease_until = Column(DateTime, nullable=True)
 
     # Stable external identifier (migration 028)
     public_id = Column(Uuid, unique=True, nullable=False, default=uuid.uuid4)

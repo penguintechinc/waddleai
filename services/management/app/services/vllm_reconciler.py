@@ -72,9 +72,14 @@ class AlwaysLeader:
 class PgAdvisoryLeaderGuard:
     """Leader election via a session-level Postgres advisory lock held for the process lifetime."""
 
-    def __init__(self, engine: Any) -> None:
-        """Bind the SQLAlchemy engine; the lock connection is opened lazily and kept."""
+    def __init__(self, engine: Any, key: int = ADVISORY_LOCK_KEY) -> None:
+        """Bind the engine and lock key; the lock connection is opened lazily and kept.
+
+        Each reconciler loop needs its own ``key``: advisory locks are per session, so two
+        loops sharing a key would starve one another even inside one process.
+        """
         self._engine = engine
+        self._key = key
         self._conn: Any = None
         self._held = False
 
@@ -91,7 +96,7 @@ class PgAdvisoryLeaderGuard:
             self._conn = self._engine.connect()
             got = bool(
                 self._conn.execute(
-                    text("SELECT pg_try_advisory_lock(:k)"), {"k": ADVISORY_LOCK_KEY}
+                    text("SELECT pg_try_advisory_lock(:k)"), {"k": self._key}
                 ).scalar()
             )
             if not got:

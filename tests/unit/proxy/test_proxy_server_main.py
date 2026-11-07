@@ -55,6 +55,26 @@ from shared.utils.request_router import RoutingStrategy  # noqa: E402
 pytestmark = pytest.mark.asyncio(loop_scope="module")
 
 
+def _default_more_body(app):
+    """Wrap an ASGI app so ``http.response.body`` messages always carry ``more_body``.
+
+    penguin-aaa's middleware 401 path omits ``more_body`` (valid per the ASGI spec, which
+    defaults it to False) but Quart's in-process test connection indexes it directly and
+    raises ``KeyError: 'more_body'``. Real servers (hypercorn) accept the omission, so the
+    shim lives only in the test harness.
+    """
+
+    async def wrapped(scope, receive, send):
+        async def send_with_default(message):
+            if message.get("type") == "http.response.body" and "more_body" not in message:
+                message = {**message, "more_body": False}
+            await send(message)
+
+        await app(scope, receive, send_with_default)
+
+    return wrapped
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="module")
 async def running_app():
     """Boot the real Quart app in-process (stub upstream, sqlite DB).
@@ -95,7 +115,13 @@ async def running_app():
     os.environ["WADDLEAI_STUB_UPSTREAM"] = "1"
     importlib.reload(proxy_main)
     async with proxy_main.app.test_app() as test_app:
-        yield test_app
+        # The auth middleware is installed during startup, so wrap the finished stack.
+        inner = proxy_main.app.asgi_app
+        proxy_main.app.asgi_app = _default_more_body(inner)  # type: ignore[method-assign]
+        try:
+            yield test_app
+        finally:
+            proxy_main.app.asgi_app = inner  # type: ignore[method-assign]
 
 
 @pytest_asyncio.fixture(loop_scope="module")

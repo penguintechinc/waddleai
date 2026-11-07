@@ -121,6 +121,29 @@ def build_vllm_reconciler(app):
     )
 
 
+def build_llamacpp_rpc_reconciler(app):
+    """Build the llama.cpp RPC status reconciler, or None when disabled or without an engine.
+
+    ``WADDLEAI_LLAMACPP_RPC_RECONCILER=0`` disables it. It has its own leader lock (distinct from
+    the vLLM loop's), so each loop elects one management replica independently.
+    """
+    import os
+
+    if os.environ.get("WADDLEAI_LLAMACPP_RPC_RECONCILER", "1") == "0":
+        app.logger.info("llama.cpp RPC reconciler disabled by WADDLEAI_LLAMACPP_RPC_RECONCILER=0")
+        return None
+    from .extensions import db as _db
+
+    engine = getattr(_db, "engine", None)
+    if _db is None or engine is None:
+        app.logger.warning("llama.cpp RPC reconciler not started: no database engine")
+        return None
+    from .services.llamacpp_rpc_reconcile import RPC_ADVISORY_LOCK_KEY, LlamaCppRpcReconciler
+    from .services.vllm_reconciler import PgAdvisoryLeaderGuard
+
+    return LlamaCppRpcReconciler(_db, guard=PgAdvisoryLeaderGuard(engine, RPC_ADVISORY_LOCK_KEY))
+
+
 def _assert_credential_encryption_configured(app) -> None:
     """Refuse to boot when provider-credential encryption is unconfigured.
 
@@ -241,6 +264,24 @@ def create_app(config_class=Config):
     async def _stop_vllm_reconciler():
         task = app.extensions.pop("vllm_reconciler_task", None)
         app.extensions.pop("vllm_reconciler", None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    # llama.cpp multi-node (RPC) status loop: sibling of the vLLM loop under its own leader lock.
+    @app.before_serving
+    async def _start_llamacpp_rpc_reconciler():
+        reconciler = build_llamacpp_rpc_reconciler(app)
+        if reconciler is not None:
+            app.extensions["llamacpp_rpc_reconciler"] = reconciler
+            app.extensions["llamacpp_rpc_reconciler_task"] = asyncio.ensure_future(
+                reconciler.run_forever()
+            )
+
+    @app.after_serving
+    async def _stop_llamacpp_rpc_reconciler():
+        task = app.extensions.pop("llamacpp_rpc_reconciler_task", None)
+        app.extensions.pop("llamacpp_rpc_reconciler", None)
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

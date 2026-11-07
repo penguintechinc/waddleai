@@ -177,6 +177,7 @@ def _seed_llamacpp_deployment(db: "FakeDB", **overrides: Any) -> int:
         "memory_request": None,
         "memory_limit": None,
         "node_uid": None,
+        "owner_org_id": 1,
     }
     fields.update(overrides)
     return db.llamacpp_deployments.insert(**fields)
@@ -191,7 +192,9 @@ def db() -> FakeDB:
 @pytest.fixture
 def fleet_manager(db: FakeDB) -> LlamaCppManager:
     """A manager wired to the fake DB, for tests needing real query semantics."""
-    return LlamaCppManager(db)
+    manager = LlamaCppManager(db)
+    manager.org_id = 1  # fleet-interface methods are org-scoped and fail closed without one
+    return manager
 
 
 @pytest.fixture
@@ -206,7 +209,9 @@ def manager(mock_db):
     """Build a LlamaCppManager wired to the mock db, for tests exercising its methods."""
     from services.management.app.services.llamacpp_manager import LlamaCppManager
 
-    return LlamaCppManager(mock_db)
+    mgr = LlamaCppManager(mock_db)
+    mgr.org_id = 1
+    return mgr
 
 
 @pytest.fixture
@@ -510,7 +515,11 @@ def test_create_deployment_success_inserts_row(fleet_manager, db):
     assert result["name"] == "new-dep"
     row = db._tables["llamacpp_deployments"][result["deployment_id"]]
     assert row.status == "pending"
-    assert row.k8s_daemonset_name == "waddleai-llamacpp-new-dep"
+    # object name embeds the public id so two orgs reusing a display name never collide in K8s
+    assert (
+        row.k8s_daemonset_name == f"waddleai-llamacpp-new-dep-{row.public_id.replace('-', '')[:12]}"
+    )
+    assert row.owner_org_id == 1
 
 
 def test_create_deployment_duplicate_name_rejected(fleet_manager, db):
@@ -577,8 +586,8 @@ def test_delete_deployment_remote_type_force_skips_daemonset_removal(fleet_manag
     assert dep_id not in db._tables["llamacpp_deployments"]
 
 
-def test_delete_deployment_force_removal_error_is_logged_and_continues(fleet_manager, db, caplog):
-    """A DaemonSet-teardown failure during forced delete is logged but doesn't block deletion."""
+def test_delete_deployment_force_removal_error_keeps_the_row(fleet_manager, db, caplog):
+    """H1 regression: a failed forced teardown must NOT delete the row (it would orphan objects)."""
     dep_id = _seed_llamacpp_deployment(
         db, name="live", status="running", deployment_type="kubernetes"
     )
@@ -591,12 +600,13 @@ def test_delete_deployment_force_removal_error_is_logged_and_continues(fleet_man
             "teardown failed"
         )
         mock_core.return_value = MagicMock()
-        with caplog.at_level(logging.WARNING):
+        with caplog.at_level(logging.ERROR):
             result = fleet_manager.delete_deployment(dep_id, force=True)
 
-    assert result == {"success": True}
-    assert dep_id not in db._tables["llamacpp_deployments"]
-    assert any("Error during forced removal" in r.message for r in caplog.records)
+    assert result["success"] is False
+    assert "teardown failed" not in result["error"]  # detail is logged, not returned
+    assert dep_id in db._tables["llamacpp_deployments"]
+    assert any("Forced removal of live failed" in r.message for r in caplog.records)
 
 
 def test_delete_deployment_not_running_deletes_without_force(fleet_manager, db):
@@ -1015,3 +1025,74 @@ def test_create_deployment_k8s_gpu_refused_with_no_kube_config(manager, monkeypa
     result = manager.create_deployment(config)
     assert result["success"] is False
     assert "Cannot verify the target node(s)" in result["error"]
+
+
+# --- L9: every fleet-interface method is scoped to the backend's own org ---------------------
+
+
+async def test_fleet_interface_never_sees_another_orgs_deployments(fleet_manager, db):
+    """regression: list/health/place/endpoints/deprovision/create ignored owner_org_id."""
+    mine = _seed_llamacpp_deployment(
+        db, name="mine", model_name="m", endpoint_url="http://mine:8080", status="running"
+    )
+    theirs = _seed_llamacpp_deployment(
+        db,
+        name="theirs",
+        model_name="m",
+        endpoint_url="http://theirs:8080",
+        status="running",
+        owner_org_id=2,
+    )
+    with patch("services.management.app.services.llamacpp_manager.requests") as mock_req:
+        mock_req.get.return_value.status_code = 200
+        health = await fleet_manager.health()
+    assert health.node_count == 1
+    assert [n.node_id for n in await fleet_manager.list_nodes()] == ["mine"]
+    assert (await fleet_manager.place_model("m", {})).node_id == "mine"
+    assert [e.node_id for e in await fleet_manager.endpoints_for("m")] == ["mine"]
+    await fleet_manager.deprovision("theirs")  # another org's name: a no-op, never a delete
+    assert theirs in db._tables["llamacpp_deployments"]
+    assert fleet_manager.delete_deployment(theirs, force=True) == {
+        "success": False,
+        "error": "Deployment not found",
+    }
+    assert mine in db._tables["llamacpp_deployments"]
+
+
+async def test_other_orgs_model_is_not_placeable(fleet_manager, db):
+    """A model served only by another org raises, exactly like a missing one."""
+    _seed_llamacpp_deployment(db, name="theirs", model_name="secret-m", owner_org_id=2)
+    with pytest.raises(RuntimeError, match="No llama.cpp deployment"):
+        await fleet_manager.place_model("secret-m", {})
+    assert await fleet_manager.endpoints_for("secret-m") == []
+
+
+def test_create_deployment_name_uniqueness_is_per_org(fleet_manager, db):
+    """The same name is refused within the org and allowed for another org's backend."""
+    config = LlamaCppDeploymentConfig(name="dup", model_name="llama-3.2-3b-instruct")
+    assert fleet_manager.create_deployment(config)["success"] is True
+    assert fleet_manager.create_deployment(config)["success"] is False
+    other = LlamaCppManager(db)
+    other.org_id = 2
+    assert other.create_deployment(config)["success"] is True
+
+
+async def test_unbound_manager_fails_closed(db):
+    """No org on the backend means no rows at all (never 'every org')."""
+    unbound = LlamaCppManager(db)
+    _seed_llamacpp_deployment(db, name="x")
+    with pytest.raises(RuntimeError, match="not bound to an organization"):
+        await unbound.list_nodes()
+
+
+async def test_deprovision_does_not_swallow_a_failed_removal(fleet_manager, db):
+    """H1/L9: a failing teardown surfaces from deprovision() and keeps the row."""
+    dep_id = _seed_llamacpp_deployment(db, name="stuck", status="running")
+    with (
+        patch("services.management.app.services.llamacpp_manager.get_k8s_apps_client") as apps,
+        patch("services.management.app.services.llamacpp_manager.get_k8s_core_client"),
+    ):
+        apps.return_value.delete_namespaced_daemon_set.side_effect = RuntimeError("down")
+        with pytest.raises(RuntimeError, match="removal failed"):
+            await fleet_manager.deprovision("stuck")
+    assert dep_id in db._tables["llamacpp_deployments"]

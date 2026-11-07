@@ -103,7 +103,20 @@ def test_bump_statefulset_and_unsupported_kind(gw) -> None:
     body = gw._apps.patch_namespaced_stateful_set.call_args.args[2]
     assert body["spec"]["template"]["metadata"]["annotations"][fs.RESTART_ANNOTATION] == "1"
     with pytest.raises(ValueError, match="unsupported"):
-        gw.bump_restart_generation("ns", "Deployment", "x")
+        gw.bump_restart_generation("ns", "Job", "x")
+
+
+def test_bump_deployment_increments_existing_generation(gw) -> None:
+    """The llama.cpp RPC head is a Deployment: its template annotation is bumped (4 -> 5)."""
+    template = SimpleNamespace(metadata=SimpleNamespace(annotations={fs.RESTART_ANNOTATION: "4"}))
+    gw._apps.read_namespaced_deployment.return_value = SimpleNamespace(
+        spec=SimpleNamespace(template=template)
+    )
+    assert gw.bump_restart_generation("ns", "Deployment", "head") == 5
+    name, namespace, body = gw._apps.patch_namespaced_deployment.call_args.args
+    assert (name, namespace) == ("head", "ns")
+    assert body["spec"]["template"]["metadata"]["annotations"][fs.RESTART_ANNOTATION] == "5"
+    gw._apps.patch_namespaced_stateful_set.assert_not_called()
 
 
 def test_jobs_create_conflict_state_and_delete(gw) -> None:
@@ -159,3 +172,16 @@ async def test_secret_failures_never_leak_the_value(caplog) -> None:
             await fs.bump_restart("RayCluster", "r")
     finally:
         fs.set_gateway(None)
+
+
+def test_bump_daemonset_increments_generation(gw) -> None:
+    """regression: single-node llama.cpp deployments are DaemonSets, so rotate must bump one."""
+    template = SimpleNamespace(metadata=SimpleNamespace(annotations={fs.RESTART_ANNOTATION: "2"}))
+    gw._apps.read_namespaced_daemon_set.return_value = SimpleNamespace(
+        spec=SimpleNamespace(template=template)
+    )
+    assert gw.bump_restart_generation("ns", "DaemonSet", "ds") == 3
+    name, namespace, body = gw._apps.patch_namespaced_daemon_set.call_args.args
+    assert (name, namespace) == ("ds", "ns")
+    assert body["spec"]["template"]["metadata"]["annotations"][fs.RESTART_ANNOTATION] == "3"
+    gw._apps.patch_namespaced_stateful_set.assert_not_called()

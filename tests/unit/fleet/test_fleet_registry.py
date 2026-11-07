@@ -29,6 +29,7 @@ class _Row:
     management_scope: str
     config: dict[str, Any] | None = field(default_factory=dict)
     credentials_ref: str | None = None
+    org_id: int | None = None
 
 
 class _DummyBackend(InferenceFleetBackend):
@@ -274,3 +275,10 @@ def test_build_backend_vllm_ray_decrypts_credentials_without_logging_secret(capl
     assert backend.fleet_backend_id == 7
     assert isinstance(backend._client(), HttpRayServeClient)
     assert "SECRET-RAY-TOKEN" not in caplog.text
+
+
+def test_build_backend_binds_the_backend_to_the_rows_org() -> None:
+    """Regression (L9): org-scoped backends need the owning org from the fleet_backends row."""
+    fleet_registry._REGISTRY[BackendType.OLLAMA] = _DummyBackend
+    row = _Row(id=1, type="ollama", management_scope="full_lifecycle", org_id=7)
+    assert fleet_registry.build_backend(db=None, row=row).org_id == 7

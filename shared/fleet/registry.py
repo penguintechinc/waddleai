@@ -115,6 +115,7 @@ def build_backend(db: Any, row: FleetBackendRow) -> InferenceFleetBackend:
     backend = backend_cls(db=db, config=row.config or {}, credentials=credentials)
     backend.management_scope = ManagementScope(row.management_scope)
     backend.fleet_backend_id = row.id
+    backend.org_id = getattr(row, "org_id", None)
     return backend
 
 
