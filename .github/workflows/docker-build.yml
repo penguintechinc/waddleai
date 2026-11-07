@@ -1381,10 +1381,12 @@ jobs:
     - name: Free runner disk space
       run: |
         set -euo pipefail
+        echo "== disk before cleanup =="; df -h / /mnt
         sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL \
-          /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+          /usr/local/share/boost /usr/share/swift /usr/local/.ghcup /opt/az \
+          /usr/local/share/powershell /usr/share/miniconda
         docker system prune -af
-        df -h /
+        echo "== disk after cleanup =="; df -h / /mnt
 
     - name: Read the pinned llama.cpp commit
       id: commit
@@ -1481,10 +1483,12 @@ jobs:
     - name: Free runner disk space
       run: |
         set -euo pipefail
+        echo "== disk before cleanup =="; df -h / /mnt
         sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL \
-          /usr/local/share/boost /usr/share/swift /usr/local/.ghcup
+          /usr/local/share/boost /usr/share/swift /usr/local/.ghcup /opt/az \
+          /usr/local/share/powershell /usr/share/miniconda
         docker system prune -af
-        df -h /
+        echo "== disk after cleanup =="; df -h / /mnt
 
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
@@ -1554,6 +1558,9 @@ jobs:
         ignore-unfixed: true
         exit-code: '1'
         version: 'v0.69.3'
+        # Default 5m trips 'context deadline exceeded' on the multi-GB GPU base layers;
+        # that is a scan timeout, not a CVE finding.
+        timeout: '45m'
 
     - name: Promote floating tag (post-gate)
       if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
