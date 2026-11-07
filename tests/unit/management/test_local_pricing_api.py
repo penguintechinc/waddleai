@@ -195,6 +195,8 @@ async def test_llamacpp_create_mints_key_and_rotate_restarts_head(
     row = priced(priced.llamacpp_deployments.id == created["deployment_id"]).select().first()
     secret = fake_k8s.secrets["waddleai-vllm-deployment-keys"]
     assert len(secret) == 1
+    priced(priced.llamacpp_deployments.id == created["deployment_id"]).update(status="running")
+    priced.commit()  # only a live deployment has pods to roll
     resp = await client.post(
         f"/api/v1/fleet/llamacpp/deployments/{created['public_id']}/rotate-token",
         headers=auth_headers,
@@ -203,7 +205,7 @@ async def test_llamacpp_create_mints_key_and_rotate_restarts_head(
     data = await resp.get_json()
     assert "token" not in data and data["api_key_fingerprint"] != created["api_key_fingerprint"]
     assert list(fake_k8s.restart.values()) == [1]
-    assert next(iter(fake_k8s.restart)).startswith("StatefulSet/")
+    assert next(iter(fake_k8s.restart)).startswith("DaemonSet/")  # single-node = DaemonSet
     del row
     fake_k8s.fail_next_patch = True
     failed = await client.post(

@@ -659,6 +659,8 @@ async def test_rotate_rpc_restarts_head_deployment_only(rpc, client, auth_header
     row = _row(rpc, created["deployment_id"])
     slug = derive_slug(row.name, row.public_id)
     old = rpc.k8s.deployment_key(slug)
+    rpc.db(rpc.db.llamacpp_deployments.id == row.id).update(status="running")
+    rpc.db.commit()  # a pending deployment has no head pod to roll
     resp = await client.post(
         f"/api/v1/fleet/llamacpp/deployments/{row.public_id}/rotate-token", headers=auth_headers
     )
@@ -790,7 +792,7 @@ async def test_convert_to_rpc_rebases_the_object_name_and_refuses_collisions(
     ).get_json()
     dep_id = single["deployment_id"]
     row = _row(rpc, dep_id)
-    assert row.k8s_daemonset_name == "waddleai-llamacpp-solo"
+    assert row.k8s_daemonset_name.startswith("waddleai-llamacpp-solo-")  # + public-id suffix
     path = "services.management.app.api.v1.llamacpp.rpc_service.base_name_taken"
     with monkeypatch.context() as taken:
         taken.setattr(path, lambda *_a: True)
@@ -839,6 +841,7 @@ async def test_convert_refused_while_old_objects_may_be_live(rpc, client, auth_h
         await client.post(URL, headers=auth_headers, json={"name": "solo", "model_name": "m120"})
     ).get_json()
     dep_id = single["deployment_id"]
+    original_name = _row(rpc, dep_id).k8s_daemonset_name
     rpc.db(rpc.db.llamacpp_deployments.id == dep_id).update(status=status)
     rpc.db.commit()
     price_only_blocked = await client.patch(
@@ -846,4 +849,5 @@ async def test_convert_refused_while_old_objects_may_be_live(rpc, client, auth_h
     )
     assert price_only_blocked.status_code == 409
     row = _row(rpc, dep_id)
-    assert (row.topology, row.k8s_daemonset_name) == (1, "waddleai-llamacpp-solo")
+    assert row.topology == 1
+    assert row.k8s_daemonset_name == original_name  # a refused convert must not re-base it
