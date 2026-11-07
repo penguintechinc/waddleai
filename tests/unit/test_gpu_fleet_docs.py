@@ -13,6 +13,7 @@ SHOTS = [
     "gpu-fleet-backend.png",
     "gpu-fleet-deployments.png",
     "gpu-fleet-overview.png",
+    "gpu-fleet-wizard-engine.png",
     "gpu-fleet-wizard-fit.png",
     "gpu-fleet-wizard-review.png",
 ]

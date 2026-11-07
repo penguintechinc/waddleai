@@ -1,5 +1,5 @@
 /**
- * Captures the five GPU Fleet docs screenshots against the built webui with a mocked API.
+ * Captures the six GPU Fleet docs screenshots against the built webui with a mocked API.
  *
  * The data mirrors `scripts/seed_gpu_fleet_mock.py` (4 GPU nodes, 2 deployments, the
  * `qwen-12b-awq` model). Run: `npm --prefix services/webui run build`, start
@@ -121,6 +121,11 @@ async function main() {
   await page.goto(`${BASE_URL}/gpu-fleet/deployments`, { waitUntil: 'networkidle0' });
   await snap('gpu-fleet-deployments');
   await page.goto(`${BASE_URL}/gpu-fleet/deploy`, { waitUntil: 'networkidle0' });
+  await page.evaluate(() => document.querySelector('input[name="engine"][value="llamacpp_rpc"]').click());
+  await sleep(300);
+  await snap('gpu-fleet-wizard-engine');
+  await page.evaluate(() => document.querySelector('input[name="engine"][value="vllm_ray"]').click());
+  await sleep(300);
   await click('qwen-12b-awq');
   await sleep(900);
   await click('Next');
