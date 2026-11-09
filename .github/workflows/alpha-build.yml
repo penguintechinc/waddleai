@@ -133,8 +133,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.tag }}
             ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:alpha-latest
-          cache-from: type=gha,scope=alpha-${{ matrix.service }}
-          cache-to: type=gha,scope=alpha-${{ matrix.service }},mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:buildcache-alpha
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:buildcache-alpha,mode=max,image-manifest=true,oci-mediatypes=true
           build-args: |
             VCS_REF=${{ github.sha }}
 
@@ -274,8 +274,8 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.repo }}:${{ needs.prepare.outputs.tag }}${{ matrix.suffix }}
-          cache-from: type=gha,scope=alpha-${{ matrix.name }}
-          cache-to: type=gha,scope=alpha-${{ matrix.name }},mode=max
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.repo }}:buildcache-alpha-${{ matrix.name }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.repo }}:buildcache-alpha-${{ matrix.name }},mode=max,image-manifest=true,oci-mediatypes=true
 
       - name: Record pushed image
         env:
