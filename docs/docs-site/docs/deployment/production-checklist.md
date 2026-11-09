@@ -327,6 +327,13 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   - Kyverno policies block privileged AI pods from deploying
   - Cilium Tetragon TracingPolicy deployed: alert/kill on unexpected shell spawning
 
+- [ ] **Kata sandbox for self-hosted model and MCP pods**
+  - In-cluster model pods (Ollama, vLLM-Ray, llama.cpp) and MCP server pods run `runtimeClassName: kata-clh` (Helm `<engine>.runtimeClassName`, default `kata-clh`; empty = runc for dev clusters without Kata). Data-plane/control-plane pods stay on runc with the Tetragon allowlist
+  - Kata agent policy (`genpolicy` Rego via `io.katacontainers.config.agent.policy`) denies exec and pins image digest, command/args, env, mounts (requires Kata 3.x with the annotation enabled)
+  - Kata pods: `readOnlyRootFilesystem: true`, stateless (emptyDir scratch only), non-root, all caps dropped
+  - CiliumNetworkPolicy applies unchanged; host Tetragon policy watches cloud-hypervisor, virtiofsd, containerd-shim-kata-v2. Host Tetragon cannot see inside the guest (known limitation; in-guest Tetragon deferred)
+  - GPU pods need VFIO passthrough (NVIDIA GPU Operator sandbox workloads); RuntimeClass memory overhead is counted in fleet placement
+
 - [ ] **LLM provider credential security**
   - Provider API keys (OpenAI, Anthropic) not hardcoded in container env vars
   - Secrets managed via Vault, K8s Secrets with Sealed Secrets, or SPIFFE/SPIRE
