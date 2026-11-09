@@ -3,16 +3,23 @@
 
 environment: alpha
 
-# Alpha pulls from the local MicroK8s registry (scripts/deploy-alpha.sh does a
-# sudo-free `docker push localhost:32000/waddleai/<svc>:alpha-latest`); the
-# base value points at registry-dal2, which alpha never uses.
+# Alpha images are built by CI (.github/workflows/alpha-build.yml, runner
+# dal2-alpha) and pushed to ghcr.io/penguintechinc/waddleai/<svc> (packages are
+# public -> no imagePullSecret needed; if they go private, set imagePullSecrets
+# to a ghcr dockerconfigjson secret). The service repositories below carry the
+# org prefix because the chart renders <imageRegistry>/<repository>:<tag>.
+# Tags: CI pushes immutable alpha-<epoch64> plus a floating alpha-latest. The
+# tag defaults to alpha-latest here; ArgoCD pins a build by overriding
+# {management,proxy,webui,classification}.image.tag (helm parameters or Image
+# Updater) with the alpha-<epoch64> from the workflow run summary.
 global:
-  imageRegistry: localhost:32000
+  imageRegistry: ghcr.io
 
 # Management Service - Alpha
 management:
   replicaCount: 1
   image:
+    repository: penguintechinc/waddleai/management
     tag: alpha-latest
     pullPolicy: Always
 
@@ -42,6 +49,7 @@ proxy:
   enabled: true
   replicaCount: 1
   image:
+    repository: penguintechinc/waddleai/proxy
     tag: alpha-latest
     pullPolicy: Always
 
@@ -66,6 +74,7 @@ proxy:
 webui:
   replicaCount: 1
   image:
+    repository: penguintechinc/waddleai/webui
     tag: alpha-latest
     pullPolicy: Always
 
@@ -84,12 +93,12 @@ webui:
 postgres:
   replicaCount: 1
 
-  # Local-registry copy of pgvector/pgvector:pg17 (the deploy step pushes it
-  # there). Local tag, so no digest.
+  # Upstream pgvector/pgvector:pg17, digest-pinned (same digest as
+  # rust-proxy-build.yml's CI service container).
   image:
-    repository: localhost:32000/pgvector/pgvector
+    repository: pgvector/pgvector
     tag: pg17
-    digest: ""
+    digest: "sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d"
     pullPolicy: IfNotPresent
 
   resources:
@@ -221,6 +230,7 @@ classification:
   flagOverridePiiNer: true
   replicaCount: 1
   image:
+    repository: penguintechinc/waddleai/classification
     tag: alpha-latest
     pullPolicy: Always
   tls:

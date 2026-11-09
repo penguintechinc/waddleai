@@ -193,12 +193,7 @@ Management health: http://localhost:8001/healthz  (also /readyz)
 
 ### Full Stack via Local Kubernetes
 
-For testing against a real cluster instead of directly-run processes, this repo ships a MicroK8s-based alpha deploy script:
-
-```bash
-./scripts/deploy-alpha.sh          # builds proxy/management/webui images, imports into MicroK8s, helm upgrade --install's the alpha release
-./scripts/deploy-alpha.sh --help   # all options: --skip-build, --service, --dry-run, --rollback
-```
+For testing against a real cluster, alpha is CI + ArgoCD (`.github/workflows/alpha-build.yml` → ghcr.io → dal2alpha); `scripts/deploy-alpha.sh` is retired and fails loudly. See `docs/docs-site/docs/deployment/kubernetes.md`.
 
 It requires a `local-alpha` kubectl context pointing at a running MicroK8s (or Docker Desktop Kubernetes) cluster — see the `deploying-app` skill for cluster setup. Under the hood it runs `helm upgrade --install waddleai k8s/helm/waddleai --kube-context local-alpha --namespace waddleai --create-namespace --values k8s/helm/waddleai/values-alpha.yaml`. The Helm chart at `k8s/helm/waddleai` is the only supported deployment path for every environment — it's what `./scripts/deploy-beta.sh` deploys to the shared beta cluster too.
 

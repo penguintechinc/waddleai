@@ -469,8 +469,8 @@ Full variable list and defaults: `services/management/app/config.py`,
 
 Every environment deploys via the Helm chart at `k8s/helm/waddleai` — see
 [Release Pipeline / CI Image Tags](#release-pipeline--ci-image-tags) above and
-`docs/docs-site/docs/deployment/kubernetes.md` for the full procedure. Local multi-service
-runs go through `./scripts/deploy-alpha.sh` against a MicroK8s/Docker Desktop cluster;
+`docs/docs-site/docs/deployment/kubernetes.md` for the full procedure. Alpha is CI-built
+(`alpha-build.yml`, `dal2-alpha` runner → ghcr.io) and ArgoCD-deployed to `dal2alpha`;
 there is no Docker Compose path.
 
 ## Health Monitoring

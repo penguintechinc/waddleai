@@ -1,0 +1,310 @@
+name: Alpha Build (dal2alpha)
+
+# Alpha tier: CI builds amd64 images on the dal2alpha org runner group and
+# pushes them to ghcr.io/penguintechinc/waddleai/<service>:alpha-<epoch64>.
+# ArgoCD (separate change) deploys them to dal2alpha. amd64 only (owner directive).
+# Service/Dockerfile knowledge mirrors build-platform in docker-build.yml -- keep
+# the two matrices in sync when a service is added.
+
+on:
+  push:
+    branches: ['release/v*.X']
+  workflow_dispatch:
+
+# Self-hosted runner safety: never triggered by pull_request/pull_request_target,
+# so fork code can never reach the dal2alpha runner. Jobs also assert the event.
+permissions:
+  contents: read
+
+concurrency:
+  group: alpha-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  prepare:
+    name: Compute alpha tag
+    runs-on:
+      group: dal2alpha
+    if: github.repository == 'penguintechinc/waddleai' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/heads/release/v')
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Compute alpha-<epoch64> tag
+        id: tag
+        run: |
+          set -euo pipefail
+          epoch="$(date +%s)"
+          [[ "$epoch" =~ ^[0-9]+$ ]] || { echo "::error::bad epoch '$epoch'"; exit 1; }
+          echo "tag=alpha-${epoch}" >> "$GITHUB_OUTPUT"
+
+  build-core:
+    name: Build ${{ matrix.service }} (amd64)
+    needs: prepare
+    if: startsWith(github.ref, 'refs/heads/release/v')
+    runs-on:
+      group: dal2alpha
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: proxy
+            context: .
+            dockerfile: ./proxy/Dockerfile
+          - service: management
+            context: .
+            dockerfile: ./services/management/Dockerfile
+          - service: classification
+            context: .
+            dockerfile: ./services/classification/Dockerfile
+          - service: webui
+            context: ./services/webui
+            dockerfile: ./services/webui/Dockerfile
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Only the shared in-cluster buildkitd may be used; BUILDKIT_HOST comes from the
+      # runner env, so it is allowlisted rather than trusted. If buildkitd gains TLS,
+      # widen the regex deliberately. Cluster-side hardening TODO (buildkitd mTLS,
+      # CiliumNetworkPolicy, rootless): docs/docs-site/docs/deployment/kubernetes.md
+      - name: Resolve BuildKit endpoint
+        id: bk
+        env:
+          BK_CA: ${{ secrets.BUILDKIT_CA }}
+          BK_CERT: ${{ secrets.BUILDKIT_CERT }}
+          BK_KEY: ${{ secrets.BUILDKIT_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          host="${BUILDKIT_HOST:-}"
+          [ -n "$host" ] || { echo "::error::BUILDKIT_HOST is empty on this runner"; exit 1; }
+          [[ "$host" =~ ^tcp://buildkitd\.buildkit\.svc:1234$ ]] || { echo "::error::BUILDKIT_HOST is not the allowlisted buildkitd endpoint"; exit 1; }
+          echo "endpoint=${host}" >> "$GITHUB_OUTPUT"
+          # TODO(mTLS): cluster side is not set up yet (owner decision). Once buildkitd
+          # serves mTLS, add BUILDKIT_CA/CERT/KEY secrets and this activates itself.
+          if [ -n "$BK_CA" ] && [ -n "$BK_CERT" ] && [ -n "$BK_KEY" ]; then
+            d="$(mktemp -d "${RUNNER_TEMP}/buildkit-tls.XXXXXX")"
+            printf '%s\n' "$BK_CA" > "$d/ca.pem"
+            printf '%s\n' "$BK_CERT" > "$d/cert.pem"
+            printf '%s\n' "$BK_KEY" > "$d/key.pem"
+            chmod 600 "$d/ca.pem" "$d/cert.pem" "$d/key.pem"
+            echo "driveropts=cacert=$d/ca.pem,cert=$d/cert.pem,key=$d/key.pem" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::BuildKit client certs not provided: the build daemon is unauthenticated (see docs/docs-site/docs/deployment/kubernetes.md)"
+            echo "driveropts=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        with:
+          driver: remote
+          endpoint: ${{ steps.bk.outputs.endpoint }}
+          driver-opts: ${{ steps.bk.outputs.driveropts }}
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # provenance/sbom disabled for the same buildx attestation-manifest reason
+      # documented in docker-build.yml. alpha-latest is a floating alpha-only
+      # convenience tag (mutable tags are permitted at alpha); alpha-<epoch64> is
+      # the immutable-by-convention tag ArgoCD should pin.
+      - name: Build and push ${{ matrix.service }}
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:${{ needs.prepare.outputs.tag }}
+            ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}:alpha-latest
+          cache-from: type=gha,scope=alpha-${{ matrix.service }}
+          cache-to: type=gha,scope=alpha-${{ matrix.service }},mode=max
+          build-args: |
+            VCS_REF=${{ github.sha }}
+
+      - name: Record pushed image
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.service }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::empty digest for ${REF}"; exit 1; }
+          echo "- \`${REF}:${TAG}\` (${DIGEST})" >> "$GITHUB_STEP_SUMMARY"
+
+  # GPU images are very large (tens of GB) but build on the remote buildkitd pod
+  # (buildkit/buildkitd on dal2alpha), not on the runner, so no runner-disk gate.
+  # They build normally and fail the run if they really fail.
+  build-gpu:
+    name: Build ${{ matrix.name }} (amd64, GPU)
+    needs: prepare
+    if: startsWith(github.ref, 'refs/heads/release/v')
+    runs-on:
+      group: dal2alpha
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: vllm-ray-cuda
+            repo: vllm-ray-cuda
+            context: ./images/vllm-ray-cuda
+            dockerfile: ./images/vllm-ray-cuda/Dockerfile
+            target: ''
+            suffix: ''
+          - name: vllm-ray-rocm
+            repo: vllm-ray-rocm
+            context: ./images/vllm-ray-rocm
+            dockerfile: ./images/vllm-ray-rocm/Dockerfile
+            target: ''
+            suffix: ''
+          - name: vllm-ray-xpu
+            repo: vllm-ray-xpu
+            context: ./images/vllm-ray-xpu
+            dockerfile: ./images/vllm-ray-xpu/Dockerfile
+            target: ''
+            suffix: ''
+          - name: llamacpp-rpc-cuda
+            repo: llamacpp-rpc
+            context: ./services/llamacpp-rpc
+            dockerfile: ./services/llamacpp-rpc/Dockerfile
+            target: runtime-cuda
+            suffix: -cuda
+          - name: llamacpp-rpc-rocm
+            repo: llamacpp-rpc
+            context: ./services/llamacpp-rpc
+            dockerfile: ./services/llamacpp-rpc/Dockerfile
+            target: runtime-rocm
+            suffix: -rocm
+          - name: llamacpp-rpc-sycl
+            repo: llamacpp-rpc
+            context: ./services/llamacpp-rpc
+            dockerfile: ./services/llamacpp-rpc/Dockerfile
+            target: runtime-sycl
+            suffix: -sycl
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read pinned llama.cpp commit
+        if: matrix.repo == 'llamacpp-rpc'
+        id: commit
+        run: |
+          set -euo pipefail
+          sha="$(tr -d '[:space:]' < services/llamacpp-rpc/LLAMACPP_COMMIT)"
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::LLAMACPP_COMMIT is not a 40-hex sha"; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # Only the shared in-cluster buildkitd may be used; BUILDKIT_HOST comes from the
+      # runner env, so it is allowlisted rather than trusted. If buildkitd gains TLS,
+      # widen the regex deliberately. Cluster-side hardening TODO (buildkitd mTLS,
+      # CiliumNetworkPolicy, rootless): docs/docs-site/docs/deployment/kubernetes.md
+      - name: Resolve BuildKit endpoint
+        id: bk
+        env:
+          BK_CA: ${{ secrets.BUILDKIT_CA }}
+          BK_CERT: ${{ secrets.BUILDKIT_CERT }}
+          BK_KEY: ${{ secrets.BUILDKIT_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          host="${BUILDKIT_HOST:-}"
+          [ -n "$host" ] || { echo "::error::BUILDKIT_HOST is empty on this runner"; exit 1; }
+          [[ "$host" =~ ^tcp://buildkitd\.buildkit\.svc:1234$ ]] || { echo "::error::BUILDKIT_HOST is not the allowlisted buildkitd endpoint"; exit 1; }
+          echo "endpoint=${host}" >> "$GITHUB_OUTPUT"
+          # TODO(mTLS): cluster side is not set up yet (owner decision). Once buildkitd
+          # serves mTLS, add BUILDKIT_CA/CERT/KEY secrets and this activates itself.
+          if [ -n "$BK_CA" ] && [ -n "$BK_CERT" ] && [ -n "$BK_KEY" ]; then
+            d="$(mktemp -d "${RUNNER_TEMP}/buildkit-tls.XXXXXX")"
+            printf '%s\n' "$BK_CA" > "$d/ca.pem"
+            printf '%s\n' "$BK_CERT" > "$d/cert.pem"
+            printf '%s\n' "$BK_KEY" > "$d/key.pem"
+            chmod 600 "$d/ca.pem" "$d/cert.pem" "$d/key.pem"
+            echo "driveropts=cacert=$d/ca.pem,cert=$d/cert.pem,key=$d/key.pem" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::BuildKit client certs not provided: the build daemon is unauthenticated (see docs/docs-site/docs/deployment/kubernetes.md)"
+            echo "driveropts=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        with:
+          driver: remote
+          endpoint: ${{ steps.bk.outputs.endpoint }}
+          driver-opts: ${{ steps.bk.outputs.driveropts }}
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.name }}
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
+          build-args: ${{ matrix.repo == 'llamacpp-rpc' && format('LLAMACPP_COMMIT={0}', steps.commit.outputs.sha) || '' }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.repo }}:${{ needs.prepare.outputs.tag }}${{ matrix.suffix }}
+          cache-from: type=gha,scope=alpha-${{ matrix.name }}
+          cache-to: type=gha,scope=alpha-${{ matrix.name }},mode=max
+
+      - name: Record pushed image
+        env:
+          REF: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.repo }}:${{ needs.prepare.outputs.tag }}${{ matrix.suffix }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          [ -n "$DIGEST" ] || { echo "::error::empty digest for ${REF}"; exit 1; }
+          echo "- \`${REF}\` (${DIGEST})" >> "$GITHUB_STEP_SUMMARY"
+
+  summary:
+    name: Alpha build summary
+    needs: [prepare, build-core, build-gpu]
+    if: always() && startsWith(github.ref, 'refs/heads/release/v')
+    runs-on:
+      group: dal2alpha
+    steps:
+      - name: Report results
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          CORE: ${{ needs.build-core.result }}
+          GPU: ${{ needs.build-gpu.result }}
+        run: |
+          set -euo pipefail
+          echo "tag=${TAG} core=${CORE} gpu=${GPU}"
+          {
+            echo "## Alpha build ${TAG}"
+            echo "- core (proxy, management, classification, webui): ${CORE}"
+            echo "- gpu (vllm-ray, llamacpp-rpc): ${GPU}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ "$CORE" = "success" ] || { echo "::error::core image build result=${CORE}"; exit 1; }
+          [ "$GPU" = "success" ] || { echo "::error::gpu image build result=${GPU}"; exit 1; }

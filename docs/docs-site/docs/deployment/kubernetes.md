@@ -52,8 +52,8 @@ and cluster:
 
 | Tier | Source | Tag | Cluster / deploy |
 |---|---|---|---|
-| Pre-alpha | `feature/` `fix/` `chore/` `hotfix/` `docs/` `refactor/` branches | build-only in CI (compile test, not pushed); local builds → `localhost:32000` | Local K8s (MicroK8s / Docker Desktop), `./scripts/deploy-alpha.sh`, destroy + fresh |
-| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` | Local K8s today (`dal3` planned), destroy + fresh |
+| Pre-alpha | `feature/` `fix/` `chore/` `hotfix/` `docs/` `refactor/` branches | build-only in CI (compile test, not pushed); local builds only | Local K8s (Docker Desktop / kind), manual Helm, destroy + fresh |
+| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` (CI-built on `dal2alpha` org runner group → ghcr.io) | `dal2alpha` via ArgoCD, destroy + fresh |
 | Beta | Merge to `main` | `beta-<epoch64>` | `dal2-beta` context, GitHub Actions, destroy + fresh — `./scripts/deploy-beta.sh --tag beta-<epoch64>` |
 | Gamma | GitHub release flagged pre-release | `gamma-<epoch64>` | DigitalOcean (context TBD), **upgrade in place** — the only upgrade-path test, mandatory before prod |
 | Prod | GitHub release (non-pre-release), **v1.x+ only** | `v{Major}.{Minor}.{Patch}` | DigitalOcean, separate cluster (not built yet), upgrade in place |
@@ -81,24 +81,35 @@ deploy target yet).
     ~1 week. `./scripts/deploy-beta.sh` will fail to reach the `dal2-beta` context
     until then.
 
-## Quick install (alpha / local MicroK8s)
+## Alpha deploy flow (CI + ArgoCD)
 
-```bash
-# Build service images and import them into MicroK8s, then helm upgrade --install
-./scripts/deploy-alpha.sh
+Alpha is no longer deployed from a laptop. The old penguin-frame MicroK8s cluster and
+its `localhost:32000` registry are retired (`scripts/deploy-alpha.sh` now fails loudly).
 
-# Or drive Helm directly:
-helm upgrade --install waddleai k8s/helm/waddleai \
-  --kube-context local-alpha \
-  --namespace waddleai \
-  --create-namespace \
-  --values k8s/helm/waddleai/values-alpha.yaml
+```
+push to release/v*.X  (or workflow_dispatch)
+  -> .github/workflows/alpha-build.yml  (runner: dal2alpha org runner group)
+  -> ghcr.io/penguintechinc/waddleai/<svc>:alpha-<epoch64>   (+ floating :alpha-latest)
+  -> ArgoCD syncs k8s/helm/waddleai with values-alpha.yaml to dal2alpha
 ```
 
-`values-alpha.yaml` sets `image.pullPolicy: Never` for management/proxy/webui — images
-must already exist in MicroK8s' local image store (`scripts/deploy-alpha.sh` handles
-the `docker build` + `microk8s ctr image import` step; use `--skip-build` to skip it
-and reuse whatever is already imported).
+- Services built (amd64 only): `proxy`, `management`, `classification`, `webui`; GPU images
+  (`vllm-ray-{cuda,rocm,xpu}`, `llamacpp-rpc` cuda/rocm/sycl) build in the same run.
+- The runner pod has no Docker daemon: builds go to the remote BuildKit service `buildkitd` in
+  namespace `buildkit` on dal2alpha (`BUILDKIT_HOST`, buildx `driver: remote`); the run fails
+  loudly if `BUILDKIT_HOST` is unset.
+- Hardening follow-ups (cluster side, not yet done):
+
+  - **buildkitd mTLS**: `buildkitd` on `dal2alpha` currently listens on unauthenticated `tcp://:1234`. Enable TLS with client-cert verification, then add repo secrets `BUILDKIT_CA`, `BUILDKIT_CERT`, `BUILDKIT_KEY`; `alpha-build.yml` already passes them to the buildx remote driver (`cacert`/`cert`/`key`) and warns while they are absent.
+  - **CiliumNetworkPolicy**: allow ingress to `buildkitd:1234` only from `github-runners` pods; default-deny everything else in the `buildkit` namespace.
+  - **Rootless buildkitd**: run `buildkitd` as the rootless image (non-root `USER`, `runAsNonRoot: true`) so a compromised build cannot reach the node.
+  The workflow only runs on `release/v*` refs and rejects any `BUILDKIT_HOST` other than `tcp://buildkitd.buildkit.svc:1234`.
+- The workflow never runs on pull requests (self-hosted runner safety) and uses `GITHUB_TOKEN` only.
+- `values-alpha.yaml` pulls from `ghcr.io` (public packages, no pull secret). Tags default to
+  `alpha-latest`; ArgoCD pins a build by overriding `<svc>.image.tag` with `alpha-<epoch64>` (the
+  tag is printed in the run summary).
+- Manual Helm against dal2alpha (debugging only):
+  `helm upgrade --install waddleai k8s/helm/waddleai --kube-context dal2alpha --namespace waddleai --create-namespace --values k8s/helm/waddleai/values-alpha.yaml`
 
 ## Configuration
 

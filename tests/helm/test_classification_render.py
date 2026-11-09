@@ -129,7 +129,9 @@ def test_values_in_all_four_envs_define_image_and_resources(values_file):
     if values_file == "values-production.yaml":
         assert "@sha256:" in c["image"], "production must pin by digest"
     elif values_file == "values-alpha.yaml":
-        assert c["image"].endswith(":alpha-latest") and c["image"].startswith("localhost:32000/")
+        assert c["image"].endswith(":alpha-latest") and c["image"].startswith(
+            "ghcr.io/penguintechinc/waddleai/"
+        )
     else:
         assert ":latest" not in c["image"]
     res = c["resources"]
