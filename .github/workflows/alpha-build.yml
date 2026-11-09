@@ -1,6 +1,6 @@
 name: Alpha Build (dal2alpha)
 
-# Alpha tier: CI builds amd64 images on the self-hosted dal2alpha ARC runner and
+# Alpha tier: CI builds amd64 images on the dal2alpha org runner group and
 # pushes them to ghcr.io/penguintechinc/waddleai/<service>:alpha-<epoch64>.
 # ArgoCD (separate change) deploys them to dal2alpha. amd64 only (owner directive).
 # Service/Dockerfile knowledge mirrors build-platform in docker-build.yml -- keep
@@ -22,12 +22,12 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  RUNNER_LABEL: dal2-alpha
 
 jobs:
   prepare:
     name: Compute alpha tag
-    runs-on: dal2-alpha
+    runs-on:
+      group: dal2alpha
     if: github.repository == 'penguintechinc/waddleai' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/heads/release/v')
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
@@ -44,7 +44,8 @@ jobs:
     name: Build ${{ matrix.service }} (amd64)
     needs: prepare
     if: startsWith(github.ref, 'refs/heads/release/v')
-    runs-on: dal2-alpha
+    runs-on:
+      group: dal2alpha
     permissions:
       contents: read
       packages: write
@@ -154,7 +155,8 @@ jobs:
     name: Build ${{ matrix.name }} (amd64, GPU)
     needs: prepare
     if: startsWith(github.ref, 'refs/heads/release/v')
-    runs-on: dal2-alpha
+    runs-on:
+      group: dal2alpha
     timeout-minutes: 360
     permissions:
       contents: read
@@ -288,7 +290,8 @@ jobs:
     name: Alpha build summary
     needs: [prepare, build-core, build-gpu]
     if: always() && startsWith(github.ref, 'refs/heads/release/v')
-    runs-on: dal2-alpha
+    runs-on:
+      group: dal2alpha
     steps:
       - name: Report results
         env:

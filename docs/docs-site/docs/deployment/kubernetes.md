@@ -53,7 +53,7 @@ and cluster:
 | Tier | Source | Tag | Cluster / deploy |
 |---|---|---|---|
 | Pre-alpha | `feature/` `fix/` `chore/` `hotfix/` `docs/` `refactor/` branches | build-only in CI (compile test, not pushed); local builds only | Local K8s (Docker Desktop / kind), manual Helm, destroy + fresh |
-| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` (CI-built on `dal2-alpha` runner → ghcr.io) | `dal2alpha` via ArgoCD, destroy + fresh |
+| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` (CI-built on `dal2alpha` org runner group → ghcr.io) | `dal2alpha` via ArgoCD, destroy + fresh |
 | Beta | Merge to `main` | `beta-<epoch64>` | `dal2-beta` context, GitHub Actions, destroy + fresh — `./scripts/deploy-beta.sh --tag beta-<epoch64>` |
 | Gamma | GitHub release flagged pre-release | `gamma-<epoch64>` | DigitalOcean (context TBD), **upgrade in place** — the only upgrade-path test, mandatory before prod |
 | Prod | GitHub release (non-pre-release), **v1.x+ only** | `v{Major}.{Minor}.{Patch}` | DigitalOcean, separate cluster (not built yet), upgrade in place |
@@ -88,7 +88,7 @@ its `localhost:32000` registry are retired (`scripts/deploy-alpha.sh` now fails 
 
 ```
 push to release/v*.X  (or workflow_dispatch)
-  -> .github/workflows/alpha-build.yml  (runner: dal2-alpha, ARC scale set, ns github-runners, ctx dal2alpha)
+  -> .github/workflows/alpha-build.yml  (runner: dal2alpha org runner group)
   -> ghcr.io/penguintechinc/waddleai/<svc>:alpha-<epoch64>   (+ floating :alpha-latest)
   -> ArgoCD syncs k8s/helm/waddleai with values-alpha.yaml to dal2alpha
 ```

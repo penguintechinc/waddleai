@@ -278,7 +278,7 @@ expensive model, which is backwards.
 
 The Helm chart at `k8s/helm/waddleai` is the only supported deployment path for every environment (alpha, beta, production). Full walkthrough, values-file reference, and ingress/TLS setup: [Kubernetes Deployment](../deployment/kubernetes.md).
 
-Alpha (`release/v*.X`) is CI + ArgoCD: `.github/workflows/alpha-build.yml` builds amd64 images on the `dal2-alpha` runner and pushes `ghcr.io/penguintechinc/waddleai/<svc>:alpha-<epoch64>`; ArgoCD deploys them to `dal2alpha` with `values-alpha.yaml`. `scripts/deploy-alpha.sh` is retired and fails loudly. For a throwaway local cluster (Docker Desktop / kind), run `helm upgrade --install waddleai k8s/helm/waddleai --values k8s/helm/waddleai/values-alpha.yaml` against images you built yourself (override `<svc>.image.*`).
+Alpha (`release/v*.X`) is CI + ArgoCD: `.github/workflows/alpha-build.yml` builds amd64 images on the `dal2alpha` org runner group and pushes `ghcr.io/penguintechinc/waddleai/<svc>:alpha-<epoch64>`; ArgoCD deploys them to `dal2alpha` with `values-alpha.yaml`. `scripts/deploy-alpha.sh` is retired and fails loudly. For a throwaway local cluster (Docker Desktop / kind), run `helm upgrade --install waddleai k8s/helm/waddleai --values k8s/helm/waddleai/values-alpha.yaml` against images you built yourself (override `<svc>.image.*`).
 
 Alpha build hardening follow-ups (cluster side, not yet done):
 
