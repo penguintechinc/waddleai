@@ -78,4 +78,16 @@ Continuation of 01-amendments; entries here are equally authoritative.
 #       No served-name local rate rows were ever shipped, so no cleanup migration.
 #   AM14 llama.cpp deployments are created through the GPU Fleet wizard's "Engine" choice (Plan F F7), so the shared ChargebackStep covers llama.cpp pricing in the UI;
 #       the legacy API-only llama.cpp create path (C2b) keeps accepting the price fields. Ollama pricing UI lives in pages/OllamaDeployments.jsx (D4b).
+#   AM28 (owner 2026-11-09) Kata sandbox for self-hosted model + MCP pods. Split by workload:
+#       | Workload | Runtime | Controls |
+#       | proxy, management, classification, webui, other data/control-plane pods | runc (unchanged) | Tetragon TracingPolicy binary allowlist (unchanged) |
+#       | in-cluster model pods: Ollama, vLLM-Ray head+workers, llama.cpp single + RPC head/workers; in-cluster MCP server pods | runtimeClassName: kata-clh | Kata agent policy + read-only rootfs/stateless (below) |
+#       Helm: per-engine `<engine>.runtimeClassName`, default `kata-clh`, empty = runc (dev clusters without Kata); fleet-manager-generated K8s objects (vLLM/llama.cpp/Ollama/MCP pods created by management) read the same setting from config; Helm render tests assert it.
+#       Kata workloads only (not required of runc data-plane pods): agent policy (Rego from `genpolicy`, annotation io.katacontainers.config.agent.policy) denies ExecProcessRequest (no kubectl exec) and pins image digest, command/args, env, mounts
+#         (cluster prereq: Kata 3.x with enable_annotations permitting that annotation); readOnlyRootFilesystem: true + stateless — scratch only via emptyDir (/tmp, model cache as emptyDir or read-only PVC/OCI model volume), runAsNonRoot, drop ALL caps, no shell in image where feasible.
+#       Retained: CiliumNetworkPolicy (host-side, applies to Kata pods unchanged); NEW host Tetragon policy on Kata host processes (cloud-hypervisor, virtiofsd, containerd-shim-kata-v2) for escape detection.
+#         Host Tetragon cannot see inside the guest — documented limitation, not a gap to fix; in-guest Tetragon explicitly deferred.
+#       GPU: GPU model pods under kata-clh need VFIO passthrough (NVIDIA GPU Operator sandbox workloads); validate on dal2beta (E10-E12). Alpha validation = CPU Ollama under kata-clh.
+#       Placement: per-pod VM memory overhead (RuntimeClass overhead) MUST be included in fleet placement/resource accounting (Plan B placement + Plan C quota).
+#       Open prereq: confirm dal2alpha Kata version / agent-policy annotation enabled / guest seccomp (checked separately).
 ```
