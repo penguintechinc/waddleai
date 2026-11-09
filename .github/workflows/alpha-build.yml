@@ -69,8 +69,18 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Resolve BuildKit endpoint
+        id: bk
+        run: |
+          set -euo pipefail
+          [ -n "${BUILDKIT_HOST:-}" ] || { echo "::error::BUILDKIT_HOST is empty on this runner (expected tcp://buildkitd.buildkit.svc:1234)"; exit 1; }
+          echo "endpoint=${BUILDKIT_HOST}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        with:
+          driver: remote
+          endpoint: ${{ steps.bk.outputs.endpoint }}
 
       - name: Log in to ghcr.io
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -111,22 +121,17 @@ jobs:
           [ -n "$DIGEST" ] || { echo "::error::empty digest for ${REF}"; exit 1; }
           echo "- \`${REF}:${TAG}\` (${DIGEST})" >> "$GITHUB_STEP_SUMMARY"
 
-  # GPU images are very large (tens of GB). ALLOWED TO SKIP when the dal2alpha
-  # runner lacks disk -- the skip is announced via ::warning:: and the job
-  # summary, and the final `summary` job restates it. A genuine build failure
-  # after the disk check passed is NOT swallowed: it shows as a failed matrix
-  # leg, and `summary` reports it loudly.
+  # GPU images are very large (tens of GB) but build on the remote buildkitd pod
+  # (buildkit/buildkitd on dal2alpha), not on the runner, so no runner-disk gate.
+  # They build normally and fail the run if they really fail.
   build-gpu:
     name: Build ${{ matrix.name }} (amd64, GPU)
     needs: prepare
     runs-on: dal2-alpha
-    continue-on-error: true
     timeout-minutes: 360
     permissions:
       contents: read
       packages: write
-    env:
-      MIN_FREE_GB: "80"
     strategy:
       fail-fast: false
       matrix:
@@ -168,33 +173,13 @@ jobs:
             target: runtime-sycl
             suffix: -sycl
     steps:
-      - name: Check runner disk
-        id: disk
-        run: |
-          set -euo pipefail
-          free_gb="$(df -P -BG --output=avail /var/lib/docker 2>/dev/null | tail -n1 | tr -dc '0-9' || true)"
-          if [ -z "$free_gb" ]; then
-            free_gb="$(df -P -BG --output=avail / | tail -n1 | tr -dc '0-9')"
-          fi
-          [ -n "$free_gb" ] || { echo "::error::could not determine free disk"; exit 1; }
-          echo "free=${free_gb}G required=${MIN_FREE_GB}G"
-          if [ "$free_gb" -lt "$MIN_FREE_GB" ]; then
-            msg="SKIPPING ${{ matrix.name }}: only ${free_gb}G free on dal2alpha runner, need ${MIN_FREE_GB}G"
-            echo "::warning title=GPU image skipped (disk)::${msg}"
-            echo "### :warning: ${msg}" >> "$GITHUB_STEP_SUMMARY"
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Checkout code
-        if: steps.disk.outputs.skip != 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
 
       - name: Read pinned llama.cpp commit
-        if: steps.disk.outputs.skip != 'true' && matrix.repo == 'llamacpp-rpc'
+        if: matrix.repo == 'llamacpp-rpc'
         id: commit
         run: |
           set -euo pipefail
@@ -202,12 +187,20 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::LLAMACPP_COMMIT is not a 40-hex sha"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve BuildKit endpoint
+        id: bk
+        run: |
+          set -euo pipefail
+          [ -n "${BUILDKIT_HOST:-}" ] || { echo "::error::BUILDKIT_HOST is empty on this runner (expected tcp://buildkitd.buildkit.svc:1234)"; exit 1; }
+          echo "endpoint=${BUILDKIT_HOST}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
-        if: steps.disk.outputs.skip != 'true'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
+        with:
+          driver: remote
+          endpoint: ${{ steps.bk.outputs.endpoint }}
 
       - name: Log in to ghcr.io
-        if: steps.disk.outputs.skip != 'true'
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
@@ -215,7 +208,6 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ${{ matrix.name }}
-        if: steps.disk.outputs.skip != 'true'
         id: build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a  # v7.3.0
         with:
@@ -232,7 +224,6 @@ jobs:
           cache-to: type=gha,scope=alpha-${{ matrix.name }},mode=max
 
       - name: Record pushed image
-        if: steps.disk.outputs.skip != 'true'
         env:
           REF: ${{ env.REGISTRY }}/${{ github.repository }}/${{ matrix.repo }}:${{ needs.prepare.outputs.tag }}${{ matrix.suffix }}
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -260,7 +251,5 @@ jobs:
             echo "- core (proxy, management, classification, webui): ${CORE}"
             echo "- gpu (vllm-ray, llamacpp-rpc): ${GPU}"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$GPU" != "success" ]; then
-            echo "::warning title=GPU images not fully built::build-gpu result=${GPU} (skipped for disk or failed) -- see per-leg warnings"
-          fi
           [ "$CORE" = "success" ] || { echo "::error::core image build result=${CORE}"; exit 1; }
+          [ "$GPU" = "success" ] || { echo "::error::gpu image build result=${GPU}"; exit 1; }

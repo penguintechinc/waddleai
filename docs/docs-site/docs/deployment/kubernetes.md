@@ -94,8 +94,10 @@ push to release/v*.X  (or workflow_dispatch)
 ```
 
 - Services built (amd64 only): `proxy`, `management`, `classification`, `webui`; GPU images
-  (`vllm-ray-{cuda,rocm,xpu}`, `llamacpp-rpc` cuda/rocm/sycl) build best-effort and are skipped
-  with a loud warning if the runner has under 80G free disk.
+  (`vllm-ray-{cuda,rocm,xpu}`, `llamacpp-rpc` cuda/rocm/sycl) build in the same run.
+- The runner pod has no Docker daemon: builds go to the remote BuildKit service `buildkitd` in
+  namespace `buildkit` on dal2alpha (`BUILDKIT_HOST`, buildx `driver: remote`); the run fails
+  loudly if `BUILDKIT_HOST` is unset.
 - The workflow never runs on pull requests (self-hosted runner safety) and uses `GITHUB_TOKEN` only.
 - `values-alpha.yaml` pulls from `ghcr.io` (public packages, no pull secret). Tags default to
   `alpha-latest`; ArgoCD pins a build by overriding `<svc>.image.tag` with `alpha-<epoch64>` (the
