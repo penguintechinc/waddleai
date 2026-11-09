@@ -98,6 +98,12 @@ push to release/v*.X  (or workflow_dispatch)
 - The runner pod has no Docker daemon: builds go to the remote BuildKit service `buildkitd` in
   namespace `buildkit` on dal2alpha (`BUILDKIT_HOST`, buildx `driver: remote`); the run fails
   loudly if `BUILDKIT_HOST` is unset.
+- Hardening follow-ups (cluster side, not yet done):
+
+  - **buildkitd mTLS**: `buildkitd` on `dal2alpha` currently listens on unauthenticated `tcp://:1234`. Enable TLS with client-cert verification, then add repo secrets `BUILDKIT_CA`, `BUILDKIT_CERT`, `BUILDKIT_KEY`; `alpha-build.yml` already passes them to the buildx remote driver (`cacert`/`cert`/`key`) and warns while they are absent.
+  - **CiliumNetworkPolicy**: allow ingress to `buildkitd:1234` only from `github-runners` pods; default-deny everything else in the `buildkit` namespace.
+  - **Rootless buildkitd**: run `buildkitd` as the rootless image (non-root `USER`, `runAsNonRoot: true`) so a compromised build cannot reach the node.
+  The workflow only runs on `release/v*` refs and rejects any `BUILDKIT_HOST` other than `tcp://buildkitd.buildkit.svc:1234`.
 - The workflow never runs on pull requests (self-hosted runner safety) and uses `GITHUB_TOKEN` only.
 - `values-alpha.yaml` pulls from `ghcr.io` (public packages, no pull secret). Tags default to
   `alpha-latest`; ArgoCD pins a build by overriding `<svc>.image.tag` with `alpha-<epoch64>` (the

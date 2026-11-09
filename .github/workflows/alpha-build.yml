@@ -28,7 +28,7 @@ jobs:
   prepare:
     name: Compute alpha tag
     runs-on: dal2-alpha
-    if: github.repository == 'penguintechinc/waddleai' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.repository == 'penguintechinc/waddleai' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && startsWith(github.ref, 'refs/heads/release/v')
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
@@ -43,6 +43,7 @@ jobs:
   build-core:
     name: Build ${{ matrix.service }} (amd64)
     needs: prepare
+    if: startsWith(github.ref, 'refs/heads/release/v')
     runs-on: dal2-alpha
     permissions:
       contents: read
@@ -69,18 +70,43 @@ jobs:
         with:
           persist-credentials: false
 
+      # Only the shared in-cluster buildkitd may be used; BUILDKIT_HOST comes from the
+      # runner env, so it is allowlisted rather than trusted. If buildkitd gains TLS,
+      # widen the regex deliberately. Cluster-side hardening TODO (buildkitd mTLS,
+      # CiliumNetworkPolicy, rootless): docs/docs-site/docs/deployment/kubernetes.md
       - name: Resolve BuildKit endpoint
         id: bk
+        env:
+          BK_CA: ${{ secrets.BUILDKIT_CA }}
+          BK_CERT: ${{ secrets.BUILDKIT_CERT }}
+          BK_KEY: ${{ secrets.BUILDKIT_KEY }}
         run: |
           set -euo pipefail
-          [ -n "${BUILDKIT_HOST:-}" ] || { echo "::error::BUILDKIT_HOST is empty on this runner (expected tcp://buildkitd.buildkit.svc:1234)"; exit 1; }
-          echo "endpoint=${BUILDKIT_HOST}" >> "$GITHUB_OUTPUT"
+          umask 077
+          host="${BUILDKIT_HOST:-}"
+          [ -n "$host" ] || { echo "::error::BUILDKIT_HOST is empty on this runner"; exit 1; }
+          [[ "$host" =~ ^tcp://buildkitd\.buildkit\.svc:1234$ ]] || { echo "::error::BUILDKIT_HOST is not the allowlisted buildkitd endpoint"; exit 1; }
+          echo "endpoint=${host}" >> "$GITHUB_OUTPUT"
+          # TODO(mTLS): cluster side is not set up yet (owner decision). Once buildkitd
+          # serves mTLS, add BUILDKIT_CA/CERT/KEY secrets and this activates itself.
+          if [ -n "$BK_CA" ] && [ -n "$BK_CERT" ] && [ -n "$BK_KEY" ]; then
+            d="$(mktemp -d "${RUNNER_TEMP}/buildkit-tls.XXXXXX")"
+            printf '%s\n' "$BK_CA" > "$d/ca.pem"
+            printf '%s\n' "$BK_CERT" > "$d/cert.pem"
+            printf '%s\n' "$BK_KEY" > "$d/key.pem"
+            chmod 600 "$d/ca.pem" "$d/cert.pem" "$d/key.pem"
+            echo "driveropts=cacert=$d/ca.pem,cert=$d/cert.pem,key=$d/key.pem" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::BuildKit client certs not provided: the build daemon is unauthenticated (see docs/docs-site/docs/deployment/kubernetes.md)"
+            echo "driveropts=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
         with:
           driver: remote
           endpoint: ${{ steps.bk.outputs.endpoint }}
+          driver-opts: ${{ steps.bk.outputs.driveropts }}
 
       - name: Log in to ghcr.io
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -127,6 +153,7 @@ jobs:
   build-gpu:
     name: Build ${{ matrix.name }} (amd64, GPU)
     needs: prepare
+    if: startsWith(github.ref, 'refs/heads/release/v')
     runs-on: dal2-alpha
     timeout-minutes: 360
     permissions:
@@ -187,18 +214,43 @@ jobs:
           [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::LLAMACPP_COMMIT is not a 40-hex sha"; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
+      # Only the shared in-cluster buildkitd may be used; BUILDKIT_HOST comes from the
+      # runner env, so it is allowlisted rather than trusted. If buildkitd gains TLS,
+      # widen the regex deliberately. Cluster-side hardening TODO (buildkitd mTLS,
+      # CiliumNetworkPolicy, rootless): docs/docs-site/docs/deployment/kubernetes.md
       - name: Resolve BuildKit endpoint
         id: bk
+        env:
+          BK_CA: ${{ secrets.BUILDKIT_CA }}
+          BK_CERT: ${{ secrets.BUILDKIT_CERT }}
+          BK_KEY: ${{ secrets.BUILDKIT_KEY }}
         run: |
           set -euo pipefail
-          [ -n "${BUILDKIT_HOST:-}" ] || { echo "::error::BUILDKIT_HOST is empty on this runner (expected tcp://buildkitd.buildkit.svc:1234)"; exit 1; }
-          echo "endpoint=${BUILDKIT_HOST}" >> "$GITHUB_OUTPUT"
+          umask 077
+          host="${BUILDKIT_HOST:-}"
+          [ -n "$host" ] || { echo "::error::BUILDKIT_HOST is empty on this runner"; exit 1; }
+          [[ "$host" =~ ^tcp://buildkitd\.buildkit\.svc:1234$ ]] || { echo "::error::BUILDKIT_HOST is not the allowlisted buildkitd endpoint"; exit 1; }
+          echo "endpoint=${host}" >> "$GITHUB_OUTPUT"
+          # TODO(mTLS): cluster side is not set up yet (owner decision). Once buildkitd
+          # serves mTLS, add BUILDKIT_CA/CERT/KEY secrets and this activates itself.
+          if [ -n "$BK_CA" ] && [ -n "$BK_CERT" ] && [ -n "$BK_KEY" ]; then
+            d="$(mktemp -d "${RUNNER_TEMP}/buildkit-tls.XXXXXX")"
+            printf '%s\n' "$BK_CA" > "$d/ca.pem"
+            printf '%s\n' "$BK_CERT" > "$d/cert.pem"
+            printf '%s\n' "$BK_KEY" > "$d/key.pem"
+            chmod 600 "$d/ca.pem" "$d/cert.pem" "$d/key.pem"
+            echo "driveropts=cacert=$d/ca.pem,cert=$d/cert.pem,key=$d/key.pem" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::BuildKit client certs not provided: the build daemon is unauthenticated (see docs/docs-site/docs/deployment/kubernetes.md)"
+            echo "driveropts=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c  # v4.2.0
         with:
           driver: remote
           endpoint: ${{ steps.bk.outputs.endpoint }}
+          driver-opts: ${{ steps.bk.outputs.driveropts }}
 
       - name: Log in to ghcr.io
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f  # v4.6.0
@@ -235,7 +287,7 @@ jobs:
   summary:
     name: Alpha build summary
     needs: [prepare, build-core, build-gpu]
-    if: always()
+    if: always() && startsWith(github.ref, 'refs/heads/release/v')
     runs-on: dal2-alpha
     steps:
       - name: Report results

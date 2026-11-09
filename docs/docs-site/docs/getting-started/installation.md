@@ -280,6 +280,14 @@ The Helm chart at `k8s/helm/waddleai` is the only supported deployment path for 
 
 Alpha (`release/v*.X`) is CI + ArgoCD: `.github/workflows/alpha-build.yml` builds amd64 images on the `dal2-alpha` runner and pushes `ghcr.io/penguintechinc/waddleai/<svc>:alpha-<epoch64>`; ArgoCD deploys them to `dal2alpha` with `values-alpha.yaml`. `scripts/deploy-alpha.sh` is retired and fails loudly. For a throwaway local cluster (Docker Desktop / kind), run `helm upgrade --install waddleai k8s/helm/waddleai --values k8s/helm/waddleai/values-alpha.yaml` against images you built yourself (override `<svc>.image.*`).
 
+Alpha build hardening follow-ups (cluster side, not yet done):
+
+- **buildkitd mTLS**: `buildkitd` on `dal2alpha` currently listens on unauthenticated `tcp://:1234`. Enable TLS with client-cert verification, then add repo secrets `BUILDKIT_CA`, `BUILDKIT_CERT`, `BUILDKIT_KEY`; `alpha-build.yml` already passes them to the buildx remote driver (`cacert`/`cert`/`key`) and warns while they are absent.
+- **CiliumNetworkPolicy**: allow ingress to `buildkitd:1234` only from `github-runners` pods; default-deny everything else in the `buildkit` namespace.
+- **Rootless buildkitd**: run `buildkitd` as the rootless image (non-root `USER`, `runAsNonRoot: true`) so a compromised build cannot reach the node.
+
+The workflow only runs on `release/v*` refs and rejects any `BUILDKIT_HOST` other than `tcp://buildkitd.buildkit.svc:1234`.
+
 `./scripts/deploy-beta.sh` deploys the same chart with `values-beta.yaml` to the shared beta cluster (CI-built on merge to `main` — `ghcr.io/penguintechinc/waddleai/{proxy,management,webui}:beta-<epoch64>` images — never build beta/prod images locally). There is no `values-production.yaml` in this repo yet; production deployments start from `values.yaml` with an operator-supplied overlay — see [Kubernetes Deployment](../deployment/kubernetes.md) for the current guidance and the full five-tier release pipeline.
 
 ## Option B: Local development
