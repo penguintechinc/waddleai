@@ -100,8 +100,8 @@ WaddleAI ships three workflows under `.github/workflows/`: `docker-build.yml`,
 
 | Tier | Source | Tag |
 |------|--------|-----|
-| Pre-alpha | `feature/`/`fix/`/`chore/`/`hotfix/`/`docs/`/`refactor/` branches, PRs | build-only, not pushed (local builds → `localhost:32000`) |
-| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>-<arch>` |
+| Pre-alpha | `feature/`/`fix/`/`chore/`/`hotfix/`/`docs/`/`refactor/` branches, PRs | build-only, not pushed (local builds only) |
+| Alpha | `release/v{Major}.{Minor}.X` branches | `alpha-<epoch64>` (`alpha-build.yml`, `dal2-alpha` runner, amd64) |
 | Beta | `main` | `beta-<epoch64>-<arch>` |
 | Gamma | GitHub release flagged pre-release | `gamma-<epoch64>-<arch>` |
 | Prod | GitHub release, not pre-release (v1.x+ only) | `v{Major}.{Minor}.{Patch}-<arch>` |

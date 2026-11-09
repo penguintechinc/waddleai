@@ -278,17 +278,7 @@ expensive model, which is backwards.
 
 The Helm chart at `k8s/helm/waddleai` is the only supported deployment path for every environment (alpha, beta, production). Full walkthrough, values-file reference, and ingress/TLS setup: [Kubernetes Deployment](../deployment/kubernetes.md).
 
-Quick path for a local alpha cluster (MicroK8s or Docker Desktop Kubernetes, `local-alpha` kubectl context):
-
-```bash
-git clone https://github.com/penguintechinc/waddleai.git
-cd waddleai
-./scripts/deploy-alpha.sh   # builds proxy/management/webui images, loads them into the
-                             # cluster's local image store, then:
-                             # helm upgrade --install waddleai k8s/helm/waddleai \
-                             #   --kube-context local-alpha --namespace waddleai \
-                             #   --create-namespace --values k8s/helm/waddleai/values-alpha.yaml
-```
+Alpha (`release/v*.X`) is CI + ArgoCD: `.github/workflows/alpha-build.yml` builds amd64 images on the `dal2-alpha` runner and pushes `ghcr.io/penguintechinc/waddleai/<svc>:alpha-<epoch64>`; ArgoCD deploys them to `dal2alpha` with `values-alpha.yaml`. `scripts/deploy-alpha.sh` is retired and fails loudly. For a throwaway local cluster (Docker Desktop / kind), run `helm upgrade --install waddleai k8s/helm/waddleai --values k8s/helm/waddleai/values-alpha.yaml` against images you built yourself (override `<svc>.image.*`).
 
 `./scripts/deploy-beta.sh` deploys the same chart with `values-beta.yaml` to the shared beta cluster (CI-built on merge to `main` — `ghcr.io/penguintechinc/waddleai/{proxy,management,webui}:beta-<epoch64>` images — never build beta/prod images locally). There is no `values-production.yaml` in this repo yet; production deployments start from `values.yaml` with an operator-supplied overlay — see [Kubernetes Deployment](../deployment/kubernetes.md) for the current guidance and the full five-tier release pipeline.
 

@@ -261,7 +261,8 @@ clean:
 	find . -name "*.pyc" -delete 2>/dev/null || true
 
 deploy-dev:
-	@echo "Deploy to dev/alpha environment"
+	@echo "ERROR: alpha is CI (alpha-build.yml) + ArgoCD; see docs/docs-site/docs/deployment/kubernetes.md" >&2
+	@exit 1
 
 deploy-prod:
 	@echo "ERROR: deploy-prod is not implemented. See docs/docs-site/docs/deployment/kubernetes.md" >&2

@@ -41,7 +41,7 @@ jobs:
     # A real pgvector Postgres: the `db` crate's connection tests and the
     # entity drift gate (entities vs. the Alembic-migrated schema) need one, and
     # the whole workspace runs here so no test is ever skipped for lack of a DB.
-    # Image digest MUST stay in sync with scripts/deploy-alpha.sh PGVECTOR_SRC.
+    # Image digest MUST stay in sync with k8s/helm/waddleai/values-alpha.yaml postgres.image.digest.
     services:
       pgvector:
         image: pgvector/pgvector:pg17@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
