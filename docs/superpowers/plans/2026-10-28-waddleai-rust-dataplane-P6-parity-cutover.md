@@ -254,6 +254,14 @@ Per-surface sequence (each step needs `make cutover-gate` GO with sample counts,
 
 ---
 
+## Amendment (2026-11-05): Webhook hooks in the MCP mount and capability exclusion — see `2026-11-05-external-webhooks-W4-mcp.md`
+
+> Marked addition; implements `docs/superpowers/specs/2026-11-05-external-webhooks-design.md`.
+
+- **Task 9 (MCP mount):** add the `mcp.tool_call` external-decision hook (after auth + scope/tenant authorization, immediately before tool dispatch; reuses W3 `ExternalDecider` + `decision-core`) and the `mcp.tool.invoked` event via `EventSink`. With flags OFF, tool names/JSON schemas and the contract snapshot are unchanged. MODIFY is ignored at MCP. Extra tests are specified in W4 Tasks 1–2.
+- **Task 15 (capabilities):** add `needs_external_decisions: bool` (and `needs_webhook_events: bool` for proxy-origin events) to `TenantRequirements`; `rust_can_serve` is true for them, `python_can_serve` returns the reason `external-decision-hooks-rust-only` when a tenant has a bound `external_http` decision endpoint, so rollback to Python is refused/flagged exactly like other Rust-only features.
+- **Task 11 (contract gate):** include flag-ON snapshots from W3 Task 8 in the full-surface gate.
+
 ## Self-Review
 
 - **Spec coverage:** §5.1 deferred stages T1–T7; §2 surfaces `/mem0`, `/mcp*`, gRPC T8–T10, contract gate T11; §7 strangler/ingress cutover/shadow T12–T13, T16; §5.1.1/§10.2 passthrough fast-follow T14; rollback anti-goal T15; Python retirement T17; failure modes 1–5 map to Tasks 12/13/15, 8/9/11, 3–6, 14, 15.
