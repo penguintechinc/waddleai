@@ -10,7 +10,7 @@ Usage: regen_requirements.py <base-image-ref>
 
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 - fixed-argv docker/uv calls only, no shell
 import sys
 from pathlib import Path
 
@@ -46,7 +46,7 @@ def norm(name: str) -> str:
 
 def freeze_base(image: str) -> dict:
     """Return {normalised name: version without local part} for the base image's pip freeze."""
-    out = subprocess.run(  # noqa: S603 - fixed argv, image ref from the Makefile
+    out = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv, image ref from the Makefile
         [DOCKER, "run", "--rm", "--entrypoint", "pip", image, "freeze"],
         check=True,
         capture_output=True,
@@ -77,7 +77,7 @@ def resolve(base: dict, tmp: Path) -> str:
     for _ in range(60):
         cfile = tmp / "constraints.txt"
         cfile.write_text("".join(f"{n}=={v}\n" for n, v in sorted(pins.items())))
-        r = subprocess.run(  # noqa: S603 - fixed argv
+        r = subprocess.run(  # noqa: S603  # nosec B603 - fixed argv
             COMPILE + ["-c", str(cfile), "-o", str(tmp / "out.txt")],
             cwd=HERE,
             capture_output=True,
