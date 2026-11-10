@@ -68,7 +68,7 @@ triton==3.8.0+xpu
 
 numba == 0.65.0 # Required for N-gram speculative decoding
 --extra-index-url=https://download.pytorch.org/whl/xpu
-torch==2.14.0
+torch==2.14.0+xpu
 torchaudio
 torchvision
 torchcodec >= 0.14 # Required for the torchcodec video decoding backend
@@ -112,14 +112,3 @@ grpcio>=1.42.0
 mmh3
 async-timeout ; python_version < "3.11"
 fastapi>=0.133.0
-# vLLM v0.32.0 docker/Dockerfile.xpu: DLE runtime packages pinned back from 2026.1.2 to 2026.1.1
-intel-cmplr-lib-rt==2026.1.1
-intel-cmplr-lib-ur==2026.1.1
-intel-cmplr-lic-rt==2026.1.1
-intel-sycl-rt==2026.1.1
-oneccl-devel==2022.1.2; platform_system == 'Linux' and platform_machine == 'x86_64'
-oneccl==2022.1.2; platform_system == 'Linux' and platform_machine == 'x86_64'
-dpcpp-cpp-rt==2026.1.1
-intel-opencl-rt==2026.1.1
-intel-openmp==2026.1.1
-intel-pti==1.1.0
