@@ -88,6 +88,8 @@ class StubRouter:
 class StubDispatchConnector:
     """Deterministic stub connector -- no real dispatch."""
 
+    provider_type: str | None = "stub"  # mirrors LLMConnector.provider_type (read directly)
+
     async def chat_completion(self, messages, model=None, **kwargs):
         """Return a fixed stub completion and usage dict."""
         return "stub completion", {

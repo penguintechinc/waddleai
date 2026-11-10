@@ -27,7 +27,7 @@ class _TM:
     def count_tokens(self, text, provider="", model=""):
         return len(text)
 
-    def calculate_waddleai_tokens(self, i, o, provider, model):
+    def calculate_waddleai_tokens(self, i, o, provider, model, provider_type=None):
         return i + 2 * o
 
 
@@ -205,3 +205,27 @@ async def test_settle_shielded_returns_result_and_propagates_errors():
     assert await settle_shielded(ok()) == 5
     with pytest.raises(ValueError):
         await settle_shielded(bad())
+
+
+async def test_settle_aborted_threads_provider_type_to_credit_calc():
+    """regression: gh-337 -- an aborted-but-consumed request prices with ctx.provider_type."""
+    engine = _Engine()
+    engine.token_manager = Mock()
+    engine.token_manager.calculate_waddleai_tokens = Mock(return_value=9)
+    ctx = _ctx(provider="my-link", provider_type="anthropic", response_text="abc")
+    ctx.usage = {"input_tokens": 4, "output_tokens": 3}
+    await settle_aborted(engine, ctx, RES)
+    engine.token_manager.calculate_waddleai_tokens.assert_called_once_with(
+        4, 3, "my-link", ctx.model, "anthropic"
+    )
+    assert engine.reconciled[0][1]["actual_credits"] == 9
+
+
+async def test_settle_aborted_cache_hit_is_released_not_priced():
+    """Cache-hit path never reaches dispatch (provider_type stays None) and is never charged."""
+    engine = _Engine()
+    ctx = _ctx(provider="cache", response_text="abc")
+    ctx.cache_hit = True
+    await settle_aborted(engine, ctx, RES)
+    assert engine.released == [RES]
+    assert engine.reconciled == []

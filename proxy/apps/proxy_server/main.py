@@ -2145,6 +2145,7 @@ async def chat_completions():
                     organization_id=user_context.organization_id,
                     actual_input_tokens=usage.get("input_tokens", 0),
                     actual_output_tokens=usage.get("output_tokens", 0),
+                    provider_type=final_ctx.provider_type,
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
@@ -2571,6 +2572,7 @@ async def claude_messages():
                     organization_id=user_context.organization_id,
                     actual_input_tokens=usage_info.get("input_tokens", 0),
                     actual_output_tokens=usage_info.get("output_tokens", 0),
+                    provider_type=final_ctx.provider_type,
                 )
             except BaseException:
                 # Usage processing failed or the client disconnected before reconcile:
