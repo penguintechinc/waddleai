@@ -99,6 +99,13 @@ RUN python3 setup.py bdist_wheel --dist-dir=/dist --py-limited-api=cp38 && ls /d
 
 # ---- runtime: deps + the built wheel, rootless ----
 FROM deps AS runtime
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Security patch layer: the digest-pinned oneAPI base lags Ubuntu security updates (Trivy gate: linux-libc-dev x765,
+# apt, openssl, libbrotli1, packagekit all have FixedVersions in noble-security). Upgrade installed OS packages only.
+# Also drop SSH host keys baked into the base (private keys must never ship in an image; Trivy secret finding).
+# hadolint ignore=DL3005
+RUN apt-get update -y && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 ARG RAY_VERSION=2.60.0
 ARG PYTHON_MINOR=3.12
 ENV RAY_VERSION=${RAY_VERSION} PYTHON_MINOR=${PYTHON_MINOR} VLLM_WORKER_MULTIPROC_METHOD=spawn
