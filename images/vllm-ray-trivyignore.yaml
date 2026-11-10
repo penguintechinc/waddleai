@@ -1,0 +1,11 @@
+# Trivy ignore list for the vllm-ray-{cuda,rocm,xpu} image gates (docker-build.yml, build-vllm-ray-images).
+# Entries are scoped to one exact package version (purl) and each carries the justification; nothing here is a blanket ignore.
+vulnerabilities:
+  - id: CVE-2025-47273
+    purls:
+      - "pkg:pypi/setuptools@70.3.0"
+    statement: >-
+      False positive on pip's vendor manifest: it lists setuptools==70.3.0 because pip vendors only a
+      pkg_resources copy from it. CVE-2025-47273 is in setuptools.package_index.PackageIndex, which is not
+      vendored in pip (pip/_vendor/pkg_resources only) and pip never calls it. The installed setuptools
+      package (the real exposure) is >= 78.1.1 in every image. Remove once pip vendors setuptools >= 78.1.1.

@@ -1,10 +1,10 @@
 # vLLM-on-Ray worker image, Intel XPU (A7). Rootless (uid 1000); KubeRay supplies the start command,
 # so there is no ENTRYPOINT/CMD override. SINGLE-GPU REPLICAS ONLY (no tensor parallel, spec section 2 non-goal).
 #
-# vLLM is BUILT FROM SOURCE at exactly the version bundled in the CUDA image (0.29.0):
-#   vLLM tag v0.29.0 = commit 98dff2a81d747d1dba01a47f939f48c3526d4206 (XPU is supported at this very version,
+# vLLM is BUILT FROM SOURCE at the same version as the CUDA image (0.32.0):
+#   vLLM tag v0.32.0 = commit 5df63a7203cdb9328d824a27b682e77c7b9928be (XPU is supported at this very version,
 #   so no version drift to record). Reference: docker/Dockerfile.xpu + requirements/xpu.txt at that commit.
-# vllm_xpu_kernels is 0.1.14.1 (what vLLM 0.29.0 pins in requirements/xpu.txt), not the 0.1.16.1 the plan guessed.
+# vllm_xpu_kernels is 0.1.15.4 (what vLLM 0.32.0 pins in requirements/xpu.txt).
 #
 # Base pin: intel/oneapi-basekit 2026.0.x does not exist; 2025.3.2 is the newest release (verified on Docker Hub).
 # Digest verified with
@@ -36,7 +36,7 @@ ENV DEBIAN_FRONTEND=noninteractive UV_PYTHON_INSTALL_DIR=/opt/uv/python UV_LINK_
 COPY debs.sha256 /tmp/debs.sha256
 WORKDIR /tmp/neo
 # UMD (compute runtime + Level Zero) + xpu-smi, downloaded then sha256-verified (debs.sha256: "<sum> <url>");
-# same versions as vLLM v0.29.0 docker/Dockerfile.xpu.
+# same versions as vLLM v0.32.0 docker/Dockerfile.xpu.
 # Base ships the kobuk-team PPA already; every package (Ubuntu + PPA) is pinned to the exact version the
 # digest-pinned base resolves via `apt-cache policy` (transitive deps follow from those pins).
 RUN apt-get update -y && apt-get install -y --no-install-recommends ca-certificates=20260816ubuntu0.24.04.2 curl=8.5.0-2ubuntu10.16 \
@@ -68,8 +68,8 @@ RUN if getent passwd 1000 >/dev/null; then userdel -r "$(getent passwd 1000 | cu
 # ---- build: compile the vLLM XPU wheel (never shipped) ----
 FROM deps AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG VLLM_COMMIT=98dff2a81d747d1dba01a47f939f48c3526d4206
-ARG VLLM_VERSION=0.29.0
+ARG VLLM_COMMIT=5df63a7203cdb9328d824a27b682e77c7b9928be
+ARG VLLM_VERSION=0.32.0
 ARG RUST_TOOLCHAIN=1.95
 ENV VLLM_TARGET_DEVICE=xpu CARGO_HOME=/opt/cargo RUSTUP_HOME=/opt/rustup PATH=/opt/cargo/bin:${PATH} \
     SETUPTOOLS_SCM_PRETEND_VERSION=${VLLM_VERSION}
@@ -84,7 +84,7 @@ RUN git init -q . && git fetch -q --depth 1 https://github.com/vllm-project/vllm
 ARG RUSTUP_VERSION=1.29.3
 ARG RUSTUP_SHA256_X86_64=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
 ARG RUSTUP_SHA256_AARCH64=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
-# Rust toolchain: exact 1.95, the channel in vLLM v0.29.0 rust-toolchain.toml (asserted below). rustup-init is a
+# Rust toolchain: exact 1.95, the channel in vLLM v0.32.0 rust-toolchain.toml (asserted below). rustup-init is a
 # pinned-version binary from static.rust-lang.org, sha256-verified (official .sha256 files), never `curl | sh`.
 RUN ARCH="$(uname -m)" \
     && case "${ARCH}" in x86_64) SUM="${RUSTUP_SHA256_X86_64}";; aarch64) SUM="${RUSTUP_SHA256_AARCH64}";; *) echo "unsupported arch ${ARCH}" >&2; exit 1;; esac \
@@ -94,7 +94,7 @@ RUN ARCH="$(uname -m)" \
     && /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal --no-modify-path \
     && rm /tmp/rustup-init \
     && grep -q "^channel *= *\"${RUST_TOOLCHAIN}\"" rust-toolchain.toml \
-    && CARGO_BUILD_JOBS=4 bash build_rust.sh && test -x vllm/vllm-rs
+    && CARGO_BUILD_JOBS=4 bash tools/build_rust.sh && test -x vllm/vllm-rs
 RUN python3 setup.py bdist_wheel --dist-dir=/dist --py-limited-api=cp38 && ls /dist/*.whl
 
 # ---- runtime: deps + the built wheel, rootless ----
@@ -111,8 +111,11 @@ ARG PYTHON_MINOR=3.12
 ENV RAY_VERSION=${RAY_VERSION} PYTHON_MINOR=${PYTHON_MINOR} VLLM_WORKER_MULTIPROC_METHOD=spawn
 RUN --mount=type=bind,from=build,source=/dist,target=/dist \
     uv pip install --no-cache --no-deps /dist/*.whl
+# Ray's bundled Java jars (ray_dist.jar: jackson/guava HIGH CVEs) are unused here (Python workers only; Ray
+# tolerates the missing directory), so they are removed rather than shipped.
+RUN DEL=/home/ray/anaconda3/lib/python3.12/site-packages/ray/jars && test -d "$DEL" && rm -r "$DEL"
 # Build-time contract: Ray + Python minor match the head image; vLLM is the CUDA image's version.
-RUN python3 -c "import os, sys, ray, importlib.metadata as m; assert ray.__version__ == os.environ['RAY_VERSION'], ray.__version__; assert '%d.%d' % sys.version_info[:2] == os.environ['PYTHON_MINOR']; assert m.version('vllm').startswith('0.29.0'), m.version('vllm')" \
+RUN python3 -c "import os, sys, ray, importlib.metadata as m; assert ray.__version__ == os.environ['RAY_VERSION'], ray.__version__; assert '%d.%d' % sys.version_info[:2] == os.environ['PYTHON_MINOR']; assert m.version('vllm').startswith('0.32.0'), m.version('vllm')" \
     && chown 1000:1000 /home/ray
 USER 1000
 WORKDIR /home/ray

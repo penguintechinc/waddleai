@@ -1,5 +1,5 @@
 # Inputs for requirements.txt (regenerate: see the Dockerfile header). Not installed directly.
-# vLLM v0.29.0 (98dff2a81d747d1dba01a47f939f48c3526d4206) requirements/common.txt + xpu.txt, vendored verbatim
+# vLLM v0.32.0 (5df63a7203cdb9328d824a27b682e77c7b9928be) requirements/common.txt + xpu.txt, vendored verbatim
 # minus the "-r common.txt" line, the loose ray>=2.9 pin and build/benchmark-only lines (cmake, wheel,
 # jinja2, packaging, setuptools*, datasets). Then the Ray layer: ray[serve]==2.60.0 plus the `llm` extra
 # spelled out without vllm (built from source, installed separately) and the CUDA-only nixl wheels.
@@ -8,31 +8,32 @@ cachetools
 psutil
 sentencepiece  # Required for LLaMA tokenizer.
 numpy
-requests >= 2.26.0
+requests >= 2.33.0
 tqdm
 blake3
 py-cpuinfo
-transformers >= 5.10.4
-huggingface_hub >= 1.28.0
-tokenizers >= 0.21.1  # Required for fast incremental detokenization.
+transformers >= 5.16.1, < 5.20.0
+huggingface_hub >= 1.31.0  # Required for the `huggingface_hub.utils.httpx` re-export
+tokenizers >= 0.23.2  # Required for fast incremental detokenization.
 safetensors >= 0.6.2  # MXFP4/MXFP6 dtype support (F8_E8M0, F4) added in 0.6.0: https://github.com/huggingface/safetensors/pull/611
-protobuf >= 5.29.6, !=6.30.*, !=6.31.*, !=6.32.*, !=6.33.0.*, !=6.33.1.*, !=6.33.2.*, !=6.33.3.*, !=6.33.4.* # Required by LlamaTokenizer, gRPC. CVE-2026-0994
+protobuf >= 5.29.6, !=6.30.*, !=6.31.*, !=6.32.*, !=6.33.0.*, !=6.33.1.*, !=6.33.2.*, !=6.33.3.*, !=6.33.4.*; platform_machine != "s390x"
+protobuf == 7.36.1; platform_machine == "s390x"
 fastapi[standard] >= 0.133.0, < 0.137.0 # First version supporting Starlette 1.0; < 0.137.0 avoids route-tree change that breaks model-hosting-container-standards handler overrides.
 starlette >= 1.0.1 # CVE-2026-48710: Host header injection in < 1.0.1
-aiohttp >= 3.13.3
-openai >= 2.0.0  # For Responses API with reasoning content
+aiohttp >= 3.14.3
+openai >= 2.25.0  # For Responses API with namespace tools
 pydantic >= 2.12.0
 prometheus_client >= 0.18.0
-pillow  # Required for image processing
+pillow >= 12.3.0  # Required for image processing
 prometheus-fastapi-instrumentator >= 8.0.0 # v8 unblocks starlette >= 1.0
 tiktoken >= 0.6.0  # Required for DBRX tokenizer
 lm-format-enforcer == 0.11.3
 llguidance >= 1.7.0, < 1.8.0; platform_machine == "x86_64" or platform_machine == "arm64" or platform_machine == "aarch64" or platform_machine == "ppc64le" or platform_machine == "s390x"
 outlines_core == 0.2.14
 lark == 1.2.2
-xgrammar >= 0.2.1, < 1.0.0; platform_machine == "x86_64" or platform_machine == "aarch64" or platform_machine == "arm64" or platform_machine == "s390x" or platform_machine == "ppc64le"
+xgrammar == 0.2.8; platform_machine == "x86_64" or platform_machine == "aarch64" or platform_machine == "arm64" or platform_machine == "s390x" or platform_machine == "ppc64le"
 typing_extensions >= 4.10
-filelock >= 3.16.1 # need to contain https://github.com/tox-dev/filelock/pull/317
+filelock >= 3.20.3 # need to contain https://github.com/tox-dev/filelock/pull/317; GHSA floor
 partial-json-parser # used for parsing partial JSON outputs
 jsonschema >= 4.23.0 # required for MiniMax M3 tool schema validation
 pyzmq >= 25.0.0
@@ -41,7 +42,7 @@ mistral_common[image] >= 1.11.6
 opencv-python-headless >= 4.13.0    # required for video IO
 pyyaml
 six>=1.16.0; python_version > '3.11' # transitive dependency of pandas that needs to be the latest version for python 3.12
-setuptools>=77.0.3,<81.0.0; python_version > '3.11' # Setuptools is used by triton, we need to ensure a modern version is installed for 3.12+ so that it does not try to import distutils, which was removed in 3.12
+setuptools>=78.1.1,<81.0.0; python_version > '3.11' # used by triton; >=78.1.1 for GHSA-5rjg-fvgr-3xxf
 einops # Required for Qwen2-VL.
 compressed-tensors == 0.17.0 # required for compressed-tensors
 depyf==0.20.0 # required for profiling and debugging with compilation config
@@ -53,27 +54,27 @@ pybase64 # fast base64 implementation
 cbor2 # Required for cross-language serialization of hashable objects
 ijson # Required for mistral streaming tool parser
 setproctitle # Used to set process names for better debugging and monitoring
-openai-harmony >= 0.0.3  # Required for gpt-oss
+oss-harmony >= 0.0.11  # Required for gpt-oss; includes embedded vocabularies
 anthropic >= 0.71.0
 model-hosting-container-standards >= 0.1.14, < 1.0.0
-mcp
+mcp >= 2.0.0, < 3.0.0
 opentelemetry-sdk >= 1.27.0
 opentelemetry-api >= 1.27.0
 opentelemetry-exporter-otlp >= 1.27.0
 opentelemetry-semantic-conventions-ai >= 0.4.1
 # Common dependencies
 --extra-index-url=https://wheels.vllm.ai/xpu/
-triton==3.7.2+xpu
+triton==3.8.0+xpu
 
 numba == 0.65.0 # Required for N-gram speculative decoding
 --extra-index-url=https://download.pytorch.org/whl/xpu
-torch==2.13.0
+torch==2.14.0
 torchaudio
 torchvision
 torchcodec >= 0.14 # Required for the torchcodec video decoding backend
 
-auto_round_lib==0.14.2
-vllm_xpu_kernels==0.1.14.1
+auto_round_lib==0.16.0
+vllm_xpu_kernels==0.1.15.4
 ray[serve]==2.60.0
 jsonref>=1.1.0
 py-spy>=0.2.0 ; python_version < "3.12"
@@ -111,3 +112,14 @@ grpcio>=1.42.0
 mmh3
 async-timeout ; python_version < "3.11"
 fastapi>=0.133.0
+# vLLM v0.32.0 docker/Dockerfile.xpu: DLE runtime packages pinned back from 2026.1.2 to 2026.1.1
+intel-cmplr-lib-rt==2026.1.1
+intel-cmplr-lib-ur==2026.1.1
+intel-cmplr-lic-rt==2026.1.1
+intel-sycl-rt==2026.1.1
+oneccl-devel==2022.1.2; platform_system == 'Linux' and platform_machine == 'x86_64'
+oneccl==2022.1.2; platform_system == 'Linux' and platform_machine == 'x86_64'
+dpcpp-cpp-rt==2026.1.1
+intel-opencl-rt==2026.1.1
+intel-openmp==2026.1.1
+intel-pti==1.1.0
