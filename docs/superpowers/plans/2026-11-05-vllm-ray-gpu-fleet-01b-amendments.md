@@ -89,6 +89,15 @@ Continuation of 01-amendments; entries here are equally authoritative.
 #       Retained: CiliumNetworkPolicy (host-side, applies to Kata pods unchanged); NEW host Tetragon policy on Kata host processes (cloud-hypervisor, virtiofsd, containerd-shim-kata-v2) for escape detection.
 #         Host Tetragon cannot see inside the guest — documented limitation, not a gap to fix; in-guest Tetragon explicitly deferred.
 #       Validation: alpha = MCP server pod under kata-clh on dal2alpha; beta (dal2beta, once it exists) = harness pod under kata-clh. No GPU/VFIO passthrough validation in this AM.
+#       Model-pod Tetragon deliverable (coordinator 2026-11-11, target v0.5.X): model pods are only PARTIALLY covered today. `templates/tetragon-exec-policy.yaml` has ollama and llamacpp in `observe` (log only), ray-worker in `enforce` but allows /bin/bash and /bin/sh, no ray head policy, no rpc-server policy, no file-write or egress policy for model pods.
+#         Deliver a dedicated, ENFORCED per-engine `TracingPolicyNamespaced` set (`templates/tetragon-model-policy.yaml`, rendered per engine; the existing exec-policy entries for these engines move here):
+#         - Exec allowlist, Sigkill (never observe): vLLM-Ray head + workers = venv python, ray, raylet, gcs_server, plasma/dashboard agents (exact paths from the pinned ray-llm image /proc inventory); llama.cpp single + RPC = llama-server, rpc-server; Ollama = /bin/ollama and its runner (path from image inventory).
+#         - Deny shells and package managers in all model engines (sh, bash, dash, pip, apt, curl). Any init-time exec that needs them moves to a separate Job/pod outside the model pod, so the model pod's allowlist contains no shell.
+#         - File-write restriction (Override/Sigkill): model and weights paths (/models, model cache mounts, engine dirs) are read-only for model pods; writes only to the emptyDir scratch path.
+#         - Egress kprobe (tcp_connect) aligned with the CNP: Ray GCS/dashboard/object ports among head+workers, llama.cpp RPC port from its head only, serving port only; anything else Sigkill.
+#         - podSelector matches the fleet-generated labels (`app.kubernetes.io/component` per engine plus `waddleai.penguintech.io/engine`), rendered by the chart and set by the fleet manager on the objects it creates (same labels, one source).
+#         - Helm render tests per engine (enforce mode, allowlist content, no shell entries, write-deny present, egress present). Negative live test: exec of /bin/sh inside a model pod is killed (count-verified on dal2alpha/beta).
+#         Harness/MCP pods reuse the same pattern under their own component labels (Kata runs on top; Tetragon sees the host side only).
 #       Placement: per-pod VM memory overhead (RuntimeClass overhead) MUST be included in fleet placement/resource accounting for harness/MCP pods (Plan B placement + Plan C quota).
 #       dal2alpha cluster facts: kata-deploy 4.3.1 (job mode); RuntimeClasses `kata` and `kata-clh` -> handler kata-clh, overhead 250m CPU / 130Mi (qemu variant 320Mi);
 #         nodeSelector katacontainers.io/kata-runtime=true (nodes k8s-worker, k8s2-worker).
