@@ -113,7 +113,9 @@ numba == 0.65.0 # Required for N-gram speculative decoding
 # Dependencies for AMD GPUs
 tensorizer==2.10.1
 packaging>=24.2
-setuptools>=78.1.1,<80.0.0
+# Runtime only: vLLM's rocm.txt caps setuptools<80 for the build; setuptools>=80 vendors the fixed wheel/jaraco.context
+# (Trivy: setuptools 79.x vendors wheel 0.45.1 / jaraco.context 5.3.0). The build stage keeps its own <80 pin.
+setuptools>=80.10.2,<81.0.0
 setuptools-scm>=8
 setuptools-rust>=1.9.0
 runai-model-streamer[s3,gcs,azure]==0.15.7
