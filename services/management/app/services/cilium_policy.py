@@ -39,7 +39,7 @@ CCNP_PLURAL = "ciliumclusterwidenetworkpolicies"
 
 # Policies owned by the Helm chart (the four Ray fleet CNPs, AM25): this reconciler must never
 # create, replace or delete a name under these prefixes, even if a render bug produced one.
-RESERVED_NAME_PREFIXES = ("waddleai-vllm-ray-",)
+RESERVED_NAME_PREFIXES = ("waddleai-vllm-ray-", "waddleai-model-")
 
 _ORG_HEADER = "x-waddleai-org-id"
 _CEC_NAME = "waddleai-org-ratelimit"
@@ -321,7 +321,8 @@ def render_network_policies(topology: dict[str, Any]) -> list[dict[str, Any]]:
             "apiVersion": f"{CILIUM_GROUP}/{CILIUM_VERSION}",
             "kind": "CiliumNetworkPolicy",
             "metadata": {"name": "waddleai-default-deny", "namespace": namespace},
-            "spec": {"endpointSelector": {}, "ingress": [], "egress": []},
+            # `[{}]` is Cilium's explicit default deny; identical to the chart's default-deny
+            "spec": {"endpointSelector": {}, "ingress": [{}], "egress": [{}]},
         }
     )
 
@@ -622,6 +623,18 @@ class CiliumPolicyReconciler:
         except Exception as exc:
             logger.warning("Failed to read %s/%s before upsert: %s", plural, name, exc)
             status.degraded = True
+            return
+
+        if (
+            existing is not None
+            and (existing.get("metadata", {}).get("labels") or {}).get(
+                "app.kubernetes.io/managed-by"
+            )
+            == "Helm"
+        ):
+            # The chart owns this object (and the chart's admission policy forbids this service
+            # account from updating it); never replace it, and never flag it as degraded.
+            logger.debug("Skipping Helm-owned %s/%s", plural, name)
             return
 
         try:

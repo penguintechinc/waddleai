@@ -17,7 +17,7 @@ policies (tetragon-model-policy.yaml) draw that line.
 {{- $t := .Values.cilium.topology }}
 {{- $np := .Values.modelPodSecurity.networkPolicy }}
 {{- $engines := list
-      (dict "name" "ollama" "components" (list "ollama" "ollama-embeddings") "ports" (list .Values.ollama.service.targetPort) "hf" false "ollama" true "mgmtHttp" (list (dict "method" "GET" "path" "^/$") (dict "method" "GET" "path" "^/api/tags$") (dict "method" "POST" "path" "^/api/pull$")))
+      (dict "name" "ollama" "components" (list "ollama" "ollama-embeddings") "ports" (list .Values.ollama.service.targetPort) "hf" false "ollama" true "mgmtHttp" (list (dict "method" "GET" "path" "^/$") (dict "method" "GET" "path" "^/api/tags$") (dict "method" "POST" "path" "^/api/pull$") (dict "method" "DELETE" "path" "^/api/delete$")))
       (dict "name" "llamacpp" "components" (list "llamacpp") "ports" (list .Values.llamacpp.service.targetPort) "hf" true "ollama" false "mgmtHttp" (list (dict "method" "GET" "path" "^/health$"))) }}
 {{- range $e := $engines }}
 ---

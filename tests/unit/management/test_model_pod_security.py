@@ -158,6 +158,7 @@ def test_ollama_management_http_rules_are_exactly_what_the_manager_calls():
         ("GET", "^/$"),
         ("GET", "^/api/tags$"),
         ("POST", "^/api/pull$"),
+        ("DELETE", "^/api/delete$"),
     }
 
 
@@ -456,3 +457,121 @@ def test_ollama_apply_and_ordered_teardown():
     ]
     assert kinds[-1].endswith("ollama-a-allow")  # CNP last
     assert all(k.startswith("v1alpha1/") for k in kinds[:-1])
+
+
+def _rpc_deploy_mocks(sts_effect):
+    from services.management.app.services import llamacpp_manager as lm
+
+    crd, apps, core = MagicMock(), MagicMock(), MagicMock()
+    apps.create_namespaced_stateful_set.side_effect = sts_effect
+    # every policy already exists and belongs to the same deployment -> adopted ("replaced")
+    crd.create_namespaced_custom_object.side_effect = _ApiError(409)
+
+    def existing(group, version, ns, plural, name):
+        return {"metadata": {"labels": {mps.OWNER_LABEL: str(PID_A)}, "resourceVersion": "1"}}
+
+    crd.get_namespaced_custom_object.side_effect = existing
+    return lm, crd, apps, core
+
+
+def test_rpc_failed_redeploy_keeps_adopted_policies():
+    """409 on a re-deploy: adopted policies protect live pods and are never rolled back."""
+    from unittest.mock import patch
+
+    lm, crd, apps, core = _rpc_deploy_mocks(_ApiError(409))
+    mgr = lm.LlamaCppManager(db=MagicMock(), config={"mutual_auth_enabled": True})
+    mgr.pod_drain_timeout_s = 0.01
+    mgr._sleep = lambda _s: None
+    dep = SimpleNamespace(
+        id=1, name="a", k8s_namespace="waddleai", model_filename="m.gguf",
+        model_url="https://huggingface.co/x/m.gguf", n_ctx=4096, status="pending",
+        public_id=PID_A, k8s_daemonset_name="waddleai-llamacpp-a", topology=2,
+    )  # fmt: skip
+    core.create_namespaced_service.side_effect = _ApiError(409)  # also adopted/exists
+    with (
+        patch.object(lm, "get_k8s_apps_client", return_value=apps),
+        patch.object(lm, "get_k8s_core_client", return_value=core),
+        patch.object(lm, "get_k8s_custom_client", return_value=crd),
+        pytest.raises(_ApiError),
+    ):
+        mgr.deploy_rpc(dep, layout(), HOSTS, IMG)
+    assert crd.replace_namespaced_custom_object.call_count > 0  # policies were adopted
+    crd.delete_namespaced_custom_object.assert_not_called()  # ...and none rolled back
+
+
+def test_ollama_create_and_delete_call_policy_apply_and_teardown():
+    """Kubernetes create applies the policies; delete tears them down BEFORE the row goes."""
+    from unittest.mock import patch
+
+    from services.management.app.services.ollama_manager import OllamaDeploymentConfig
+
+    db = MagicMock()
+    db.return_value.select.return_value.first.return_value = None
+    db.ollama_deployments.insert.return_value = 5
+    mgr = OllamaDeploymentManager(db)
+    cfg = OllamaDeploymentConfig(name="k", deployment_type="kubernetes")
+    with patch.object(OllamaDeploymentManager, "apply_policies") as apply:
+        assert mgr.create_deployment(cfg)["success"] is True
+    apply.assert_called_once_with(5)
+    with patch.object(OllamaDeploymentManager, "apply_policies", side_effect=RuntimeError("no")):
+        out = mgr.create_deployment(cfg)
+    assert out["success"] is False and "policy apply failed" in out["error"]
+    docker = OllamaDeploymentConfig(name="d", deployment_type="docker")
+    with patch.object(OllamaDeploymentManager, "apply_policies") as apply2:
+        mgr.create_deployment(docker)
+    apply2.assert_not_called()
+
+    row = SimpleNamespace(
+        name="k", public_id=PID_A, namespace="waddleai", deployment_type="kubernetes", status="x"
+    )
+    db.return_value.select.return_value.first.return_value = row
+    order = MagicMock()
+    with patch.object(OllamaDeploymentManager, "remove_policies", order.remove):
+        db.return_value.delete.side_effect = lambda *a, **k: order.row_delete()
+        assert mgr.delete_deployment(5)["success"] is True
+    names = [c[0] for c in order.mock_calls]
+    assert names.index("remove") < names.index("row_delete")
+    with patch.object(OllamaDeploymentManager, "remove_policies", side_effect=RuntimeError("x")):
+        failed = mgr.delete_deployment(5)
+    assert failed["success"] is False  # row is kept when policies could not be removed
+
+
+def test_every_ollama_manager_http_call_is_in_the_management_allowlist():
+    """Parse ollama_manager.py's calls to the engine; each (method, path) must be L7-allowed."""
+    import re
+    from pathlib import Path
+
+    src = Path(mps.__file__).with_name("ollama_manager.py").read_text()
+    calls = {
+        (m.group(1).upper(), m.group(2))
+        for m in re.finditer(
+            r"client\.(get|post)\(\s*f\"\{deployment\.endpoint_url\}(/[^\"]*)\"", src
+        )
+    }
+    calls |= {
+        (m.group(1), m.group(2))
+        for m in re.finditer(r'request\(\s*"(\w+)",\s*f"\{deployment\.endpoint_url\}(/[^"]*)"', src)
+    }
+    assert {("GET", "/api/tags"), ("POST", "/api/pull"), ("DELETE", "/api/delete")} <= calls, calls
+    allowed = [(r["method"], re.compile(r["path"])) for r in mps.OLLAMA_MGMT_HTTP]
+    for method, path in calls:
+        assert any(m == method and rx.match(path) for m, rx in allowed), (method, path)
+
+
+def test_reconciler_never_replaces_helm_owned_objects():
+    """An existing Helm-labelled object is skipped (and not flagged degraded)."""
+    from services.management.app.services.cilium_policy import (
+        CiliumPolicyReconciler,
+        ReconcileStatus,
+    )
+
+    client = MagicMock()
+    client.get_namespaced_custom_object.return_value = {
+        "metadata": {"labels": {"app.kubernetes.io/managed-by": "Helm"}, "resourceVersion": "3"}
+    }
+    obj = {"metadata": {"name": "waddleai-default-deny", "namespace": "waddleai"}, "spec": {}}
+    status = ReconcileStatus()
+    CiliumPolicyReconciler(MagicMock())._upsert(client, "ciliumnetworkpolicies", obj, status)
+    client.replace_namespaced_custom_object.assert_not_called()
+    client.create_namespaced_custom_object.assert_not_called()
+    assert not status.degraded and "waddleai-default-deny" not in status.applied

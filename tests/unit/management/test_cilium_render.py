@@ -112,14 +112,14 @@ class TestRenderNetworkPolicies:
     """Tests for render_network_policies()."""
 
     def test_default_deny_present_and_empty(self):
-        """The default-deny CNP matches all pods with empty ingress/egress rule lists."""
+        """The default-deny CNP selects all pods with explicit `[{}]` rules, not droppable `[]`."""
         policies = render_network_policies(TOPOLOGY)
         deny = _by_name(policies, "waddleai-default-deny")
         assert deny["kind"] == "CiliumNetworkPolicy"
         assert deny["metadata"]["namespace"] == "waddleai"
         assert deny["spec"]["endpointSelector"] == {}
-        assert deny["spec"]["ingress"] == []
-        assert deny["spec"]["egress"] == []
+        assert deny["spec"]["ingress"] == [{}]
+        assert deny["spec"]["egress"] == [{}]
 
     def test_client_to_gateway_is_clusterwide(self):
         """The client->Gateway flow renders as a namespace-less CiliumClusterwideNetworkPolicy."""

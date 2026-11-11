@@ -3,7 +3,7 @@
 import json
 from pathlib import Path
 
-from tests.helm.conftest import find, render
+from tests.helm.conftest import VAP_API, find, render
 
 BASE = str(Path(__file__).parent / "fixtures" / "vllm-ray-base.yaml")
 APIS = ["cilium.io/v2", "cilium.io/v1alpha1/TracingPolicyNamespaced"]
@@ -32,7 +32,12 @@ def test_ingress_is_proxy_full_and_management_l7_limited():
     expected = {
         "waddleai-model-ollama": (
             "11434",
-            {("GET", "^/$"), ("GET", "^/api/tags$"), ("POST", "^/api/pull$")},
+            {
+                ("GET", "^/$"),
+                ("GET", "^/api/tags$"),
+                ("POST", "^/api/pull$"),
+                ("DELETE", "^/api/delete$"),
+            },
         ),
         "waddleai-model-llamacpp": ("8080", {("GET", "^/health$")}),
     }
@@ -234,7 +239,7 @@ def test_management_env_carries_the_settings():
     """The fleet manager receives the same presets and DNS patterns."""
     env = _mgmt_env(_docs())
     cfg = json.loads(env["WADDLEAI_MODEL_POD_SECURITY"])
-    assert "huggingface" in cfg and cfg["dns_cluster_patterns"] == ["*.cluster.local"]
+    assert "huggingface" in cfg and cfg["cluster_domain"] == "cluster.local"
     assert "100.64.0.0/10" in cfg["private_cidrs"]
     assert cfg["tetragon"] is True and cfg["network_policy"] is True
 
@@ -369,3 +374,210 @@ def test_default_deny_policies_use_an_explicit_empty_rule():
     """An empty list can be dropped on serialization; `[{}]` is Cilium's explicit default deny."""
     deny = find(_docs(), "CiliumNetworkPolicy", "waddleai-default-deny")["spec"]
     assert deny["ingress"] == [{}] and deny["egress"] == [{}]
+
+
+def test_vap_covers_every_helm_owned_cilium_object_including_default_deny():
+    """All Helm-owned CNP/CCNP/Tracing objects are protected; no name allowlist to slip through."""
+    docs = _docs()
+    vap = find(docs, "ValidatingAdmissionPolicy", "waddleai-protect-model-policies")["spec"]
+    resources = {r for rule in vap["matchConstraints"]["resourceRules"] for r in rule["resources"]}
+    assert resources == {
+        "tracingpoliciesnamespaced",
+        "ciliumnetworkpolicies",
+        "ciliumclusterwidenetworkpolicies",
+    }
+    assert not any("startsWith" in v["expression"] for v in vap["variables"])
+    # the default-deny it protects is chart-owned (Helm label)
+    deny = find(docs, "CiliumNetworkPolicy", "waddleai-default-deny")
+    assert deny["metadata"]["labels"]["app.kubernetes.io/managed-by"] == "Helm"
+
+
+def _helm_raw(*args: str):
+    import subprocess
+
+    from tests.helm.conftest import CHART_DIR
+
+    return subprocess.run(  # noqa: S603
+        ["helm", "template", "w", ".", "-f", BASE, *args],  # noqa: S607
+        cwd=CHART_DIR, capture_output=True, text=True,
+    )  # fmt: skip
+
+
+def test_render_fails_when_protection_is_impossible_unless_acknowledged():
+    """No VAP API / admissionPolicies off -> fail the render; explicit acknowledgement passes."""
+    api = ["--api-versions", "cilium.io/v2"]
+    missing_api = _helm_raw(*api)  # VAP API not advertised
+    assert missing_api.returncode != 0 and "ValidatingAdmissionPolicy" in missing_api.stderr
+    disabled = _helm_raw(
+        *api, "--api-versions", VAP_API, "--set", "admissionPolicies.enabled=false"
+    )
+    assert disabled.returncode != 0 and "acknowledgeUnprotected" in disabled.stderr
+    ack = _helm_raw(
+        *api,
+        "--set",
+        "modelPodSecurity.networkPolicy.protectChartPolicies.acknowledgeUnprotected=true",
+    )
+    assert ack.returncode == 0, ack.stderr
+    ok = _helm_raw(*api, "--api-versions", VAP_API)
+    assert ok.returncode == 0, ok.stderr
+
+
+def _matches(selector: dict, labels: dict) -> bool:
+    """Cilium endpointSelector semantics: matchLabels subset + matchExpressions In/NotIn."""
+    flat = selector.get("matchLabels", selector if "matchExpressions" not in selector else {})
+    if any(labels.get(k) != v for k, v in flat.items() if not k.startswith("k8s:")):
+        return False
+    for expr in selector.get("matchExpressions", []):
+        have = labels.get(expr["key"])
+        if expr["operator"] == "In" and have not in expr["values"]:
+            return False
+        if expr["operator"] == "NotIn" and have in expr["values"]:
+            return False
+    return True
+
+
+def _workload_labels(doc: dict) -> dict | None:
+    spec = doc["spec"]
+    tpl = spec.get("template") or spec.get("jobTemplate", {}).get("spec", {}).get("template")
+    if doc["kind"] == "RayCluster":
+        return None  # covered per node-type below
+    return (tpl or {}).get("metadata", {}).get("labels")
+
+
+def test_every_platform_workload_is_selected_by_an_allow_policy():
+    """With default-deny enforcing, each waddleai workload's labels match >=1 non-deny CNP."""
+    for values in (BASE, "values-alpha.yaml", "values-beta.yaml"):
+        docs = render(values, api_versions=APIS)
+        allows = [
+            d["spec"]["endpointSelector"]
+            for d in docs
+            if d["kind"] == "CiliumNetworkPolicy"
+            and d["metadata"]["name"] != "waddleai-default-deny"
+        ]
+        checked = 0
+        for d in docs:
+            if d["kind"] not in ("Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"):
+                continue
+            labels = _workload_labels(d)
+            if not labels or labels.get("app.kubernetes.io/name") != "waddleai":
+                continue  # third-party subcharts (gpu-operator, NFD, kuberay) own their own policy
+            checked += 1
+            assert any(_matches(sel, labels) for sel in allows), (
+                values,
+                d["metadata"]["name"],
+                labels,
+            )
+        assert checked >= 5, (values, checked)
+    docs = render(BASE, api_versions=APIS)
+    ray = {
+        "head": {"ray.io/cluster": "waddleai-inference", "ray.io/node-type": "head"},
+        "worker": {"ray.io/cluster": "waddleai-inference", "ray.io/node-type": "worker"},
+    }
+    sels = [d["spec"]["endpointSelector"] for d in docs if d["kind"] == "CiliumNetworkPolicy"]
+    for labels in ray.values():
+        assert any(_matches(sel, labels) for sel in sels)
+    operator = {"app.kubernetes.io/name": "kuberay-operator"}
+    assert any(_matches(sel, operator) for sel in sels)
+
+
+def test_platform_allow_policies_cover_the_audited_flows():
+    """Management ingress (gateway/webui/proxy), webui, DNS, management->fleet exist."""
+    docs = render(BASE, api_versions=APIS)
+    names = {d["metadata"]["name"] for d in docs if d["kind"] == "CiliumNetworkPolicy"}
+    assert {
+        "waddleai-allow-dns-egress",
+        "waddleai-allow-management-ingress",
+        "waddleai-allow-webui",
+        "waddleai-allow-proxy-to-management-egress",
+        "waddleai-allow-management-to-fleet-egress",
+        "waddleai-allow-kuberay-operator",
+    } <= names
+    ingress = find(docs, "CiliumNetworkPolicy", "waddleai-allow-management-ingress")["spec"][
+        "ingress"
+    ]
+    comps = {
+        e["matchLabels"].get("app.kubernetes.io/component")
+        or e["matchLabels"].get("app.kubernetes.io/name")
+        for e in ingress[0]["fromEndpoints"]
+    }
+    assert {"webui", "proxy"} <= comps
+
+
+def test_default_deny_matches_the_reconciler_render():
+    """The chart's waddleai-default-deny and the reconciler's must be identical (no drift)."""
+    from services.management.app.services.cilium_policy import (
+        DEFAULT_TOPOLOGY,
+        render_network_policies,
+    )
+
+    chart = find(_docs(), "CiliumNetworkPolicy", "waddleai-default-deny")["spec"]
+    rec = next(
+        p
+        for p in render_network_policies(DEFAULT_TOPOLOGY)
+        if p["metadata"]["name"] == "waddleai-default-deny"
+    )["spec"]
+    assert chart == rec == {"endpointSelector": {}, "ingress": [{}], "egress": [{}]}
+
+
+def test_ray_worker_toolchain_allowlist_and_observe_mode():
+    """Triton bundled tools + ninja are allowed; tetragon.model.ray.mode flips ONLY ray policies."""
+    docs = _docs()
+    tp = find(docs, "TracingPolicyNamespaced", "waddleai-exec-allowlist-ray-worker")["spec"]
+    args = tp["kprobes"][0]["selectors"][0]["matchArgs"]
+    assert "/home/ray/anaconda3/bin/ninja" in args[0]["values"]
+    assert any(p.endswith("triton/backends/nvidia/bin/") for p in args[1]["values"])
+    assert tp["kprobes"][0]["selectors"][0]["matchActions"] == [{"action": "Sigkill"}]
+    obs = _docs(**{"tetragon.model.ray.mode": "observe"})
+    for comp in ("ray-head", "ray-worker"):
+        t = find(obs, "TracingPolicyNamespaced", f"waddleai-exec-allowlist-{comp}")
+        assert t["spec"]["kprobes"][0]["selectors"][0]["matchActions"] == [{"action": "Post"}]
+    llama = find(obs, "TracingPolicyNamespaced", "waddleai-model-exec-llamacpp")
+    assert llama["spec"]["kprobes"][0]["selectors"][0]["matchActions"] == [{"action": "Sigkill"}]
+
+
+def test_ray_start_carries_memory_and_cpus_without_a_shell():
+    """KubeRay derived --memory/--num-cpus from the resources; they come from the downward API."""
+    cs = _ray_containers(_docs())
+    assert "--memory=$(RAY_MEMORY_BYTES)" in cs["ray-head"]["args"]
+    assert "--num-cpus=0" in cs["ray-head"]["args"]  # head schedules nothing
+    worker = cs["ray-worker"]
+    assert "--num-cpus=$(RAY_NUM_CPUS)" in worker["args"]
+    envs = {e["name"]: e for e in worker["env"]}
+    assert envs["RAY_NUM_CPUS"]["valueFrom"]["resourceFieldRef"]["resource"] == "limits.cpu"
+    assert envs["RAY_MEMORY_BYTES"]["valueFrom"]["resourceFieldRef"]["resource"] == "limits.memory"
+
+
+def test_python_real_path_is_one_value_and_matches_the_image_base_python():
+    """UsesPython components append tetragon.exec.pythonRealPath; it matches the Dockerfiles."""
+    import re
+
+    from tests.helm.conftest import CHART_DIR
+
+    docs = _docs()
+    real = "/usr/local/bin/python3.13"
+    for comp in ("proxy", "management", "classification"):
+        pol = [d for d in docs if d["metadata"]["name"] == f"waddleai-exec-allowlist-{comp}"]
+        if not pol:
+            continue
+        values = pol[0]["spec"]["kprobes"][0]["selectors"][0]["matchArgs"][0]["values"]
+        assert values.count(real) == 1, comp
+    root = CHART_DIR.parents[2]
+    for dockerfile in (
+        "proxy/Dockerfile",
+        "services/management/Dockerfile",
+        "services/classification/Dockerfile",
+    ):
+        base = re.search(r"^FROM python:(\d+\.\d+)", (root / dockerfile).read_text(), re.M)
+        assert base and f"/usr/local/bin/python{base.group(1)}" == real, dockerfile
+
+
+def test_cluster_domain_is_configurable():
+    """ClusterDomain drives the DNS cluster pattern in the chart policies and the manager config."""
+    docs = _docs(**{"modelPodSecurity.networkPolicy.clusterDomain": "k8s.corp.example"})
+    dns = find(docs, "CiliumNetworkPolicy", "waddleai-model-llamacpp")["spec"]["egress"][0][
+        "toPorts"
+    ][0]["rules"]["dns"]
+    assert {"matchPattern": "*.k8s.corp.example"} in dns
+    assert {"matchPattern": "*.cluster.local"} not in dns
+    cfg = json.loads(_mgmt_env(docs)["WADDLEAI_MODEL_POD_SECURITY"])
+    assert cfg["cluster_domain"] == "k8s.corp.example"

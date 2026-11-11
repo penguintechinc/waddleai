@@ -229,6 +229,17 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         )
         db.commit()
 
+        # Kubernetes deployments: policies go in BEFORE any workload is applied from the exported
+        # manifest, so no pod ever starts without its isolation. A failure removes the new row.
+        if config.deployment_type == "kubernetes":
+            try:
+                self.apply_policies(deployment_id)
+            except Exception as exc:
+                logger.error("Ollama policy apply failed for %s: %s", config.name, exc)
+                db(db.ollama_deployments.id == deployment_id).delete()
+                db.commit()
+                return {"success": False, "error": f"policy apply failed: {exc}"}
+
         logger.info(f"Created Ollama deployment: {config.name}")
         return {
             "success": True,

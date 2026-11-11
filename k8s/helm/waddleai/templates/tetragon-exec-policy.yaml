@@ -58,6 +58,9 @@ spec:
                 {{- range $cfg.allowedExecs }}
                 - {{ . | quote }}
                 {{- end }}
+                {{- if $cfg.usesPython }}
+                - {{ $.Values.tetragon.exec.pythonRealPath | quote }}
+                {{- end }}
             {{- with $cfg.allowedPrefixes }}
             - index: 0
               operator: "NotPrefix"
@@ -67,7 +70,8 @@ spec:
                 {{- end }}
             {{- end }}
           matchActions:
-            {{- if eq $cfg.mode "enforce" }}
+            {{- /* Ray pods follow tetragon.model.ray.mode (observe-first runbook) */}}
+            {{- if eq (ternary $.Values.tetragon.model.ray.mode $cfg.mode (hasPrefix "ray-" $comp)) "enforce" }}
             - action: Sigkill
             {{- else }}
             - action: Post

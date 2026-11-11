@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+VAP_API = "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy"
 CHART_DIR = Path(__file__).resolve().parents[2] / "k8s" / "helm" / "waddleai"
 
 pytestmark = pytest.mark.skipif(
@@ -53,7 +54,9 @@ def render(
     a pass, per the house rule this test file exists to enforce.
     """
     cmd = ["helm", "template", "waddleai", ".", "-f", values_file]
-    for api_version in api_versions or []:
+    # an offline render has no cluster to advertise the VAP API; the chart FAILS without it
+    # (modelPodSecurity needs its protective admission policy), so tests advertise it explicitly
+    for api_version in [VAP_API, *(api_versions or [])]:
         cmd += ["--api-versions", api_version]
     for key, value in (set_values or {}).items():
         cmd += ["--set", f"{key}={value}"]

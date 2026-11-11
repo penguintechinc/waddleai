@@ -147,7 +147,7 @@ test-unit:
 	@scripts/check_collected_floor.sh $(PY) tests/unit -v --cov-report=html:htmlcov
 
 helm-render-vllm-ray: ## Render the chart with the vllm-ray fixture; any helm error fails
-	@helm template waddleai k8s/helm/waddleai -f tests/helm/fixtures/vllm-ray-base.yaml > /dev/null
+	@helm template waddleai k8s/helm/waddleai -f tests/helm/fixtures/vllm-ray-base.yaml --api-versions admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy > /dev/null
 	@echo "helm-render-vllm-ray: OK"
 
 test-helm: ## Helm render tests; any failure OR skip fails (a skipped render is not a pass)

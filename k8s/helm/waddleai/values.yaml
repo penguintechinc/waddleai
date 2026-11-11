@@ -1475,6 +1475,10 @@ tetragon:
   enabled: true
   forceRender: false
   exec:
+    # Real path of the python3 interpreter in the app images (the bprm hook resolves symlinks).
+    # Single source for proxy/management/classification (`usesPython: true`); a unit test pins it to
+    # the base python version in their Dockerfiles.
+    pythonRealPath: /usr/local/bin/python3.13
     # ENFORCED allowlist of each targeted component's own runtime binaries —
     # not observe-only (house security mandate: an allowlist that only logs
     # is the failure mode this policy exists to prevent). One
@@ -1492,10 +1496,10 @@ tetragon:
       proxy:
         enabled: true
         mode: enforce
+        usesPython: true
         allowedExecs:
           - /usr/local/bin/python3
           - /usr/local/bin/hypercorn
-          - /usr/local/bin/python3.13 # real path of the python3 symlink (bprm hook resolves links)
           # wait-for-schema-head initContainer runs from the management image (venv)
           - /opt/venv/bin/python3
       # Management — this repo's own image (services/management/Dockerfile),
@@ -1503,10 +1507,10 @@ tetragon:
       management:
         enabled: true
         mode: enforce
+        usesPython: true
         allowedExecs:
           - /opt/venv/bin/python3
           - /opt/venv/bin/hypercorn
-          - /usr/local/bin/python3.13
       # Classification — this repo's own image (services/classification/Dockerfile),
       # venv at /opt/venv; entrypoint `sh -c exec hypercorn`; the spawn-context NER
       # process pool re-execs sys.executable. Not yet verified on a live cluster:
@@ -1514,6 +1518,9 @@ tetragon:
       classification:
         enabled: true
         mode: enforce
+        usesPython: true
+        # dash cannot be scoped to an init container: the MAIN container's entrypoint is
+        # `sh -c exec hypercorn` and the preStop hook runs `sleep` in it.
         allowedExecs:
           - /bin/sh
           # preStop `sleep`
@@ -1522,7 +1529,6 @@ tetragon:
           - /opt/venv/bin/python3
           - /opt/venv/bin/hypercorn
           - /usr/local/bin/python3
-          - /usr/local/bin/python3.13
           - /usr/bin/dash # real path of /bin/sh (debian usr-merge)
       # Ollama and llama.cpp exec allowlists moved to tetragon.model.engines
       # (templates/tetragon-model-policy.yaml): they are scoped per container
@@ -1547,7 +1553,16 @@ tetragon:
           - /usr/bin/nvidia-smi
           - /usr/sbin/ldconfig
           - /sbin/ldconfig
+          - /home/ray/anaconda3/bin/ninja # vLLM/xgrammar/flashinfer JIT builds (pip `ninja`, all 3 images)
         allowedPrefixes:
+          # Triton ships its own assembler/disassembler per backend (nvidia: ptxas, cuobjdump,
+          # nvdisasm; amd/intel: lld and friends). Package paths for the pinned triton wheels
+          # (requirements.txt of images/vllm-ray-{cuda,rocm,xpu}); not verified inside the images.
+          - /home/ray/anaconda3/lib/python3.12/site-packages/triton/backends/nvidia/bin/
+          - /home/ray/anaconda3/lib/python3.12/site-packages/triton/backends/amd/
+          - /home/ray/anaconda3/lib/python3.12/site-packages/triton/backends/intel/
+          # CUDA toolkit nvcc/ptxas, if an image ships it (flashinfer/torch JIT)
+          - /usr/local/cuda/bin/
           # Triton compiles launcher stubs with the system gcc at runtime: gcc driver, cc1,
           # collect2, as, ld (versioned paths, hence prefixes). Output binaries live in /tmp and
           # are NOT on this list, so a compiled payload cannot be executed.
@@ -1577,6 +1592,13 @@ tetragon:
     # container that serves requests.
     enabled: true
     mode: enforce # enforce (Sigkill) | observe (Post)
+    # Ray head/worker policies (exec allowlist, read-only weights, egress) have their own switch:
+    # the JIT/toolchain binaries vLLM really execs are only knowable at runtime. Runbook: set
+    # `observe` on alpha, run a real vLLM deployment (first request compiles Triton kernels),
+    # collect the `process_exec` events Tetragon logs for the ray pods, add the legitimate real
+    # paths to tetragon.exec.components.ray-worker, then flip back to `enforce` before beta.
+    ray:
+      mode: enforce # enforce | observe
     # Egress kprobe: connect() to any address outside these CIDRs kills the process, except in
     # a container that is allowed to pull (then it is logged and the CNP FQDN allowlist
     # enforces). FQDNs cannot be expressed in a kprobe; the CNP is the FQDN control.
@@ -1660,19 +1682,24 @@ modelPodSecurity:
     # the proxy the ONLY caller (those management calls then fail).
     managementIngress: true
     # DNS names the model pods may resolve besides their pull hosts: in-cluster service names and
-    # the search-domain expansions of external names. Unverified on a live cluster: widen if a
+    # the search-domain expansions of external names (default `*.<clusterDomain>`). Unverified on a live cluster: widen if a
     # resolver treats the proxy's REFUSED on an expansion as fatal.
-    dnsClusterPatterns: ["*.cluster.local"]
+    clusterDomain: cluster.local
+    dnsClusterPatterns: [] # empty = derive "*.<clusterDomain>"
     # Namespaces the fleet manager may create per-deployment model-pod policies in (RBAC Role +
     # RoleBinding per namespace). Empty = the release namespace only.
     namespaces: []
-    # ValidatingAdmissionPolicy denying the management SA update/delete of CHART-OWNED
-    # (managed-by=Helm) TracingPolicyNamespaced and waddleai-model-*/waddleai-vllm-ray-* CNPs, so a
-    # compromised manager cannot loosen or remove the chart's model-pod isolation. Deny, not the
-    # chart-wide Warn default: a Warn here would protect nothing.
+    # ValidatingAdmissionPolicy denying the management SA update/delete of EVERY chart-owned
+    # (managed-by=Helm) TracingPolicyNamespaced, CiliumNetworkPolicy and
+    # CiliumClusterwideNetworkPolicy (incl. waddleai-default-deny), so a compromised manager cannot
+    # loosen or remove the chart's isolation. Deny, not the chart-wide Warn default.
+    # The render FAILS when modelPodSecurity is on but this policy cannot render (admissionPolicies
+    # off, or no admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy API) unless
+    # acknowledgeUnprotected is true.
     protectChartPolicies:
       enabled: true
       validationActions: [Deny]
+      acknowledgeUnprotected: false
     # Namespaces allowed to scrape engine metrics ports; none of these engines expose one by default.
     metricsPorts: []
     monitoringNamespace: monitoring

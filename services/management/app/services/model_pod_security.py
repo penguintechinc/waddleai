@@ -51,12 +51,13 @@ MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
 MANAGED_BY_FLEET = "waddleai-fleet"
 # management -> engine, least privilege (L7): only what the manager actually calls
 OLLAMA_MGMT_HTTP = (
+    {"method": "DELETE", "path": "^/api/delete$"},
     {"method": "GET", "path": "^/$"},
     {"method": "GET", "path": "^/api/tags$"},
     {"method": "POST", "path": "^/api/pull$"},
 )
 LLAMA_MGMT_HTTP = ({"method": "GET", "path": "^/health$"},)
-DEFAULT_DNS_CLUSTER_PATTERNS = ("*.cluster.local",)
+DEFAULT_CLUSTER_DOMAIN = "cluster.local"
 DEFAULT_PROXY_SELECTOR = {
     "app.kubernetes.io/name": "waddleai",
     "app.kubernetes.io/component": "proxy",
@@ -90,7 +91,8 @@ class ModelPodSecurityConfig:
     tetragon_mode: str = "enforce"
     management_ingress: bool = True
     private_cidrs: tuple[str, ...] = DEFAULT_PRIVATE_CIDRS
-    dns_cluster_patterns: tuple[str, ...] = DEFAULT_DNS_CLUSTER_PATTERNS
+    cluster_domain: str = DEFAULT_CLUSTER_DOMAIN
+    dns_cluster_patterns: tuple[str, ...] = ()  # empty = derive ``*.<cluster_domain>``
     huggingface: Preset = field(default_factory=lambda: Preset(True, HF_FQDNS, ("*.hf.co",)))
     ollama: Preset = field(default_factory=lambda: Preset(True, OLLAMA_FQDNS, ()))
     extra_fqdns: tuple[str, ...] = ()
@@ -140,7 +142,8 @@ def load_config(raw: str | None = None) -> ModelPodSecurityConfig:
         tetragon_mode=mode,
         management_ingress=bool(data.get("management_ingress", True)),
         private_cidrs=tuple(data.get("private_cidrs", base.private_cidrs)),
-        dns_cluster_patterns=tuple(data.get("dns_cluster_patterns", base.dns_cluster_patterns)),
+        cluster_domain=str(data.get("cluster_domain") or base.cluster_domain),
+        dns_cluster_patterns=tuple(data.get("dns_cluster_patterns") or ()),
         huggingface=_preset(data.get("huggingface"), base.huggingface),
         ollama=_preset(data.get("ollama"), base.ollama),
         extra_fqdns=tuple(data.get("extra_fqdns", ())),
@@ -181,7 +184,8 @@ def dns_rule(
     """
     names, patterns = pull_hosts(cfg, hf=hf, ollama=ollama)
     rules: list[dict[str, str]] = [{"matchName": n} for n in names]
-    allowed = [*patterns, *cfg.dns_cluster_patterns, *extra_patterns]
+    cluster = cfg.dns_cluster_patterns or (f"*.{cfg.cluster_domain}",)
+    allowed = [*patterns, *cluster, *extra_patterns]
     rules += [{"matchPattern": p} for p in dict.fromkeys(allowed)]
     return {
         "toEndpoints": [

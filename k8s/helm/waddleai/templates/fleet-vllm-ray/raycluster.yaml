@@ -22,6 +22,11 @@ spec:
     idleTimeoutSeconds: {{ $v.autoscaler.idleTimeoutSeconds }}
   headGroupSpec:
     serviceType: ClusterIP
+    {{- /* rayStartParams are NOT dead: the in-tree autoscaler reads num-cpus/num-gpus/resources from
+           them to size node types. The container itself is started from the explicit command/args
+           below. KubeRay's `ulimit -n 65536` wrapper is dropped (no shell): Ray's raylet raises
+           the soft NOFILE limit to the container's hard limit itself, and containerd's default
+           hard limit is far above 65536. */}}
     rayStartParams:
       dashboard-host: "0.0.0.0"
       dashboard-port: {{ $v.dashboard.port | quote }}
@@ -72,6 +77,7 @@ spec:
               - --num-cpus=0
               - --num-gpus=0
               - --include-dashboard=true
+              - --memory=$(RAY_MEMORY_BYTES)
               - --metrics-export-port=8080
               - --dashboard-agent-listen-port=52365
             {{- /* KubeRay's default probes exec `bash -c wget ...`; httpGet needs no exec in the container. */}}
@@ -95,6 +101,10 @@ spec:
             env:
               - name: POD_IP
                 valueFrom: {fieldRef: {fieldPath: status.podIP}}
+              # --memory as KubeRay derives it from the container limit (bytes; node allocatable
+              # when no limit is set, which is also what Ray autodetects)
+              - name: RAY_MEMORY_BYTES
+                valueFrom: {resourceFieldRef: {containerName: ray-head, resource: limits.memory, divisor: "1"}}
               {{- include "waddleai.vllmRay.authEnv" . | nindent 14 }}
             resources:
               {{- toYaml $v.head.resources | nindent 14 }}
@@ -151,6 +161,8 @@ spec:
                 - --address=$(FQ_RAY_IP):{{ $v.ports.gcs }}
                 - --node-ip-address=$(POD_IP)
                 - --num-gpus={{ int $g.gpusPerWorker }}
+                - --num-cpus=$(RAY_NUM_CPUS)
+                - --memory=$(RAY_MEMORY_BYTES)
                 - {{ printf "--resources=%s" (toJson $res) | quote }}
                 - --min-worker-port={{ $v.ports.workerMin }}
                 - --max-worker-port={{ $v.ports.workerMax }}
@@ -171,6 +183,10 @@ spec:
               env:
                 - name: POD_IP
                   valueFrom: {fieldRef: {fieldPath: status.podIP}}
+                - name: RAY_NUM_CPUS
+                  valueFrom: {resourceFieldRef: {containerName: ray-worker, resource: limits.cpu, divisor: "1"}}
+                - name: RAY_MEMORY_BYTES
+                  valueFrom: {resourceFieldRef: {containerName: ray-worker, resource: limits.memory, divisor: "1"}}
                 - {name: NCCL_SOCKET_NTHREADS, value: "4"}
                 - {name: NCCL_NSOCKS_PERTHREAD, value: "4"}
                 - {name: NCCL_IB_DISABLE, value: "1"}

@@ -1075,7 +1075,11 @@ class LlamaCppManager(InferenceFleetBackend):
             for doc in manifests:
                 kind, name = doc["kind"], doc["metadata"]["name"]
                 if kind in (_CNP, TRACING_KIND):
-                    apply_policy(custom, namespace, doc)  # idempotent: adopts the same owner's
+                    # idempotent: adopts the same owner's object. An ADOPTED (replaced) policy
+                    # protects pods that already exist, so it must never enter the rollback set.
+                    if apply_policy(custom, namespace, doc) != "created":
+                        logger.info("adopted existing %s %s for RPC %s", kind, name, base)
+                        continue
                 elif kind == "Service":
                     core.create_namespaced_service(namespace=namespace, body=doc)
                 elif kind == "StatefulSet":

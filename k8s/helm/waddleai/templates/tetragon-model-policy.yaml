@@ -16,8 +16,9 @@ Same guard as the other Tetragon templates (values toggles + capability check / 
 */}}
 {{- if and .Values.tetragon.enabled .Values.tetragon.model.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")) -}}
 {{- $m := .Values.tetragon.model }}
-{{- $action := ternary "Sigkill" "Post" (eq $m.mode "enforce") }}
 {{- range $eng, $cfg := $m.engines }}
+{{- $mode := ternary $m.ray.mode $m.mode (hasPrefix "ray-" $eng) }}
+{{- $action := ternary "Sigkill" "Post" (eq $mode "enforce") }}
 {{- /* ray engines only exist with the vLLM-on-Ray fleet */}}
 {{- if and $cfg.enabled (or (not (hasPrefix "ray-" $eng)) $.Values.fleet.vllmRay.enabled) }}
 {{- $serve := default list $cfg.serveContainers }}

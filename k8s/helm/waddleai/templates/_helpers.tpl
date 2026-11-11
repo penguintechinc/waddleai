@@ -939,7 +939,7 @@ Emits nothing extra when every preset is off, so pull egress is closed by defaul
           {{- range ($names | uniq) }}
           - matchName: {{ . | quote }}
           {{- end }}
-          {{- range (concat $patterns (default list .ctx.Values.modelPodSecurity.networkPolicy.dnsClusterPatterns) | uniq) }}
+          {{- range (concat $patterns (default (list (printf "*.%s" .ctx.Values.modelPodSecurity.networkPolicy.clusterDomain)) .ctx.Values.modelPodSecurity.networkPolicy.dnsClusterPatterns) | uniq) }}
           - matchPattern: {{ . | quote }}
           {{- end }}
 {{- if or $names $patterns }}
@@ -970,6 +970,7 @@ and the SAME capability/forceRender gates as the chart's own CRD templates: no C
       "network_policy" (and $np.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2"))
       "management_ingress" $np.managementIngress
       "tetragon" (and .Values.tetragon.enabled $m.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")))
+      "cluster_domain" $np.clusterDomain
       "dns_cluster_patterns" $np.dnsClusterPatterns
       "tetragon_mode" $m.mode
       "private_cidrs" $m.privateCIDRs
