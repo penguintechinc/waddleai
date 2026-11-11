@@ -907,3 +907,72 @@ node, so a missing class fails the render instead of emitting it.
 {{- printf "%s.com/gpu" $type -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+CNP egress rules shared by every model-pod policy. Args: dict "ctx" <root> "hf" <bool> "ollama" <bool>.
+Always emits the kube-dns rule WITH the DNS proxy rule (toFQDNs only matches names Cilium saw
+resolved), then one TCP/443-only toFQDNs rule when a modelPull preset (or extraFQDNs) is active.
+Emits nothing extra when every preset is off, so pull egress is closed by default-deny.
+*/}}
+{{- define "waddleai.modelPull.egress" -}}
+{{- $mp := .ctx.Values.modelPull -}}
+{{- $names := list -}}
+{{- $patterns := list -}}
+{{- if and .hf $mp.huggingface.enabled -}}
+{{- $names = concat $names $mp.huggingface.fqdns -}}
+{{- $patterns = concat $patterns $mp.huggingface.patterns -}}
+{{- end -}}
+{{- if and .ollama $mp.ollama.enabled -}}
+{{- $names = concat $names $mp.ollama.fqdns -}}
+{{- $patterns = concat $patterns $mp.ollama.patterns -}}
+{{- end -}}
+{{- $names = concat $names (default list $mp.extraFQDNs) -}}
+- toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": kube-system
+        "k8s-app": kube-dns
+  toPorts:
+    - ports:
+        - {port: "53", protocol: ANY}
+      rules:
+        dns:
+          - matchPattern: "*"
+{{- if or $names $patterns }}
+- toFQDNs:
+    {{- range ($names | uniq) }}
+    - matchName: {{ . | quote }}
+    {{- end }}
+    {{- range ($patterns | uniq) }}
+    - matchPattern: {{ . | quote }}
+    {{- end }}
+  toPorts:
+    - ports:
+        - {port: "443", protocol: TCP}
+{{- end }}
+{{- end }}
+
+{{/*
+Model-pod security settings, JSON-encoded for the management fleet manager
+(WADDLEAI_MODEL_POD_SECURITY, parsed by services/management/app/services/model_pod_security.py)
+so the objects it generates match what this chart renders. Same keys/defaults as values.yaml.
+*/}}
+{{- define "waddleai.modelPodSecurity.config" -}}
+{{- $mp := .Values.modelPull -}}
+{{- $np := .Values.modelPodSecurity.networkPolicy -}}
+{{- $m := .Values.tetragon.model -}}
+{{- dict
+      "network_policy" (and $np.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled)
+      "management_ingress" $np.managementIngress
+      "tetragon" (and .Values.tetragon.enabled $m.enabled)
+      "tetragon_mode" $m.mode
+      "private_cidrs" $m.privateCIDRs
+      "huggingface" (dict "enabled" $mp.huggingface.enabled "fqdns" $mp.huggingface.fqdns "patterns" $mp.huggingface.patterns)
+      "ollama" (dict "enabled" $mp.ollama.enabled "fqdns" $mp.ollama.fqdns "patterns" $mp.ollama.patterns)
+      "extra_fqdns" (default list $mp.extraFQDNs)
+      "llamacpp_serve_execs" $m.engines.llamacpp.allowedExecs
+      "llamacpp_pull_execs" $m.engines.llamacpp.pullAllowedExecs
+      "ollama_execs" $m.engines.ollama.allowedExecs
+      "proxy_selector" .Values.cilium.topology.selectors.aiproxy
+      "management_selector" .Values.cilium.topology.selectors.management
+  | toJson -}}
+{{- end }}

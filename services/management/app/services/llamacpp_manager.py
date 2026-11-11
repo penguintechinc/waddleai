@@ -13,13 +13,27 @@ import re
 import sys
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
-from urllib.parse import urlsplit
 
 import requests
 import yaml
 
+from services.management.app.services.model_pod_security import (
+    RPC_SERVE_EXECS,
+    RPC_WAIT_EXECS,
+    TRACING_GROUP,
+    TRACING_KIND,
+    TRACING_PLURAL,
+    TRACING_VERSION,
+    serve_policies,
+)
+from services.management.app.services.model_pod_security import (
+    cnp as model_cnp,
+)
+from services.management.app.services.model_pod_security import (
+    load_config as load_security_config,
+)
 from shared.fleet.base import (
     BackendType,
     Endpoint,
@@ -59,6 +73,8 @@ RPC_DEVICE_BY_VENDOR: dict[int, str] = {1: "CUDA0", 2: "ROCm0", 3: "SYCL0"}
 # AMD / Intel device-plugin resources; NVIDIA is per class (see ``resource_for``).
 RPC_RESOURCE_BY_VENDOR: dict[int, str] = {2: "amd.com/gpu", 3: "gpu.intel.com/i915"}
 _NVIDIA = 1
+_CNP = "CiliumNetworkPolicy"
+_TRACING_SUFFIXES = ("exec", "pull-exec", "readonly", "egress", "pull-egress")
 _ROLE_LABEL = "waddleai.penguintech.io/llamacpp-role"
 _DEPLOYMENT_LABEL = "waddleai.penguintech.io/llamacpp-deployment"
 _OWNER_LABEL = "waddleai.penguintech.io/llamacpp-public-id"
@@ -412,7 +428,10 @@ class LlamaCppManager(InferenceFleetBackend):
             "spec": {
                 "selector": {"matchLabels": {"app": ds_name}},
                 "template": {
-                    "metadata": {"labels": {"app": ds_name}},
+                    "metadata": {
+                        # public-id label: the per-deployment policies select on it
+                        "labels": {"app": ds_name, _OWNER_LABEL: str(deployment.public_id)}
+                    },
                     "spec": {
                         "securityContext": {
                             "fsGroup": 1000,
@@ -446,7 +465,44 @@ class LlamaCppManager(InferenceFleetBackend):
             },
         }
 
-        return yaml.dump_all([daemonset, service], default_flow_style=False)
+        policies = self._single_policies(deployment, ds_name, namespace)
+        return yaml.dump_all([daemonset, service, *policies], default_flow_style=False)
+
+    @staticmethod
+    def _single_policies(deployment, ds_name: str, namespace: str) -> list[dict]:
+        """CNP + Tetragon policies for a single-node pod set (empty when the chart disabled them).
+
+        Selected by ``app`` + the deployment's public-id label, so they can never match another
+        deployment's or org's pods.
+        """
+        cfg = load_security_config()
+        labels = {"app": ds_name, _OWNER_LABEL: str(deployment.public_id)}
+        docs: list[dict] = []
+        if cfg.network_policy:
+            docs.append(
+                model_cnp(
+                    name=f"{ds_name}-allow",
+                    namespace=namespace,
+                    labels=labels,
+                    description="llama.cpp: proxy (+management) in; DNS and model hosts out",
+                    cfg=cfg,
+                    ports=[8080],
+                    hf=True,
+                )
+            )
+        if cfg.tetragon:
+            docs += serve_policies(
+                base=ds_name,
+                namespace=namespace,
+                labels=labels,
+                cfg=cfg,
+                execs=cfg.llamacpp_serve_execs,
+                serve_containers=["llama-server"],
+                pull_containers=["download-model"],
+                pull_execs=cfg.llamacpp_pull_execs,
+                readonly_paths=["/models"],
+            )
+        return docs
 
     def deploy_daemonset(self, deployment) -> None:
         """Create the DaemonSet and Service in K8s. Raises on K8s API error."""
@@ -454,9 +510,14 @@ class LlamaCppManager(InferenceFleetBackend):
         docs = list(yaml.safe_load_all(manifest_yaml))
         ds_doc = next(d for d in docs if d["kind"] == "DaemonSet")
         svc_doc = next(d for d in docs if d["kind"] == "Service")
+        policy_docs = [d for d in docs if d["kind"] in (_CNP, TRACING_KIND)]
 
         namespace = deployment.k8s_namespace or "waddleai"
         ds_name = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
+        if policy_docs:  # policies first: no pod ever starts without its network/runtime policy
+            custom = get_k8s_custom_client()
+            for doc in policy_docs:
+                self._create_policy(custom, namespace, doc)
         apps_client = get_k8s_apps_client()
 
         try:
@@ -487,6 +548,18 @@ class LlamaCppManager(InferenceFleetBackend):
         )
         logger.info(f"Deployed llama.cpp DaemonSet {ds_name} in {namespace}")
 
+    @staticmethod
+    def _create_policy(custom, namespace: str, doc: dict) -> None:
+        """Create one CiliumNetworkPolicy or TracingPolicyNamespaced object."""
+        if doc["kind"] == _CNP:
+            custom.create_namespaced_custom_object(
+                "cilium.io", "v2", namespace, "ciliumnetworkpolicies", doc
+            )
+        else:
+            custom.create_namespaced_custom_object(
+                TRACING_GROUP, TRACING_VERSION, namespace, TRACING_PLURAL, doc
+            )
+
     def remove_daemonset(self, deployment, force: bool = False) -> None:
         """Delete the DaemonSet and Service. Requires force=True if status is running."""
         if deployment.status == "running" and not force:
@@ -513,6 +586,23 @@ class LlamaCppManager(InferenceFleetBackend):
             except Exception as exc:
                 if getattr(exc, "status", None) != 404:  # already gone is the goal state
                     raise
+
+        # policies go last (no pod they protect can still be running). Always attempted, even
+        # with the chart settings now off: a leftover object would 409 a re-deploy. 404 = gone.
+        custom = get_k8s_custom_client()
+        refs = [(_CNP, f"{ds_name}-allow")] + [
+            (TRACING_KIND, f"{ds_name}-{suffix}") for suffix in _TRACING_SUFFIXES
+        ]
+        leftovers = [
+            f"{kind}/{name}"
+            for kind, name in refs
+            if self._rpc_delete_one(
+                None, None, custom, namespace, {"kind": kind, "metadata": {"name": name}}
+            )
+            is not None
+        ]
+        if leftovers:
+            raise RuntimeError(f"could not delete {', '.join(leftovers)}")
 
         db = self.db
         db(db.llamacpp_deployments.id == deployment.id).update(status="stopped")
@@ -609,6 +699,7 @@ class LlamaCppManager(InferenceFleetBackend):
         )
         objects.append(self._rpc_worker_policy(base, namespace, pid))
         objects.append(self._rpc_head_policy(deployment, base, namespace))
+        objects.extend(self._rpc_tracing_policies(base, namespace, pid))
         return objects
 
     @staticmethod
@@ -855,68 +946,41 @@ class LlamaCppManager(InferenceFleetBackend):
         }
 
     def _rpc_head_policy(self, deployment, base: str, namespace: str) -> dict:
-        pid = str(deployment.public_id)
-        """Head CNP: ingress from the proxy and management only; egress to DNS, workers, source.
+        """Head CNP: proxy (+management) in; DNS, workers and approved model hosts out.
 
         Every allowed flow requires Cilium mutual auth. The default-deny egress would otherwise
-        leave the head unable to resolve its workers, reach them, or fetch the model.
+        leave the head unable to resolve its workers or reach them. Model-pull egress is the
+        ``modelPull.huggingface`` preset (+ extra FQDNs) only, TCP/443 — never "any host".
         """
+        pid = str(deployment.public_id)
         auth = {"mode": "required"}
-        proxy = _topology_selector("aiproxy", _RPC_DEFAULT_PROXY_SELECTOR)
-        management = _topology_selector("management", _RPC_DEFAULT_MANAGEMENT_SELECTOR)
-        head_labels = self._rpc_labels(base, "head", pid)
-        worker_labels = self._rpc_labels(base, "worker", pid)
-        head_egress: list[dict[str, Any]] = [
-            {
-                "toEndpoints": [
-                    {
-                        "matchLabels": {
-                            "k8s:io.kubernetes.pod.namespace": "kube-system",
-                            "k8s-app": "kube-dns",
-                        }
-                    }
-                ],
-                "toPorts": [
-                    {
-                        "ports": [{"port": "53", "protocol": "ANY"}],
-                        "rules": {"dns": [{"matchPattern": "*"}]},
-                    }
-                ],
-            },
-            {
-                "toEndpoints": [{"matchLabels": worker_labels}],
-                "authentication": auth,
-                "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
-            },
-        ]
-        host = urlsplit(deployment.model_url or "").hostname
-        if host:
-            fqdns = [{"matchName": host}]
-            if host.endswith("huggingface.co"):
-                fqdns.append({"matchPattern": "*.hf.co"})  # HF redirects weights to its CDN
-            head_egress.append(
-                {"toFQDNs": fqdns, "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]}
-            )
-        return {
-            "apiVersion": "cilium.io/v2",
-            "kind": "CiliumNetworkPolicy",
-            "metadata": {"name": f"{base}-head-allow", "namespace": namespace},
-            "spec": {
-                "description": "llama.cpp RPC head: proxy/management in, workers and model out",
-                "endpointSelector": {"matchLabels": head_labels},
-                "ingress": [
-                    {
-                        "fromEndpoints": [{"matchLabels": proxy}, {"matchLabels": management}],
-                        "authentication": auth,
-                        "toPorts": [{"ports": [{"port": "8080", "protocol": "TCP"}]}],
-                    }
-                ],
-                "egress": head_egress,
-            },
-        }
+        cfg = load_security_config()
+        # the policy is built from the chart's selectors, never a hardcoded copy
+        cfg = replace(
+            cfg,
+            proxy_selector=_topology_selector("aiproxy", _RPC_DEFAULT_PROXY_SELECTOR),
+            management_selector=_topology_selector("management", _RPC_DEFAULT_MANAGEMENT_SELECTOR),
+        )
+        return model_cnp(
+            name=f"{base}-head-allow",
+            namespace=namespace,
+            labels=self._rpc_labels(base, "head", pid),
+            description="llama.cpp RPC head: proxy/management in, workers and model hosts out",
+            cfg=cfg,
+            ports=[8080],
+            hf=True,
+            peer_egress=[
+                {
+                    "toEndpoints": [{"matchLabels": self._rpc_labels(base, "worker", pid)}],
+                    "authentication": auth,
+                    "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
+                }
+            ],
+            auth=auth,
+        )
 
     def _rpc_worker_policy(self, base: str, namespace: str, pid: str) -> dict:
-        """Worker CNP: the RPC port admits only this deployment's head (rpc-server has no auth)."""
+        """Worker CNP: the RPC port admits only this deployment's head; the worker has no egress."""
         auth = {"mode": "required"}
         return {
             "apiVersion": "cilium.io/v2",
@@ -932,8 +996,39 @@ class LlamaCppManager(InferenceFleetBackend):
                         "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
                     }
                 ],
+                "egress": [],  # rpc-server never initiates a connection
             },
         }
+
+    def _rpc_tracing_policies(self, base: str, namespace: str, pid: str) -> list[dict]:
+        """Tetragon policies for the head (serve vs pull containers) and the rpc-server workers.
+
+        Empty unless the chart enabled them (tetragon.model.enabled). Selected by the per-deployment
+        public-id labels, so one deployment's policy can never apply to another org's pods.
+        """
+        cfg = load_security_config()
+        if not cfg.tetragon:
+            return []
+        head = serve_policies(
+            base=f"{base}-head",
+            namespace=namespace,
+            labels=self._rpc_labels(base, "head", pid),
+            cfg=cfg,
+            execs=cfg.llamacpp_serve_execs,
+            serve_containers=["llama-server"],
+            pull_containers=["download-model", "wait-workers"],
+            pull_execs=tuple(dict.fromkeys((*cfg.llamacpp_pull_execs, *RPC_WAIT_EXECS))),
+            readonly_paths=["/models"],
+        )
+        worker = serve_policies(
+            base=f"{base}-worker",
+            namespace=namespace,
+            labels=self._rpc_labels(base, "worker", pid),
+            cfg=cfg,
+            execs=RPC_SERVE_EXECS,
+            serve_containers=["rpc-server"],
+        )
+        return [*head, *worker]
 
     def deploy_rpc(
         self, deployment, layout: RpcLayout, hostnames: dict[str, str], image: str
@@ -949,16 +1044,20 @@ class LlamaCppManager(InferenceFleetBackend):
             deployment, layout, hostnames, image, int(deployment.n_ctx or 4096)
         )
         base, namespace = self._rpc_names(deployment)
-        order = {"CiliumNetworkPolicy": 0, "Service": 1, "StatefulSet": 2, "Deployment": 3}
+        order = {_CNP: 0, TRACING_KIND: 0, "Service": 1, "StatefulSet": 2, "Deployment": 3}
         manifests.sort(key=lambda doc: order[doc["kind"]])
         apps, core, custom = get_k8s_apps_client(), get_k8s_core_client(), get_k8s_custom_client()
         created: list[dict] = []
         try:
             for doc in manifests:
                 kind, name = doc["kind"], doc["metadata"]["name"]
-                if kind == "CiliumNetworkPolicy":
+                if kind == _CNP:
                     custom.create_namespaced_custom_object(
                         "cilium.io", "v2", namespace, "ciliumnetworkpolicies", doc
+                    )
+                elif kind == TRACING_KIND:
+                    custom.create_namespaced_custom_object(
+                        TRACING_GROUP, TRACING_VERSION, namespace, TRACING_PLURAL, doc
                     )
                 elif kind == "Service":
                     core.create_namespaced_service(namespace=namespace, body=doc)
@@ -996,9 +1095,13 @@ class LlamaCppManager(InferenceFleetBackend):
         """Delete one object; return ``Kind/name`` on a non-404 failure, else None."""
         kind, name = doc["kind"], doc["metadata"]["name"]
         try:
-            if kind == "CiliumNetworkPolicy":
+            if kind == _CNP:
                 custom.delete_namespaced_custom_object(
                     "cilium.io", "v2", namespace, "ciliumnetworkpolicies", name
+                )
+            elif kind == TRACING_KIND:
+                custom.delete_namespaced_custom_object(
+                    TRACING_GROUP, TRACING_VERSION, namespace, TRACING_PLURAL, name
                 )
             elif kind == "Service":
                 core.delete_namespaced_service(name=name, namespace=namespace)
@@ -1033,7 +1136,7 @@ class LlamaCppManager(InferenceFleetBackend):
         ``pods/<selector>``); an empty list means the whole set is gone.
         """
         has_workloads = any(d["kind"] in ("StatefulSet", "Deployment") for d in docs)
-        for kinds in (("StatefulSet",), ("Deployment",), ("Service",), ("CiliumNetworkPolicy",)):
+        for kinds in (("StatefulSet",), ("Deployment",), ("Service",), (_CNP, TRACING_KIND)):
             if kinds == ("Service",) and has_workloads:
                 if not self._rpc_wait_pods_gone(core, namespace, selector):
                     logger.error(
@@ -1123,8 +1226,14 @@ class LlamaCppManager(InferenceFleetBackend):
             namespace=namespace, label_selector=selector
         )
         docs: list[dict] = [
-            {"kind": "CiliumNetworkPolicy", "metadata": {"name": f"{base}-head-allow"}},
-            {"kind": "CiliumNetworkPolicy", "metadata": {"name": f"{base}-rpc-allow"}},
+            {"kind": _CNP, "metadata": {"name": f"{base}-head-allow"}},
+            {"kind": _CNP, "metadata": {"name": f"{base}-rpc-allow"}},
+            # always attempted: a 404 (policy never created / Tetragon absent) is the goal state
+            *(
+                {"kind": TRACING_KIND, "metadata": {"name": f"{base}-{role}-{suffix}"}}
+                for role in ("head", "worker")
+                for suffix in _TRACING_SUFFIXES
+            ),
             {"kind": "Service", "metadata": {"name": f"{base}-svc"}},
             {"kind": "Service", "metadata": {"name": f"{base}-rpc"}},
             *(

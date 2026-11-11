@@ -1,0 +1,199 @@
+{{/*
+Tetragon runtime policies for self-hosted model pods (Ollama, llama.cpp, vLLM-on-Ray head/
+workers). These run on plain runc, never Kata, so Tetragon is the in-pod enforcement layer.
+ENFORCED (Sigkill) unless tetragon.model.mode=observe. One TracingPolicyNamespaced per engine
+and per concern, each scoped by the chart's pod labels, and where an engine has separate
+serve vs pull/init containers the policy is scoped to the container (Tetragon >= 1.1
+`containerSelector`) so a shell/curl is allowed only in the pull container, never the
+serving one:
+  exec    sys_execve NotIn allowlist -> kill (no shells, no package managers)
+  write   security_file_permission with a write mask under readOnlyPaths -> kill
+  egress  tcp_connect to an address outside tetragon.model.privateCIDRs -> kill, EXCEPT where
+          the container may pull (then Post: the CNP FQDN allowlist is the control; a kprobe
+          cannot match FQDNs)
+Ray exec is enforced by tetragon-exec-policy.yaml (tetragon.exec.components.ray-*), not here.
+Same guard as the other Tetragon templates (values toggles + capability check / forceRender).
+*/}}
+{{- if and .Values.tetragon.enabled .Values.tetragon.model.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")) -}}
+{{- $m := .Values.tetragon.model }}
+{{- $action := ternary "Sigkill" "Post" (eq $m.mode "enforce") }}
+{{- range $eng, $cfg := $m.engines }}
+{{- /* ray engines only exist with the vLLM-on-Ray fleet */}}
+{{- if and $cfg.enabled (or (not (hasPrefix "ray-" $eng)) $.Values.fleet.vllmRay.enabled) }}
+{{- $serve := default list $cfg.serveContainers }}
+{{- $pull := default list $cfg.pullContainers }}
+{{- if $cfg.allowedExecs }}
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-model-exec-{{ $eng }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $eng }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: {{ toJson $cfg.components }}
+  {{- if $serve }}
+  containerSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: {{ toJson $serve }}
+  {{- end }}
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "NotIn"
+              values:
+                {{- range $cfg.allowedExecs }}
+                - {{ . | quote }}
+                {{- end }}
+          matchActions:
+            - action: {{ $action }}
+{{- end }}
+{{- if and $pull $cfg.pullAllowedExecs }}
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-model-pull-exec-{{ $eng }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $eng }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: {{ toJson $cfg.components }}
+  containerSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: {{ toJson $pull }}
+  kprobes:
+    - call: "sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "NotIn"
+              values:
+                {{- range $cfg.pullAllowedExecs }}
+                - {{ . | quote }}
+                {{- end }}
+          matchActions:
+            - action: {{ $action }}
+{{- end }}
+{{- if $cfg.readOnlyPaths }}
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-model-readonly-{{ $eng }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $eng }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: {{ toJson $cfg.components }}
+  {{- if $serve }}
+  containerSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: {{ toJson $serve }}
+  {{- end }}
+  kprobes:
+    - call: "security_file_permission"
+      syscall: false
+      args:
+        - index: 0
+          type: "file"
+        - index: 1
+          type: "int"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "Prefix"
+              values:
+                {{- range $cfg.readOnlyPaths }}
+                - {{ . | quote }}
+                {{- end }}
+            - index: 1
+              operator: "Equal"
+              values: ["2", "8"]
+          matchActions:
+            - action: {{ $action }}
+{{- end }}
+{{- if or $serve $cfg.pullsPodWide $cfg.allowedExecs }}
+---
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicyNamespaced
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-model-egress-{{ $eng }}
+  namespace: {{ $.Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $eng }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: {{ toJson $cfg.components }}
+  {{- if $serve }}
+  containerSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: {{ toJson $serve }}
+  {{- end }}
+  kprobes:
+    - call: "tcp_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+      selectors:
+        - matchArgs:
+            - index: 0
+              operator: "NotDAddr"
+              values:
+                {{- range $m.privateCIDRs }}
+                - {{ . | quote }}
+                {{- end }}
+          matchActions:
+            {{- /* pod-wide pullers (Ollama pulls via its API) cannot be killed on public connects; the CNP FQDN allowlist enforces there */}}
+            - action: {{ if $cfg.pullsPodWide }}Post{{ else }}{{ $action }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

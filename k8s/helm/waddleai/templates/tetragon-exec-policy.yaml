@@ -15,8 +15,8 @@ rather than failing `helm install`.
 */}}
 {{- if and .Values.tetragon.enabled .Values.tetragon.exec.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")) -}}
 {{- range $comp, $cfg := .Values.tetragon.exec.components }}
-{{- /* ray-worker only exists when the vLLM-on-Ray fleet is enabled: never render its policy otherwise. */}}
-{{- if and $cfg.enabled (or (ne $comp "ray-worker") $.Values.fleet.vllmRay.enabled) }}
+{{- /* ray-head/ray-worker only exist when the vLLM-on-Ray fleet is enabled: never render their policies otherwise. */}}
+{{- if and $cfg.enabled (or (not (hasPrefix "ray-" $comp)) $.Values.fleet.vllmRay.enabled) }}
 ---
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicyNamespaced

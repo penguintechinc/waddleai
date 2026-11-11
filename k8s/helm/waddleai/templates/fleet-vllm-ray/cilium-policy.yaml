@@ -3,7 +3,7 @@ Ray cluster network policy (spec 6.3, decision D1: topology.fleetPorts is NOT to
 ports never open on Ollama/llama.cpp pods). Same guard as the fleet policies in
 cilium-network-policy.yaml. The chart-wide default-deny covers ingress AND egress, so besides the
 ingress rules every flow needs its matching egress rule: Ray pods may reach DNS and their own
-cluster peers only (workers do not download from the internet, spec 4.5 step 2), and management
+cluster peers only, plus modelPull.extraFQDNs if set (weights come from the shared /models PVC; the HuggingFace pull runs in the labelled model-pull Job, see model-pod-network-policy.yaml), and management
 and the AI proxy get head-only egress.
 */}}
 {{- if and .Values.fleet.vllmRay.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
@@ -66,13 +66,7 @@ spec:
             - {port: {{ $v.ports.client | quote }}, protocol: TCP}
             - {port: {{ $v.ports.workerMin | quote }}, endPort: {{ $v.ports.workerMax }}, protocol: TCP}
   egress:
-    - toEndpoints:
-        - matchLabels:
-            "k8s:io.kubernetes.pod.namespace": kube-system
-            "k8s-app": kube-dns
-      toPorts:
-        - ports:
-            - {port: "53", protocol: ANY}
+    {{- include "waddleai.modelPull.egress" (dict "ctx" $ "hf" false "ollama" false) | nindent 4 }}
     - toEndpoints:
         - matchLabels:
             ray.io/cluster: {{ $cluster }}
@@ -134,13 +128,7 @@ spec:
         - ports:
             - {port: "1", endPort: 65535, protocol: TCP}
   egress:
-    - toEndpoints:
-        - matchLabels:
-            "k8s:io.kubernetes.pod.namespace": kube-system
-            "k8s-app": kube-dns
-      toPorts:
-        - ports:
-            - {port: "53", protocol: ANY}
+    {{- include "waddleai.modelPull.egress" (dict "ctx" $ "hf" false "ollama" false) | nindent 4 }}
     - toEndpoints:
         - matchLabels:
             ray.io/cluster: {{ $cluster }}

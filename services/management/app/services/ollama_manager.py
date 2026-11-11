@@ -15,6 +15,15 @@ from typing import Any
 import httpx
 import yaml
 
+from services.management.app.services.model_pod_security import (
+    cnp as model_cnp,
+)
+from services.management.app.services.model_pod_security import (
+    load_config as load_security_config,
+)
+from services.management.app.services.model_pod_security import (
+    serve_policies,
+)
 from shared.fleet.base import (
     BackendType,
     Endpoint,
@@ -32,6 +41,8 @@ from shared.fleet.vllm_ray.coexistence import (
 )
 
 logger = logging.getLogger(__name__)
+
+OLLAMA_OWNER_LABEL = "waddleai.penguintech.io/ollama-public-id"
 
 
 class DeploymentMode(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
@@ -339,6 +350,56 @@ class OllamaDeploymentManager(InferenceFleetBackend):
 
         return yaml.dump(compose, default_flow_style=False, sort_keys=False)
 
+    @staticmethod
+    def _pod_labels(deployment) -> dict[str, str]:
+        """Pod labels: ``app`` plus the public id the per-deployment policies select on."""
+        labels = {"app": f"ollama-{deployment.name}"}
+        public_id = getattr(deployment, "public_id", None)
+        if public_id is not None:
+            labels[OLLAMA_OWNER_LABEL] = str(public_id)
+        return labels
+
+    def _model_pod_policies(self, deployment) -> list[dict[str, Any]]:
+        """CNP + Tetragon policies for one Ollama deployment (empty when the chart disabled them).
+
+        Selected by the deployment's public-id label, so they cannot match another org's pods.
+        Pulls happen through Ollama's own API in the serving container (management /api/pull),
+        so egress cannot be split by container: the CNP FQDN preset is the control and the
+        egress kprobe only logs public connects. The weights path stays writable for the same
+        reason.
+        """
+        cfg = load_security_config()
+        namespace = getattr(deployment, "namespace", None) or "waddleai"
+        labels = self._pod_labels(deployment)
+        if OLLAMA_OWNER_LABEL not in labels:
+            return []  # no public id -> no per-deployment selector; refuse a name-only policy
+        base = f"ollama-{deployment.name}"
+        docs: list[dict[str, Any]] = []
+        if cfg.network_policy:
+            docs.append(
+                model_cnp(
+                    name=f"{base}-allow",
+                    namespace=namespace,
+                    labels=labels,
+                    description="Ollama: proxy (+management) in; DNS and the Ollama registry out",
+                    cfg=cfg,
+                    ports=[11434],
+                    ollama=True,
+                )
+            )
+        if cfg.tetragon:
+            docs += serve_policies(
+                base=base,
+                namespace=namespace,
+                labels=labels,
+                cfg=cfg,
+                # upstream fleet image: /bin/ollama; chart hardened image: /usr/bin
+                execs=tuple(dict.fromkeys((*cfg.ollama_execs, "/bin/ollama"))),
+                serve_containers=None,
+                pods_pull_wide=True,
+            )
+        return docs
+
     def generate_k8s_manifest(self, deployment_id: int) -> str:
         """Generate Kubernetes manifest for deployment."""
         db = self.db
@@ -373,7 +434,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                 "replicas": 1,
                 "selector": {"matchLabels": {"app": f"ollama-{deployment.name}"}},
                 "template": {
-                    "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
+                    "metadata": {"labels": self._pod_labels(deployment)},
                     "spec": {
                         "containers": [
                             {
@@ -432,7 +493,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         }
 
         # Combine all manifests
-        manifests = [k8s_pvc, k8s_deployment, k8s_service]
+        manifests = [k8s_pvc, k8s_deployment, k8s_service, *self._model_pod_policies(deployment)]
         return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
     def generate_metallb_service(self, deployment_id: int) -> str:
@@ -692,7 +753,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             "spec": {
                 "selector": {"matchLabels": {"app": f"ollama-{deployment.name}"}},
                 "template": {
-                    "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
+                    "metadata": {"labels": self._pod_labels(deployment)},
                     "spec": {
                         "securityContext": {
                             "fsGroup": 1000,
@@ -731,7 +792,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             },
         }
 
-        manifests = [pvc, daemonset, service]
+        manifests = [pvc, daemonset, service, *self._model_pod_policies(deployment)]
         return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
     def generate_pool_manifest(self, deployment_id: int) -> str:
@@ -766,7 +827,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                 "replicas": replicas,
                 "selector": {"matchLabels": {"app": f"ollama-{deployment.name}"}},
                 "template": {
-                    "metadata": {"labels": {"app": f"ollama-{deployment.name}"}},
+                    "metadata": {"labels": self._pod_labels(deployment)},
                     "spec": {
                         "securityContext": {
                             "fsGroup": 1000,
@@ -804,7 +865,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
             },
         }
 
-        manifests = [pvc, pool_deployment, service]
+        manifests = [pvc, pool_deployment, service, *self._model_pod_policies(deployment)]
         return "---\n".join(yaml.dump(m, default_flow_style=False) for m in manifests)
 
     # Container Management (Orchestrated Mode)

@@ -134,6 +134,8 @@ spec:
             - name: CILIUM_ENABLED
               value: "false"
             {{- end }}
+            - name: WADDLEAI_MODEL_POD_SECURITY
+              value: {{ include "waddleai.modelPodSecurity.config" . | quote }}
             {{- if .Values.fleet.vllmRay.enabled }}
             - name: WADDLEAI_FLEET_MUTUAL_AUTH
               value: {{ .Values.fleet.security.mutualAuth | quote }}
