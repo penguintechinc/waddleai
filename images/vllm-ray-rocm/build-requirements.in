@@ -1,5 +1,5 @@
 # Build-only tooling for the vLLM ROCm wheel (stage `build`); never installed in the runtime image.
-# Mirrors vLLM v0.29.0 docker/Dockerfile.rocm_base ("cmake<4 ninja wheel setuptools<80 pybind11<3.1.0 Cython")
+# Mirrors vLLM v0.32.0 docker/Dockerfile.rocm_base ("cmake<4 ninja wheel setuptools>=78.1.1,<80 pybind11<3.1.0 Cython")
 # plus requirements/build/rust.txt. Regenerate build-requirements.txt: see its header.
 cmake<4
 ninja

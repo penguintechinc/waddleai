@@ -1451,8 +1451,8 @@ jobs:
         version: 'v0.69.3'
 
   # vLLM-on-Ray worker images (images/vllm-ray-<vendor>). amd64 only (owner directive).
-  # cuda wraps rayproject/ray-llm; rocm and xpu build vLLM 0.29.0 from source (AM20: no rocm/vllm tag
-  # pairs vLLM 0.29 with py3.12; oneAPI 2026.0.x does not exist, 2025.3.2 is used). Their builds compile
+  # cuda wraps rayproject/ray-llm; rocm and xpu build vLLM 0.32.0 from source (AM20: no rocm/vllm tag
+  # pairs vLLM 0.32 with py3.12; oneAPI 2026.0.x does not exist, 2025.3.2 is used). Their builds compile
   # native code and are long (the job timeout is raised accordingly).
   # PRs and non-push tiers build with --load and run the image contract test; pushing tiers push
   # one run-unique tag, gate on Trivy by digest, then promote the floating ray<version>-py<minor> tag.
@@ -1548,9 +1548,23 @@ jobs:
         fi
         bash tests/images/test_vllm_ray_images.sh "$ref" "$RAY_VERSION" "$PYTHON_MINOR"
 
+    # The ROCm image (~15 GB) exhausted the runner disk when Trivy exported it from the docker daemon
+    # (`no space left on device`, a scan error that masked the real findings). Drop the build cache and scan the
+    # pushed digest straight from the registry (TRIVY_IMAGE_SRC=remote): no daemon export, and it is exactly what ships.
+    - name: Free build cache before Trivy
+      if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
+      run: |
+        set -euo pipefail
+        docker builder prune --all --force
+        df -h /
+
     - name: Trivy vulnerability gate
       if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      env:
+        TRIVY_IMAGE_SRC: remote
+        # Per-image secret allowlist (xpu only: anthropic SDK docstring examples); empty = trivy default.
+        TRIVY_SECRET_CONFIG: ${{ matrix.image == 'xpu' && 'images/vllm-ray-xpu/trivy-secret.yaml' || '' }}
       with:
         image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/vllm-ray-${{ matrix.image }}@${{ steps.build.outputs.digest }}
         format: 'table'
@@ -1561,6 +1575,24 @@ jobs:
         # Default 5m trips 'context deadline exceeded' on the multi-GB GPU base layers;
         # that is a scan timeout, not a CVE finding.
         timeout: '45m'
+        trivyignores: images/vllm-ray-trivyignore.yaml
+
+    # Same gate on the locally built image so a PR proves the scan passes before merge. ROCm is built
+    # cacheonly on PRs (no image in the daemon), so it is only gated after push, above.
+    - name: Trivy vulnerability gate (PR, loaded image)
+      if: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') && matrix.image != 'rocm' }}
+      uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+      env:
+        TRIVY_SECRET_CONFIG: ${{ matrix.image == 'xpu' && 'images/vllm-ray-xpu/trivy-secret.yaml' || '' }}
+      with:
+        image-ref: ${{ steps.meta.outputs.tags }}
+        format: 'table'
+        severity: 'HIGH,CRITICAL'
+        ignore-unfixed: true
+        exit-code: '1'
+        version: 'v0.69.3'
+        timeout: '45m'
+        trivyignores: images/vllm-ray-trivyignore.yaml
 
     - name: Promote floating tag (post-gate)
       if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'

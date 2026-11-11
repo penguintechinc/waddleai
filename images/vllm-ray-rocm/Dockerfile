@@ -1,19 +1,19 @@
 # vLLM-on-Ray worker image, AMD/ROCm (A7, AM20). Rootless (uid 1000); KubeRay supplies the start
 # command, so there is no ENTRYPOINT/CMD override.
 #
-# AM20: no rocm/vllm tag pairs vLLM 0.29 with Python 3.12, so vLLM is BUILT FROM SOURCE at exactly the
-# version bundled in the CUDA image (rayproject/ray-llm:2.60.0-py312-cu130 -> vLLM 0.29.0):
-#   vLLM tag v0.29.0 = commit 98dff2a81d747d1dba01a47f939f48c3526d4206
+# AM20: no rocm/vllm tag pairs vLLM 0.32 with Python 3.12, so vLLM is BUILT FROM SOURCE at exactly the
+# same version as the CUDA image (rayproject/ray-llm:2.60.0-py312-cu130 -> vLLM 0.32.0):
+#   vLLM tag v0.32.0 = commit 5df63a7203cdb9328d824a27b682e77c7b9928be
 #   reference: docker/Dockerfile.rocm + docker/Dockerfile.rocm_base + requirements/rocm.txt at that commit.
 # DEVIATION from the reference (recorded in DEVIATIONS-A.md): vLLM's rocm_base compiles a patched
 # ROCm/PyTorch from source; here the official PyTorch ROCm wheel (torch 2.13.0+rocm7.2, the exact torch
-# vLLM 0.29.0 pins) is installed instead. Needs GPU validation on a real ROCm node (cannot run in CI).
+# vLLM 0.32.0 pins) is installed instead. Needs GPU validation on a real ROCm node (cannot run in CI).
 #
 # Base pin (vLLM's own rocm_base BASE_IMAGE), digest verified with
 #   docker buildx imagetools inspect rocm/dev-ubuntu-22.04:7.2.3-complete \
 #     --format '{{json .Manifest}}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["digest"])'
 # Python packages are hash-pinned: requirements.txt / build-requirements.txt are generated with
-#   uv pip compile <name>.in --python-version 3.12 --python-platform x86_64-manylinux_2_28 \
+#   uv pip compile <name>.in --python-version 3.12 --python-platform x86_64-manylinux_2_35 \
 #     --generate-hashes --emit-index-url --index-strategy unsafe-best-match [--no-emit-package triton, requirements only] -o <name>.txt
 # (xgrammar's PyPI `triton` is dropped: torch's `triton-rocm` already provides the `triton` module.)
 # ray[llm] is spelled out in requirements.in without vllm and the CUDA-only nixl wheels (see that file).
@@ -45,8 +45,8 @@ RUN useradd --uid 1000 --create-home --home-dir /home/ray --shell /bin/bash ray 
 # ---- build: compile the vLLM ROCm wheel (never shipped) ----
 FROM deps AS build
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG VLLM_COMMIT=98dff2a81d747d1dba01a47f939f48c3526d4206
-ARG VLLM_VERSION=0.29.0
+ARG VLLM_COMMIT=5df63a7203cdb9328d824a27b682e77c7b9928be
+ARG VLLM_VERSION=0.32.0
 ARG RUST_TOOLCHAIN=1.95
 # Default covers MI200/MI300/MI350 + RDNA3/4; narrow it to shorten the build for a known fleet.
 ARG PYTORCH_ROCM_ARCH="gfx90a;gfx942;gfx950;gfx1100;gfx1101;gfx1200;gfx1201"
@@ -64,7 +64,7 @@ RUN git init -q . && git fetch -q --depth 1 https://github.com/vllm-project/vllm
 ARG RUSTUP_VERSION=1.29.3
 ARG RUSTUP_SHA256_X86_64=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
 ARG RUSTUP_SHA256_AARCH64=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
-# Rust toolchain: exact 1.95, the channel in vLLM v0.29.0 rust-toolchain.toml (asserted below). rustup-init is a
+# Rust toolchain: exact 1.95, the channel in vLLM v0.32.0 rust-toolchain.toml (asserted below). rustup-init is a
 # pinned-version binary from static.rust-lang.org, sha256-verified (official .sha256 files), never `curl | sh`.
 RUN ARCH="$(uname -m)" \
     && case "${ARCH}" in x86_64) SUM="${RUSTUP_SHA256_X86_64}";; aarch64) SUM="${RUSTUP_SHA256_AARCH64}";; *) echo "unsupported arch ${ARCH}" >&2; exit 1;; esac \
@@ -74,19 +74,27 @@ RUN ARCH="$(uname -m)" \
     && /tmp/rustup-init -y --default-toolchain "${RUST_TOOLCHAIN}" --profile minimal --no-modify-path \
     && rm /tmp/rustup-init \
     && grep -q "^channel *= *\"${RUST_TOOLCHAIN}\"" rust-toolchain.toml \
-    && CARGO_BUILD_JOBS=4 bash build_rust.sh && test -x vllm/vllm-rs
+    && CARGO_BUILD_JOBS=4 bash tools/build_rust.sh && test -x vllm/vllm-rs
 RUN LDFLAGS="-fuse-ld=mold" MAX_JOBS="${MAX_JOBS:-$(nproc)}" python3 setup.py bdist_wheel --dist-dir=/dist \
     && ls /dist/*.whl
 
 # ---- runtime: deps + the built wheel, rootless ----
 FROM deps AS runtime
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Security patch layer: the digest-pinned ROCm base lags Ubuntu security updates (Trivy gate); upgrade installed OS packages only.
+# hadolint ignore=DL3005
+RUN apt-get update -y && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*_key.pub
 ARG RAY_VERSION=2.60.0
 ARG PYTHON_MINOR=3.12
 ENV RAY_VERSION=${RAY_VERSION} PYTHON_MINOR=${PYTHON_MINOR} HSA_NO_SCRATCH_RECLAIM=1
 RUN --mount=type=bind,from=build,source=/dist,target=/dist \
     uv pip install --no-cache --no-deps /dist/*.whl
+# Ray's bundled Java jars (ray_dist.jar: jackson/guava HIGH CVEs) are unused here (Python workers only; Ray
+# tolerates the missing directory), so they are removed rather than shipped.
+RUN DEL=/home/ray/anaconda3/lib/python3.12/site-packages/ray/jars && test -d "$DEL" && rm -r "$DEL"
 # Build-time contract: Ray + Python minor match the head image; vLLM is the CUDA image's version.
-RUN python3 -c "import os, sys, ray, importlib.metadata as m; assert ray.__version__ == os.environ['RAY_VERSION'], ray.__version__; assert '%d.%d' % sys.version_info[:2] == os.environ['PYTHON_MINOR']; assert m.version('vllm').startswith('0.29.0'), m.version('vllm')" \
+RUN python3 -c "import os, sys, ray, importlib.metadata as m; assert ray.__version__ == os.environ['RAY_VERSION'], ray.__version__; assert '%d.%d' % sys.version_info[:2] == os.environ['PYTHON_MINOR']; assert m.version('vllm').startswith('0.32.0'), m.version('vllm')" \
     && chown 1000:1000 /home/ray
 USER 1000
 WORKDIR /home/ray

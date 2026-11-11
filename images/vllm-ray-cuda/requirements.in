@@ -1,0 +1,30 @@
+# Upgrade set layered over rayproject/ray-llm:2.60.0-py312-cu130 (see Dockerfile header).
+vllm==0.32.0
+# CVE floors for packages bundled in the base image (Trivy HIGH/CRITICAL, fixed upstream):
+cryptography>=46.0.5
+pillow>=13.0.0
+urllib3>=2.6.0
+wheel>=0.46.2
+virtualenv>=21.14.13
+starlette>=1.1.0
+python-multipart>=0.0.30
+pyOpenSSL>=26.0.0
+PyJWT>=2.14.0
+pyasn1>=0.6.5
+msgpack>=1.2.3
+mcp>=2.0.0,<3.0.0
+jaraco.context>=6.1.0
+httplib2>=0.32.0
+fsspec>=2026.6.0
+filelock>=4.2.1
+dnspython>=2.9.0
+Brotli>=1.2.1
+azure-core>=1.38.0
+anyio>=4.14.2
+setuptools>=78.1.1,<81.0.0
+# Keep the base cloud SDKs compatible with the urllib3 2.x / cryptography 50 floors above:
+boto3>=1.40
+botocore>=1.40
+msal
+# pip itself: its vendored msgpack/urllib3 are scanned (pip/_vendor/vendor.txt); 26.3 vendors the fixed ones.
+pip>=26.3
