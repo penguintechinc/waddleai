@@ -38,6 +38,13 @@ Complete checklist for deploying WaddleAI to production safely and securely.
   - Limit database/Redis access to internal network
   - Enable rate limiting at firewall level
 
+- [ ] **Self-hosted model pods isolated** (see [Model Pod Security](model-pod-security.md))
+  - Cilium + Tetragon (>= 1.1) installed; `modelPodSecurity.networkPolicy.enabled` and `tetragon.model.enabled` left on
+  - `tetragon.model.mode: enforce` after one clean `observe` pass on the target cluster
+  - Only the AI proxy (and management) can reach Ollama/llama.cpp/vLLM pods
+  - `modelPull.*` presets match where weights actually come from; `extraFQDNs` reviewed
+  - No shell in any serving allowlist (`kubectl get tracingpoliciesnamespaced -n waddleai`)
+
 - [ ] **Security scanning**
   - Run vulnerability scans on Docker images
   - Check dependencies for CVEs

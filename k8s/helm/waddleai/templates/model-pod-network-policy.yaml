@@ -1,0 +1,105 @@
+{{/*
+CiliumNetworkPolicy isolation for the chart-rendered self-hosted model pods (Ollama,
+Ollama embeddings, llama.cpp). Default deny comes from cilium-network-policy.yaml; these add
+the explicit minimum on top:
+  ingress: the AI proxy only on the serving port (+ management when
+           modelPodSecurity.networkPolicy.managementIngress: it calls /health, /api/tags,
+           /api/pull), + the monitoring namespace on metricsPorts if any are configured.
+  egress:  kube-dns (with DNS proxy rule) + the modelPull FQDN presets for that engine. No
+           management, database or valkey: the engines never call them.
+Ray pods are covered by fleet-vllm-ray/cilium-policy.yaml. The management fleet manager
+generates the same shape per deployment (services/management/app/services/model_pod_security.py).
+Pod-wide: Cilium cannot tell an init/pull container from the serving container; the Tetragon
+policies (tetragon-model-policy.yaml) draw that line.
+*/}}
+{{- if and .Values.modelPodSecurity.networkPolicy.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
+{{- $ns := .Values.namespace }}
+{{- $t := .Values.cilium.topology }}
+{{- $np := .Values.modelPodSecurity.networkPolicy }}
+{{- $engines := list
+      (dict "name" "ollama" "components" (list "ollama" "ollama-embeddings") "ports" (list .Values.ollama.service.targetPort) "hf" false "ollama" true "mgmtHttp" (list (dict "method" "GET" "path" "^/$") (dict "method" "GET" "path" "^/api/tags$") (dict "method" "POST" "path" "^/api/pull$") (dict "method" "DELETE" "path" "^/api/delete$")))
+      (dict "name" "llamacpp" "components" (list "llamacpp") "ports" (list .Values.llamacpp.service.targetPort) "hf" true "ollama" false "mgmtHttp" (list (dict "method" "GET" "path" "^/health$"))) }}
+{{- range $e := $engines }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-model-{{ $e.name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $e.name }}
+spec:
+  description: "{{ $e.name }} pods: proxy-only ingress; DNS + approved model-pull FQDNs only egress"
+  endpointSelector:
+    matchLabels:
+      {{- include "waddleai.selectorLabels" $ | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          {{- range $e.components }}
+          - {{ . | quote }}
+          {{- end }}
+  ingress:
+    # proxy: full serving access
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.aiproxy | nindent 12 }}
+      toPorts:
+        - ports:
+            {{- range $e.ports }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
+    {{- if $np.managementIngress }}
+    # management: only the calls the fleet manager makes (L7)
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.management | nindent 12 }}
+      toPorts:
+        - ports:
+            {{- range $e.ports }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
+          rules:
+            http:
+              {{- range $e.mgmtHttp }}
+              - {method: {{ .method | quote }}, path: {{ .path | quote }}}
+              {{- end }}
+    {{- end }}
+    {{- if $np.metricsPorts }}
+    - fromEndpoints:
+        - matchLabels:
+            "k8s:io.kubernetes.pod.namespace": {{ $np.monitoringNamespace | quote }}
+      toPorts:
+        - ports:
+            {{- range $np.metricsPorts }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
+    {{- end }}
+  egress:
+    {{- include "waddleai.modelPull.egress" (dict "ctx" $ "hf" $e.hf "ollama" $e.ollama) | nindent 4 }}
+{{- end }}
+{{- end }}
+{{- if and .Values.modelPodSecurity.networkPolicy.enabled .Values.fleet.vllmRay.enabled .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
+---
+{{/* The vLLM weights pull Job (services/management/app/services/model_store_job.py) is the ONLY vLLM pod that needs the internet; it is labelled component=model-pull so the HuggingFace preset opens for it alone. No ingress. */}}
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-model-pull
+  namespace: {{ .Values.namespace }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: model-pull
+spec:
+  description: "model-pull Job: DNS + HuggingFace weight hosts (TCP/443) only; no ingress"
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: waddleai
+      app.kubernetes.io/component: model-pull
+  ingress:
+    - {} # explicit default deny (an empty list may be dropped)
+  egress:
+    {{- include "waddleai.modelPull.egress" (dict "ctx" $ "hf" true "ollama" false) | nindent 4 }}
+{{- end }}

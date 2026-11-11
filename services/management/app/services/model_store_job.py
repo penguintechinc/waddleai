@@ -6,6 +6,10 @@ from typing import Any
 
 PULL_COMMAND = ["python3", "-m", "shared.fleet.vllm_ray.model_pull"]
 MODEL_STORE_VOLUME = "model-store"
+POD_LABELS = {
+    "app.kubernetes.io/name": "waddleai",
+    "app.kubernetes.io/component": "model-pull",
+}
 
 
 def build_pull_job_manifest(
@@ -36,6 +40,8 @@ def build_pull_job_manifest(
             "backoffLimit": 2,
             "ttlSecondsAfterFinished": 300,
             "template": {
+                # the chart's waddleai-model-pull CNP opens HuggingFace egress for this label only
+                "metadata": {"labels": dict(POD_LABELS)},
                 "spec": {
                     "restartPolicy": "Never",
                     "securityContext": {"runAsNonRoot": True},
@@ -60,7 +66,7 @@ def build_pull_job_manifest(
                             "persistentVolumeClaim": {"claimName": store_claim},
                         }
                     ],
-                }
+                },
             },
         },
     }

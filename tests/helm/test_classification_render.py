@@ -266,7 +266,17 @@ def _helm(*args):
     import subprocess
 
     return subprocess.run(  # noqa: S603
-        ["helm", "template", "w", ".", *args, "--api-versions", "cilium.io/v2"],  # noqa: S607
+        [  # noqa: S607
+            "helm",
+            "template",
+            "w",
+            ".",
+            *args,
+            "--api-versions",
+            "cilium.io/v2",
+            "--api-versions",
+            "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy",
+        ],
         cwd=CHART_DIR,
         capture_output=True,
         text=True,

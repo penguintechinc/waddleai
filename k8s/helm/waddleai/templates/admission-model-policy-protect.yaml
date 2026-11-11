@@ -1,0 +1,53 @@
+{{/*
+ValidatingAdmissionPolicy: the management ServiceAccount may not UPDATE or DELETE CHART-OWNED
+chart-owned Cilium/Tetragon objects (labelled app.kubernetes.io/managed-by=Helm): every
+TracingPolicyNamespaced, CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy, including
+waddleai-default-deny.
+Fleet-generated objects carry managed-by=waddleai-fleet and stay manageable. Same capability
+guard as the other VAPs; validationActions defaults to Deny here (see values.yaml) because a Warn
+would protect nothing.
+*/}}
+{{- $np := .Values.modelPodSecurity.networkPolicy }}
+{{- $vapOk := and .Values.admissionPolicies.enabled .Values.admissionPolicies.validatingAdmissionPolicy.enabled (or .Values.admissionPolicies.forceRender (.Capabilities.APIVersions.Has "admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy")) }}
+{{- /* Fail closed: the model-pod isolation is only as strong as the admission policy that stops the
+       manager editing it. Opt out explicitly, never silently. */}}
+{{- if and $np.enabled $np.protectChartPolicies.enabled (not $vapOk) (not $np.protectChartPolicies.acknowledgeUnprotected) }}
+{{- fail "modelPodSecurity is enabled but the ValidatingAdmissionPolicy that protects the chart-owned Cilium/Tetragon policies cannot render: enable admissionPolicies (+ validatingAdmissionPolicy) on a cluster serving admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy (or admissionPolicies.forceRender for offline renders), or set modelPodSecurity.networkPolicy.protectChartPolicies.acknowledgeUnprotected=true to accept an unprotected manager" }}
+{{- end }}
+{{- if and $np.protectChartPolicies.enabled $vapOk -}}
+{{- $sa := printf "system:serviceaccount:%s:%s" .Values.namespace (include "waddleai.serviceAccountName" .) }}
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: {{ include "waddleai.fullname" . }}-protect-model-policies
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  failurePolicy: {{ .Values.admissionPolicies.failurePolicy }}
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["cilium.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["tracingpoliciesnamespaced"]
+      - apiGroups: ["cilium.io"]
+        apiVersions: ["v2"]
+        operations: ["UPDATE", "DELETE"]
+        resources: ["ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies"]
+  variables:
+    - name: chartOwned
+      expression: "has(oldObject.metadata.labels) && 'app.kubernetes.io/managed-by' in oldObject.metadata.labels && oldObject.metadata.labels['app.kubernetes.io/managed-by'] == 'Helm'"
+  validations:
+    - expression: "!(request.userInfo.username == '{{ $sa }}' && variables.chartOwned)"
+      message: "the management service account may not modify or delete chart-owned (Helm) model-pod isolation policies"
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: {{ include "waddleai.fullname" . }}-protect-model-policies-binding
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  policyName: {{ include "waddleai.fullname" . }}-protect-model-policies
+  validationActions: {{ .Values.modelPodSecurity.networkPolicy.protectChartPolicies.validationActions | toJson }}
+{{- end }}

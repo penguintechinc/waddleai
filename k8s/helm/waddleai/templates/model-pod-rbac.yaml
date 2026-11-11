@@ -1,0 +1,41 @@
+{{/*
+Least-privilege RBAC for the fleet manager's per-deployment model-pod policies: a namespaced
+Role + RoleBinding on tracingpoliciesnamespaced ONLY in the namespaces that host model pods
+(modelPodSecurity.networkPolicy.namespaces, default the release namespace) instead of cluster
+wide. No watch/patch/deletecollection. The model CNPs stay under the existing cilium-reconciler
+ClusterRole (cilium-rbac.yaml): narrowing that needs a reconciler change, so chart-owned CNPs
+are protected by the admission policy in admission-model-policy-protect.yaml instead.
+*/}}
+{{- if and .Values.modelPodSecurity.networkPolicy.enabled .Values.tetragon.enabled .Values.tetragon.model.enabled }}
+{{- $namespaces := default (list .Values.namespace) .Values.modelPodSecurity.networkPolicy.namespaces }}
+{{- range $ns := $namespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-model-pod-tracing
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: ["cilium.io"]
+    resources: ["tracingpoliciesnamespaced"]
+    verbs: ["get", "list", "create", "update", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "waddleai.fullname" $ }}-model-pod-tracing
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" $ | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "waddleai.fullname" $ }}-model-pod-tracing
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "waddleai.serviceAccountName" $ }}
+    namespace: {{ $.Values.namespace }}
+{{- end }}
+{{- end }}

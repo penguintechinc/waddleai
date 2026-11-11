@@ -149,13 +149,18 @@ def test_head_policy_ingress_egress(mgr, dep):
     ingress = head["ingress"][0]
     assert ingress["authentication"] == {"mode": "required"}
     assert ingress["toPorts"] == [{"ports": [{"port": "8080", "protocol": "TCP"}]}]
-    assert len(ingress["fromEndpoints"]) == 2
+    assert len(ingress["fromEndpoints"]) == 1  # proxy: full serving access
+    mgmt = head["ingress"][1]  # management: L7-limited to the health path
+    assert mgmt["toPorts"][0]["rules"] == {"http": [{"method": "GET", "path": "^/health$"}]}
     kinds = [tuple(sorted(rule)) for rule in head["egress"]]
     assert ("toEndpoints", "toPorts") in kinds
     worker_rule = next(r for r in head["egress"] if r.get("authentication"))
     assert worker_rule["toPorts"] == [{"ports": [{"port": "50052", "protocol": "TCP"}]}]
     fqdn_rule = next(r for r in head["egress"] if "toFQDNs" in r)
-    assert fqdn_rule["toFQDNs"] == [{"matchName": "h.example"}]
+    # only the HuggingFace preset (+ extras): never the arbitrary host in model_url
+    names = {f.get("matchName") for f in fqdn_rule["toFQDNs"]}
+    assert "huggingface.co" in names and "h.example" not in names
+    assert fqdn_rule["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
 
 
 def test_head_policy_huggingface_cdn(mgr, dep):
@@ -166,9 +171,11 @@ def test_head_policy_huggingface_cdn(mgr, dep):
     assert {"matchPattern": "*.hf.co"} in fqdns
 
 
-def test_head_policy_without_model_url_has_no_fqdn_egress(mgr, dep):
-    """No model_url means no internet egress rule."""
-    dep.model_url = None
+def test_head_policy_has_no_fqdn_egress_when_presets_are_off(mgr, dep, monkeypatch):
+    """HuggingFace preset disabled and no extras: the head has no internet egress at all."""
+    monkeypatch.setenv(
+        "WADDLEAI_MODEL_POD_SECURITY", '{"huggingface": {"enabled": false}, "extra_fqdns": []}'
+    )
     head = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]
     assert all("toFQDNs" not in r for r in head["egress"])
 
@@ -179,11 +186,9 @@ def test_topology_selectors_from_env(mgr, dep, monkeypatch):
         "CILIUM_TOPOLOGY",
         '{"selectors": {"aiproxy": {"app": "px"}, "management": {"app": "mg"}}}',
     )
-    ingress = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]["ingress"][0]
-    assert ingress["fromEndpoints"] == [
-        {"matchLabels": {"app": "px"}},
-        {"matchLabels": {"app": "mg"}},
-    ]
+    rules = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]["ingress"]
+    assert rules[0]["fromEndpoints"] == [{"matchLabels": {"app": "px"}}]
+    assert rules[1]["fromEndpoints"] == [{"matchLabels": {"app": "mg"}}]
     monkeypatch.setenv("CILIUM_TOPOLOGY", "{not json")
     fallback = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]["ingress"][0]
     assert fallback["fromEndpoints"][0]["matchLabels"]["app.kubernetes.io/component"] == "proxy"
@@ -398,7 +403,7 @@ def test_remove_rpc_waits_for_pods_to_terminate_before_services_and_policies(mgr
     ):
         mgr.remove_rpc(dep)
     names = [c[0] for c in order.mock_calls]
-    assert names == ["head", "poll", "poll", "poll", "svc", "svc", "cnp", "cnp"]
+    assert names == ["head", "poll", "poll", "poll", "svc", "svc"] + ["cnp"] * (2 + 10)
 
 
 def test_remove_rpc_drain_timeout_raises_and_keeps_services_and_policies(mgr, dep):
@@ -468,7 +473,8 @@ def test_remove_rpc_deletes_everything_and_stops_row(mgr, dep):
     )
     apps.delete_namespaced_deployment.assert_called_once()
     assert core.delete_namespaced_service.call_count == 2
-    assert crd.delete_namespaced_custom_object.call_count == 2
+    # 2 CNPs + 10 Tetragon policies (5 per role), always attempted so a re-deploy never 409s
+    assert crd.delete_namespaced_custom_object.call_count == 12
     assert mgr.db.return_value.update.call_args.kwargs == {"status": "stopped"}
     selector = apps.list_namespaced_stateful_set.call_args.kwargs["label_selector"]
     # base-only: legacy objects (created before the owner label) must still be found
@@ -606,4 +612,4 @@ def test_remove_rpc_order_is_workers_head_services_policies(mgr, dep):
         patch(f"{MGR}.get_k8s_custom_client", return_value=crd),
     ):
         mgr.remove_rpc(dep)
-    assert [c[0] for c in order.mock_calls] == ["sts", "head", "svc", "svc", "cnp", "cnp"]
+    assert [c[0] for c in order.mock_calls] == ["sts", "head", "svc", "svc"] + ["cnp"] * (2 + 10)

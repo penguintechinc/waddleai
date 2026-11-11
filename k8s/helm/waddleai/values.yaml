@@ -919,6 +919,9 @@ fleet:
     ray:
       version: "2.60.0" # identical across head and every worker image (latest published Ray as of 2026-11-05)
       pythonMinor: "3.12" # head and all workers must match
+    # Shell-free start: the ray container execs this binary directly (no bash -lc wrapper), so the
+    # Tetragon exec allowlist needs no shell. Path inside images/vllm-ray-*.
+    startCommand: /home/ray/anaconda3/bin/ray
     # Own images (cuda/rocm/xpu) are built and pushed by CI (images/vllm-ray-*); their digest is
     # only known after that build, so it MUST be supplied per environment (render fails if empty).
     images:
@@ -1472,6 +1475,10 @@ tetragon:
   enabled: true
   forceRender: false
   exec:
+    # Real path of the python3 interpreter in the app images (the bprm hook resolves symlinks).
+    # Single source for proxy/management/classification (`usesPython: true`); a unit test pins it to
+    # the base python version in their Dockerfiles.
+    pythonRealPath: /usr/local/bin/python3.13
     # ENFORCED allowlist of each targeted component's own runtime binaries —
     # not observe-only (house security mandate: an allowlist that only logs
     # is the failure mode this policy exists to prevent). One
@@ -1489,6 +1496,7 @@ tetragon:
       proxy:
         enabled: true
         mode: enforce
+        usesPython: true
         allowedExecs:
           - /usr/local/bin/python3
           - /usr/local/bin/hypercorn
@@ -1499,6 +1507,7 @@ tetragon:
       management:
         enabled: true
         mode: enforce
+        usesPython: true
         allowedExecs:
           - /opt/venv/bin/python3
           - /opt/venv/bin/hypercorn
@@ -1509,6 +1518,9 @@ tetragon:
       classification:
         enabled: true
         mode: enforce
+        usesPython: true
+        # dash cannot be scoped to an init container: the MAIN container's entrypoint is
+        # `sh -c exec hypercorn` and the preStop hook runs `sleep` in it.
         allowedExecs:
           - /bin/sh
           # preStop `sleep`
@@ -1517,27 +1529,10 @@ tetragon:
           - /opt/venv/bin/python3
           - /opt/venv/bin/hypercorn
           - /usr/local/bin/python3
-      # Ollama — third-party vendor image (ollama/ollama). Binary path is
-      # believed stable (/bin/ollama) but not verified against a live
-      # cluster by this branch, and the model-pull initContainer execs
-      # /bin/sh (the pod selector matches the whole pod, not per-container).
-      # Default observe until confirmed in kind/beta; flip to enforce once
-      # validated.
-      ollama:
-        enabled: true
-        mode: observe
-        allowedExecs:
-          - /bin/ollama
-          - /bin/sh
-      # llama.cpp server — third-party vendor image; same caveat as ollama
-      # (curl-based model-download initContainer shares the pod).
-      llamacpp:
-        enabled: true
-        mode: observe
-        allowedExecs:
-          - /llama-server
-          - /bin/sh
-          - /usr/bin/curl
+          - /usr/bin/dash # real path of /bin/sh (debian usr-merge)
+      # Ollama and llama.cpp exec allowlists moved to tetragon.model.engines
+      # (templates/tetragon-model-policy.yaml): they are scoped per container
+      # (serve vs. pull/init) and ENFORCED, not observe-only.
       # vLLM-on-Ray worker pods (renders only when fleet.vllmRay.enabled). Allowlist = binaries
       # observed in the pinned ray-llm image running `ray start` (/proc/*/exe). nvidia-smi is injected
       # by the NVIDIA toolkit at runtime and the ROCm/XPU images are not built yet, so vendor SMI
@@ -1545,14 +1540,99 @@ tetragon:
       ray-worker:
         enabled: true
         mode: enforce
+        # ONLY the ray container: KubeRay's init/autoscaler containers keep their own (bash) start.
+        containers: [ray-worker]
+        allowedExecs:
+          - /home/ray/anaconda3/bin/ray
+          - /home/ray/anaconda3/bin/python
+          - /home/ray/anaconda3/bin/python3
+          - /home/ray/anaconda3/bin/python3.12 # real path of the python symlinks
+          - /home/ray/anaconda3/lib/python3.12/site-packages/ray/core/src/ray/raylet/raylet
+          # runtime-injected / vLLM-Triton JIT helpers. NOT verified against the pinned image
+          # (not pullable here): confirm with mode: observe on alpha, then trim what is absent.
+          - /usr/bin/nvidia-smi
+          - /usr/sbin/ldconfig
+          - /sbin/ldconfig
+          - /home/ray/anaconda3/bin/ninja # vLLM/xgrammar/flashinfer JIT builds (pip `ninja`, all 3 images)
+        allowedPrefixes:
+          # Triton ships its own assembler/disassembler per backend (nvidia: ptxas, cuobjdump,
+          # nvdisasm; amd/intel: lld and friends). Package paths for the pinned triton wheels
+          # (requirements.txt of images/vllm-ray-{cuda,rocm,xpu}); not verified inside the images.
+          - /home/ray/anaconda3/lib/python3.12/site-packages/triton/backends/nvidia/bin/
+          - /home/ray/anaconda3/lib/python3.12/site-packages/triton/backends/amd/
+          - /home/ray/anaconda3/lib/python3.12/site-packages/triton/backends/intel/
+          # CUDA toolkit nvcc/ptxas, if an image ships it (flashinfer/torch JIT)
+          - /usr/local/cuda/bin/
+          # Triton compiles launcher stubs with the system gcc at runtime: gcc driver, cc1,
+          # collect2, as, ld (versioned paths, hence prefixes). Output binaries live in /tmp and
+          # are NOT on this list, so a compiled payload cannot be executed.
+          - /usr/bin/x86_64-linux-gnu-
+          - /usr/bin/aarch64-linux-gnu-
+          - /usr/lib/gcc/x86_64-linux-gnu/
+          - /usr/lib/gcc/aarch64-linux-gnu/
+        # NO shells (/bin/sh, bash) and no package managers.
+      # Ray head — same image and binaries as the worker (renders only when fleet.vllmRay.enabled).
+      ray-head:
+        enabled: true
+        mode: enforce
+        containers: [ray-head]
         allowedExecs:
           - /home/ray/anaconda3/bin/ray
           - /home/ray/anaconda3/bin/python
           - /home/ray/anaconda3/bin/python3
           - /home/ray/anaconda3/bin/python3.12
+          - /home/ray/anaconda3/lib/python3.12/site-packages/ray/core/src/ray/gcs/gcs_server/gcs_server
           - /home/ray/anaconda3/lib/python3.12/site-packages/ray/core/src/ray/raylet/raylet
-          - /usr/bin/bash
-          - /bin/bash
+  model:
+    # Self-hosted model pods (Ollama, llama.cpp, vLLM-on-Ray): ENFORCED Sigkill policies,
+    # one TracingPolicyNamespaced per engine and per phase (templates/tetragon-model-policy.yaml).
+    # Needs Tetragon >= 1.1 (`containerSelector`). Serve containers get the strict exec
+    # allowlist, a read-only weights path and an egress kprobe; the pull/init containers
+    # (curl/ollama pull) get their own narrow allowlist, so a shell is never allowed in the
+    # container that serves requests.
+    enabled: true
+    mode: enforce # enforce (Sigkill) | observe (Post)
+    # Ray head/worker policies (exec allowlist, read-only weights, egress) have their own switch:
+    # the JIT/toolchain binaries vLLM really execs are only knowable at runtime. Runbook: set
+    # `observe` on alpha, run a real vLLM deployment (first request compiles Triton kernels),
+    # collect the `process_exec` events Tetragon logs for the ray pods, add the legitimate real
+    # paths to tetragon.exec.components.ray-worker, then flip back to `enforce` before beta.
+    ray:
+      mode: enforce # enforce | observe
+    # Egress kprobe: connect() to any address outside these CIDRs kills the process, except in
+    # a container that is allowed to pull (then it is logged and the CNP FQDN allowlist
+    # enforces). FQDNs cannot be expressed in a kprobe; the CNP is the FQDN control.
+    privateCIDRs: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8", "169.254.0.0/16", "100.64.0.0/10", "::1/128", "fc00::/7", "fe80::/10"]
+    engines:
+      ollama:
+        enabled: true
+        components: [ollama, ollama-embeddings]
+        # `ollama serve`, `ollama pull` and the runner are all the one binary (hardened image
+        # has no shell; images/ollama/Dockerfile). Pod-wide: pull initContainers and the
+        # serve sidecar run the same binary.
+        allowedExecs: [/usr/bin/ollama]
+        # Ollama pulls models through its own API (management /api/pull) into the weights
+        # path, so that path cannot be write-protected without breaking pulls.
+        readOnlyPaths: []
+        pullsPodWide: true
+      llamacpp:
+        enabled: true
+        components: [llamacpp]
+        serveContainers: [llama-server]
+        allowedExecs: [/llama-server, /usr/local/bin/llama-server, /app/llama-server]
+        pullContainers: [download-model]
+        pullAllowedExecs: [/bin/sh, /usr/bin/curl, /bin/busybox]
+        readOnlyPaths: [/models]
+      ray-head:
+        enabled: true
+        components: [ray-head]
+        allowedExecs: [] # exec is enforced by tetragon.exec.components.ray-head
+        readOnlyPaths: [/models]
+      ray-worker:
+        enabled: true
+        components: [ray-worker]
+        allowedExecs: [] # exec is enforced by tetragon.exec.components.ray-worker
+        readOnlyPaths: [/models] # weights come from the shared PVC; the HF pull runs in the model-pull Job
   egress:
     # Observe/flag AIProxy egress + unexpected file-write activity (spec
     # §12.2). FQDN allow-listing to provider endpoints is the
@@ -1562,6 +1642,67 @@ tetragon:
     # dropped).
     enabled: true
     flagUnexpectedFileWrites: true
+
+# Model-weight download egress presets (CNP toFQDNs, TCP/443 only) for self-hosted model
+# pods. Applies to chart-rendered pods AND the objects the management fleet manager
+# generates. Hosts reflect what HuggingFace / the Ollama registry redirect to at the time
+# of writing; confirm against a live pull before relying on them in a new environment.
+# Cilium enforces this per POD, not per container: the Tetragon policies separate the
+# pull/init containers from the serving container, the CNP cannot.
+modelPull:
+  huggingface: # llama.cpp pods + the vLLM model-pull Job (Ray pods themselves never download)
+    enabled: true
+    fqdns:
+      - huggingface.co
+      - cdn-lfs.huggingface.co
+      - cdn-lfs-us-1.hf.co
+      - cdn-lfs-eu-1.hf.co
+      - cas-bridge.xethub.hf.co
+      - cas-server.xethub.hf.co
+      - transfer.xethub.hf.co
+    patterns: ["*.hf.co"]
+  ollama: # Ollama
+    enabled: true
+    fqdns:
+      - registry.ollama.ai
+      - ollama.com
+      - dd20bb891979d25aebc8bec07b2b3bbc.r2.cloudflarestorage.com # Ollama blob CDN (one R2 bucket, not *.r2)
+    patterns: []
+  # Extra FQDNs allowed for EVERY engine's pull path (e.g. a private mirror). Default empty.
+  extraFQDNs: []
+
+# CiliumNetworkPolicy isolation for self-hosted model pods (default deny comes from
+# cilium.networkPolicy). Ingress: the AI proxy only (plus management when managementIngress),
+# egress: DNS + intra-engine peers + the modelPull presets. Needs cilium.enabled.
+modelPodSecurity:
+  networkPolicy:
+    enabled: true
+    # management calls llama.cpp /health and Ollama /api/tags + /api/pull
+    # (services/management/app/services/*_manager.py, api/v1/llamacpp.py); set false to make
+    # the proxy the ONLY caller (those management calls then fail).
+    managementIngress: true
+    # DNS names the model pods may resolve besides their pull hosts: in-cluster service names and
+    # the search-domain expansions of external names (default `*.<clusterDomain>`). Unverified on a live cluster: widen if a
+    # resolver treats the proxy's REFUSED on an expansion as fatal.
+    clusterDomain: cluster.local
+    dnsClusterPatterns: [] # empty = derive "*.<clusterDomain>"
+    # Namespaces the fleet manager may create per-deployment model-pod policies in (RBAC Role +
+    # RoleBinding per namespace). Empty = the release namespace only.
+    namespaces: []
+    # ValidatingAdmissionPolicy denying the management SA update/delete of EVERY chart-owned
+    # (managed-by=Helm) TracingPolicyNamespaced, CiliumNetworkPolicy and
+    # CiliumClusterwideNetworkPolicy (incl. waddleai-default-deny), so a compromised manager cannot
+    # loosen or remove the chart's isolation. Deny, not the chart-wide Warn default.
+    # The render FAILS when modelPodSecurity is on but this policy cannot render (admissionPolicies
+    # off, or no admissionregistration.k8s.io/v1 ValidatingAdmissionPolicy API) unless
+    # acknowledgeUnprotected is true.
+    protectChartPolicies:
+      enabled: true
+      validationActions: [Deny]
+      acknowledgeUnprotected: false
+    # Namespaces allowed to scrape engine metrics ports; none of these engines expose one by default.
+    metricsPorts: []
+    monitoringNamespace: monitoring
 
 # Kubernetes admission policies enforcing pod-security baseline on WaddleAI
 # workloads (spec §12.2): ValidatingAdmissionPolicy core, Kyverno optional

@@ -1,5 +1,5 @@
 {{/*
-Tetragon exec-guard: an ENFORCED allowlist of each targeted component's own
+Tetragon exec-guard: an ENFORCED allowlist (hooks security_bprm_check, so execveat cannot bypass it) of each targeted component's own
 runtime binaries (spec §12.2; house security mandate — allowlist, not
 observe-only). One TracingPolicyNamespaced per component so the allowlist
 stays scoped to that pod's actual process inventory (a Python service's
@@ -15,8 +15,8 @@ rather than failing `helm install`.
 */}}
 {{- if and .Values.tetragon.enabled .Values.tetragon.exec.enabled (or .Values.tetragon.forceRender (.Capabilities.APIVersions.Has "cilium.io/v1alpha1/TracingPolicyNamespaced")) -}}
 {{- range $comp, $cfg := .Values.tetragon.exec.components }}
-{{- /* ray-worker only exists when the vLLM-on-Ray fleet is enabled: never render its policy otherwise. */}}
-{{- if and $cfg.enabled (or (ne $comp "ray-worker") $.Values.fleet.vllmRay.enabled) }}
+{{- /* ray-head/ray-worker only exist when the vLLM-on-Ray fleet is enabled: never render their policies otherwise. */}}
+{{- if and $cfg.enabled (or (not (hasPrefix "ray-" $comp)) $.Values.fleet.vllmRay.enabled) }}
 ---
 apiVersion: cilium.io/v1alpha1
 kind: TracingPolicyNamespaced
@@ -34,22 +34,44 @@ spec:
       - key: app.kubernetes.io/component
         operator: In
         values: [{{ $comp | quote }}]
+  {{- with $cfg.containers }}
+  containerSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: {{ toJson . }}
+  {{- end }}
   kprobes:
-    - call: "sys_execve"
-      syscall: true
+    # security_bprm_check sees the RESOLVED binary of every execve AND execveat/fexecve (and a
+    # `#!` interpreter), unlike a sys_execve arg0 match. Allowlist entries are therefore REAL
+    # paths (symlinks resolved), e.g. /usr/local/bin/python3.13, not /usr/local/bin/python3.
+    - call: "security_bprm_check"
+      syscall: false
       args:
         - index: 0
-          type: "string"
+          type: "linux_binprm"
       selectors:
         - matchArgs:
             - index: 0
-              operator: "NotIn"
+              operator: "NotEqual"
               values:
                 {{- range $cfg.allowedExecs }}
                 - {{ . | quote }}
                 {{- end }}
+                {{- if $cfg.usesPython }}
+                - {{ $.Values.tetragon.exec.pythonRealPath | quote }}
+                {{- end }}
+            {{- with $cfg.allowedPrefixes }}
+            - index: 0
+              operator: "NotPrefix"
+              values:
+                {{- range . }}
+                - {{ . | quote }}
+                {{- end }}
+            {{- end }}
           matchActions:
-            {{- if eq $cfg.mode "enforce" }}
+            {{- /* Ray pods follow tetragon.model.ray.mode (observe-first runbook) */}}
+            {{- if eq (ternary $.Values.tetragon.model.ray.mode $cfg.mode (hasPrefix "ray-" $comp)) "enforce" }}
             - action: Sigkill
             {{- else }}
             - action: Post

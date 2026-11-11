@@ -8,7 +8,7 @@ BASE = str(Path(__file__).parent / "fixtures" / "vllm-ray-base.yaml")
 TP_API = ["cilium.io/v1alpha1/TracingPolicyNamespaced"]
 POLICY = "waddleai-exec-allowlist-ray-worker"
 # Binaries observed in the pinned ray-llm image by running `ray start` and reading /proc/*/exe
-# (A7 evidence): the Ray CLI/python entry points, raylet and bash (KubeRay start command).
+# (A7 evidence): the Ray CLI/python entry points and raylet. Shells are deliberately NOT allowed.
 # nvidia-smi/rocm-smi/xpu-smi are NOT in the image (the NVIDIA toolkit injects nvidia-smi at
 # runtime) and the ROCm/XPU images do not exist yet, so none of them is allowlisted here.
 REQUIRED = {
@@ -17,18 +17,17 @@ REQUIRED = {
     "/home/ray/anaconda3/bin/python3",
     "/home/ray/anaconda3/bin/python3.12",
     "/home/ray/anaconda3/lib/python3.12/site-packages/ray/core/src/ray/raylet/raylet",
-    "/usr/bin/bash",
-    "/bin/bash",
 }
 
 
 def test_ray_worker_policy_is_enforced_with_required_binaries():
-    """Sigkill allowlist containing the observed Ray worker binaries and bash."""
+    """Sigkill allowlist containing the observed Ray worker binaries and no shell."""
     tp = find(render(BASE, api_versions=TP_API), "TracingPolicyNamespaced", POLICY)
     sel = tp["spec"]["kprobes"][0]["selectors"][0]
     assert sel["matchActions"] == [{"action": "Sigkill"}]
     allowed = set(sel["matchArgs"][0]["values"])
     assert REQUIRED <= allowed, REQUIRED - allowed
+    assert not {a for a in allowed if a.rsplit("/", 1)[-1] in {"sh", "bash", "dash", "zsh"}}
 
 
 def test_policy_selects_only_ray_worker_component():

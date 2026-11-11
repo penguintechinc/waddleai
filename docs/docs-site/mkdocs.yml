@@ -59,6 +59,7 @@ nav:
   - Deployment:
     - Kubernetes: deployment/kubernetes.md
     - Classification Service: deployment/classification-service.md
+    - Model Pod Security: deployment/model-pod-security.md
     - Production Checklist: deployment/production-checklist.md
   - Integrations:
     - Claude Code: integrations/claude-code.md

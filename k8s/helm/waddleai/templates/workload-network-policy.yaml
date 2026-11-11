@@ -1,0 +1,164 @@
+{{/*
+Allow policies the namespace default-deny (cilium-network-policy.yaml, explicit `[{}]`) needs so
+the platform's OWN workloads keep working once the deny really enforces. Audited per workload:
+  management (+ migration / fleet-secret-init Jobs, which keep component=management):
+      ingress from the gateway, webui and proxy; egress postgres/valkey/kube-apiserver already in
+      waddleai-allow-management-egress; DNS and fleet-engine health calls added here.
+  webui:     ingress from the gateway; egress to management (+ DNS).
+  proxy:     egress to management (+ DNS); fleet/postgres/valkey/classification/ray already allowed.
+  classification: its own ingress/egress CNPs (classification-network-policy.yaml); DNS is NOT
+      added here because that file already carries it.
+  kuberay-operator: DNS + kube-apiserver.
+  postgres/valkey: ingress only (existing). Model pods and the model-pull Job: model-pod-network-
+      policy.yaml. Ray pods: fleet-vllm-ray/cilium-policy.yaml.
+Internet egress of the proxy to LLM providers stays owned by the cilium reconciler's FQDN policy.
+A render test asserts every platform workload's label set is selected by at least one allow policy.
+*/}}
+{{- if and .Values.cilium.enabled .Values.cilium.networkPolicy.enabled (.Capabilities.APIVersions.Has "cilium.io/v2") }}
+{{- $ns := .Values.namespace }}
+{{- $t := .Values.cilium.topology }}
+{{- $gw := $t.selectors.gateway }}
+{{- $mgmtPort := .Values.management.service.targetPort }}
+{{- $dns := dict "toEndpoints" (list (dict "matchLabels" (dict "k8s:io.kubernetes.pod.namespace" "kube-system" "k8s-app" "kube-dns"))) "toPorts" (list (dict "ports" (list (dict "port" "53" "protocol" "ANY")) "rules" (dict "dns" (list (dict "matchPattern" "*"))))) }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-dns-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  description: "platform pods resolve names (model pods have their own restricted DNS rule)"
+  endpointSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: ["management", "proxy", "webui"]
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [{{ $t.selectors.management | dig "app.kubernetes.io/name" "waddleai" | quote }}]
+  egress:
+    - {{- toYaml $dns | nindent 6 }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-management-ingress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $t.selectors.management | nindent 6 }}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- range $k, $v := $gw }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+            "k8s:io.kubernetes.pod.namespace": {{ $t.gatewayNamespace | quote }}
+        - matchLabels:
+            app.kubernetes.io/name: {{ include "waddleai.name" . }}
+            app.kubernetes.io/component: webui
+        - matchLabels:
+            {{- toYaml $t.selectors.aiproxy | nindent 12 }}
+      toPorts:
+        - ports:
+            - {port: {{ $mgmtPort | quote }}, protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-webui
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "waddleai.name" . }}
+      app.kubernetes.io/component: webui
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            {{- range $k, $v := $gw }}
+            {{ $k }}: {{ $v | quote }}
+            {{- end }}
+            "k8s:io.kubernetes.pod.namespace": {{ $t.gatewayNamespace | quote }}
+      toPorts:
+        - ports:
+            - {port: {{ .Values.webui.service.targetPort | quote }}, protocol: TCP}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.management | nindent 12 }}
+      toPorts:
+        - ports:
+            - {port: {{ $mgmtPort | quote }}, protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-proxy-to-management-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $t.selectors.aiproxy | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.management | nindent 12 }}
+      toPorts:
+        - ports:
+            - {port: {{ $mgmtPort | quote }}, protocol: TCP}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-management-to-fleet-egress
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  description: "management health/pull calls to the engines (L7-limited on the engine side)"
+  endpointSelector:
+    matchLabels:
+      {{- toYaml $t.selectors.management | nindent 6 }}
+  egress:
+    - toEndpoints:
+        - matchExpressions:
+            - key: {{ $t.fleetComponentKey }}
+              operator: In
+              values:
+                {{- range $t.fleetComponents }}
+                - {{ . | quote }}
+                {{- end }}
+      toPorts:
+        - ports:
+            {{- range $t.fleetPorts }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
+{{- if .Values.fleet.vllmRay.enabled }}
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: waddleai-allow-kuberay-operator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "waddleai.labels" . | nindent 4 }}
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: kuberay-operator
+  egress:
+    - {{- toYaml $dns | nindent 6 }}
+    - toEntities:
+        - kube-apiserver
+{{- end }}
+{{- end }}
