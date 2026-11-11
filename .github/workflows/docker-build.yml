@@ -1569,8 +1569,8 @@ jobs:
       env:
         TRIVY_IMAGE_SRC: remote
         TMPDIR: /mnt/trivy-tmp
-        # Per-image secret allowlist (xpu only: anthropic SDK docstring examples); empty = trivy default.
-        TRIVY_SECRET_CONFIG: ${{ matrix.image == 'xpu' && 'images/vllm-ray-xpu/trivy-secret.yaml' || '' }}
+        # Secret allowlist shared by the vllm-ray images (anthropic SDK docstring examples, oneAPI base SSH keys).
+        TRIVY_SECRET_CONFIG: images/vllm-ray-trivy-secret.yaml
       with:
         image-ref: ${{ env.REGISTRY }}/${{ github.repository }}/vllm-ray-${{ matrix.image }}@${{ steps.build.outputs.digest }}
         format: 'table'
@@ -1589,7 +1589,7 @@ jobs:
       if: ${{ !(github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true') && matrix.image != 'rocm' }}
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
       env:
-        TRIVY_SECRET_CONFIG: ${{ matrix.image == 'xpu' && 'images/vllm-ray-xpu/trivy-secret.yaml' || '' }}
+        TRIVY_SECRET_CONFIG: images/vllm-ray-trivy-secret.yaml
       with:
         image-ref: ${{ steps.meta.outputs.tags }}
         format: 'table'
