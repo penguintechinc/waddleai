@@ -31,8 +31,12 @@ metadata:
     {{- include "waddleai.labels" . | nindent 4 }}
 spec:
   endpointSelector: {}
-  ingress: []
-  egress: []
+  # `- {}` is Cilium's documented explicit default deny; an empty list can be dropped on
+  # serialization, leaving a policy with no ingress/egress section (no default deny at all)
+  ingress:
+    - {}
+  egress:
+    - {}
 {{- /* Kind-level guard: a cluster can serve cilium.io/v2 with only the namespaced
 CiliumNetworkPolicy CRD installed (e.g. local MicroK8s alpha); the group-version
 check above is not enough, and a missing CCNP kind fails the whole install. */}}

@@ -16,13 +16,16 @@ import httpx
 import yaml
 
 from services.management.app.services.model_pod_security import (
+    OLLAMA_MGMT_HTTP,
+    apply_policy,
+    delete_policy,
+    serve_policies,
+)
+from services.management.app.services.model_pod_security import (
     cnp as model_cnp,
 )
 from services.management.app.services.model_pod_security import (
     load_config as load_security_config,
-)
-from services.management.app.services.model_pod_security import (
-    serve_policies,
 )
 from shared.fleet.base import (
     BackendType,
@@ -43,6 +46,7 @@ from shared.fleet.vllm_ray.coexistence import (
 logger = logging.getLogger(__name__)
 
 OLLAMA_OWNER_LABEL = "waddleai.penguintech.io/ollama-public-id"
+_OLLAMA_TRACING_SUFFIXES = ("exec", "egress")
 
 
 class DeploymentMode(str, Enum):  # noqa: UP042 -- str(x)/format() semantics differ under StrEnum; no logic changes in this pass
@@ -279,6 +283,14 @@ class OllamaDeploymentManager(InferenceFleetBackend):
         if self.mode != DeploymentMode.MANUAL and deployment.status == "running":
             self.stop_deployment(deployment_id)
 
+        # Kubernetes deployments: tear the per-deployment policies down BEFORE the row goes
+        if deployment.deployment_type == "kubernetes":
+            try:
+                self.remove_policies(deployment_id)
+            except Exception as exc:
+                logger.error("Ollama policy teardown failed for %s: %s", deployment.name, exc)
+                return {"success": False, "error": f"policy teardown failed: {exc}"}
+
         # Delete associated models
         db(db.ollama_models.deployment_id == deployment_id).delete()
 
@@ -385,6 +397,7 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                     cfg=cfg,
                     ports=[11434],
                     ollama=True,
+                    mgmt_http=OLLAMA_MGMT_HTTP,
                 )
             )
         if cfg.tetragon:
@@ -399,6 +412,62 @@ class OllamaDeploymentManager(InferenceFleetBackend):
                 pods_pull_wide=True,
             )
         return docs
+
+    def apply_policies(self, deployment_id: int, custom: Any = None) -> list[str]:
+        """Apply this deployment's CNP + Tetragon policies; roll back the ones created on failure.
+
+        Idempotent (a 409 on the same owner's object is replaced). The Ollama workloads
+        themselves are applied from the exported manifest, which already carries these
+        objects; this is the programmatic path with ordered rollback. Returns ``Kind/name``s.
+        """
+        db = self.db
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            raise ValueError(f"Ollama deployment {deployment_id} not found")
+        docs = self._model_pod_policies(deployment)
+        if not docs:
+            return []
+        namespace = getattr(deployment, "namespace", None) or "waddleai"
+        client = custom or self._custom_client()
+        created: list[dict[str, Any]] = []
+        try:
+            for doc in docs:
+                if apply_policy(client, namespace, doc) == "created":
+                    created.append(doc)
+        except Exception:
+            for doc in reversed(created):
+                delete_policy(client, namespace, doc["kind"], doc["metadata"]["name"])
+            raise
+        return [f"{d['kind']}/{d['metadata']['name']}" for d in docs]
+
+    def remove_policies(self, deployment_id: int, custom: Any = None) -> None:
+        """Delete this deployment's policies (Tetragon first, CNP last); raise if any is left.
+
+        Always attempted, even with the chart settings now off, so no stale policy 409s a
+        re-deploy. A 404 means already gone.
+        """
+        db = self.db
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return
+        labels = self._pod_labels(deployment)
+        if OLLAMA_OWNER_LABEL not in labels:
+            return
+        namespace = getattr(deployment, "namespace", None) or "waddleai"
+        base = f"ollama-{deployment.name}"
+        client = custom or self._custom_client()
+        refs = [("TracingPolicyNamespaced", f"{base}-{s}") for s in _OLLAMA_TRACING_SUFFIXES]
+        refs.append(("CiliumNetworkPolicy", f"{base}-allow"))
+        left = [f"{k}/{n}" for k, n in refs if not delete_policy(client, namespace, k, n)]
+        if left:
+            raise RuntimeError(f"could not delete {', '.join(left)}")
+
+    @staticmethod
+    def _custom_client() -> Any:
+        """CustomObjectsApi client (in-cluster, else kubeconfig)."""
+        from services.management.app.services.llamacpp_manager import get_k8s_custom_client
+
+        return get_k8s_custom_client()
 
     def generate_k8s_manifest(self, deployment_id: int) -> str:
         """Generate Kubernetes manifest for deployment."""

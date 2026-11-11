@@ -183,6 +183,14 @@ def _seed_llamacpp_deployment(db: "FakeDB", **overrides: Any) -> int:
     return db.llamacpp_deployments.insert(**fields)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_cluster_policy_client():
+    """Teardown always attempts policy deletes: never let a test reach a real kubeconfig."""
+    with patch("services.management.app.services.llamacpp_manager.get_k8s_custom_client") as m:
+        m.return_value = MagicMock()
+        yield m
+
+
 @pytest.fixture
 def db() -> FakeDB:
     """A fresh in-memory fake DB per test (CRUD / InferenceFleetBackend tests)."""

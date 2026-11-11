@@ -27,6 +27,7 @@ DEFAULT_PRIVATE_CIDRS = (
     "192.168.0.0/16",
     "127.0.0.0/8",
     "169.254.0.0/16",
+    "100.64.0.0/10",
     "::1/128",
     "fc00::/7",
     "fe80::/10",
@@ -45,6 +46,17 @@ OLLAMA_FQDNS = (
     "ollama.com",
     "dd20bb891979d25aebc8bec07b2b3bbc.r2.cloudflarestorage.com",
 )
+OWNER_LABEL = "waddleai.penguintech.io/model-pod-owner"
+MANAGED_BY_LABEL = "app.kubernetes.io/managed-by"
+MANAGED_BY_FLEET = "waddleai-fleet"
+# management -> engine, least privilege (L7): only what the manager actually calls
+OLLAMA_MGMT_HTTP = (
+    {"method": "GET", "path": "^/$"},
+    {"method": "GET", "path": "^/api/tags$"},
+    {"method": "POST", "path": "^/api/pull$"},
+)
+LLAMA_MGMT_HTTP = ({"method": "GET", "path": "^/health$"},)
+DEFAULT_DNS_CLUSTER_PATTERNS = ("*.cluster.local",)
 DEFAULT_PROXY_SELECTOR = {
     "app.kubernetes.io/name": "waddleai",
     "app.kubernetes.io/component": "proxy",
@@ -78,6 +90,7 @@ class ModelPodSecurityConfig:
     tetragon_mode: str = "enforce"
     management_ingress: bool = True
     private_cidrs: tuple[str, ...] = DEFAULT_PRIVATE_CIDRS
+    dns_cluster_patterns: tuple[str, ...] = DEFAULT_DNS_CLUSTER_PATTERNS
     huggingface: Preset = field(default_factory=lambda: Preset(True, HF_FQDNS, ("*.hf.co",)))
     ollama: Preset = field(default_factory=lambda: Preset(True, OLLAMA_FQDNS, ()))
     extra_fqdns: tuple[str, ...] = ()
@@ -127,6 +140,7 @@ def load_config(raw: str | None = None) -> ModelPodSecurityConfig:
         tetragon_mode=mode,
         management_ingress=bool(data.get("management_ingress", True)),
         private_cidrs=tuple(data.get("private_cidrs", base.private_cidrs)),
+        dns_cluster_patterns=tuple(data.get("dns_cluster_patterns", base.dns_cluster_patterns)),
         huggingface=_preset(data.get("huggingface"), base.huggingface),
         ollama=_preset(data.get("ollama"), base.ollama),
         extra_fqdns=tuple(data.get("extra_fqdns", ())),
@@ -138,8 +152,37 @@ def load_config(raw: str | None = None) -> ModelPodSecurityConfig:
     )
 
 
-def dns_rule() -> dict[str, Any]:
-    """kube-dns egress WITH the DNS proxy rule (toFQDNs only matches names Cilium saw resolved)."""
+def pull_hosts(
+    cfg: ModelPodSecurityConfig, *, hf: bool, ollama: bool
+) -> tuple[list[str], list[str]]:
+    """``(names, patterns)`` the enabled presets and extraFQDNs allow, de-duplicated."""
+    names: list[str] = []
+    patterns: list[str] = []
+    for wanted, preset in ((hf, cfg.huggingface), (ollama, cfg.ollama)):
+        if wanted and preset.enabled:
+            names += preset.fqdns
+            patterns += preset.patterns
+    names += cfg.extra_fqdns
+    return list(dict.fromkeys(names)), list(dict.fromkeys(patterns))
+
+
+def dns_rule(
+    cfg: ModelPodSecurityConfig,
+    *,
+    hf: bool = False,
+    ollama: bool = False,
+    extra_patterns: tuple[str, ...] | list[str] = (),
+) -> dict[str, Any]:
+    """kube-dns egress whose DNS proxy rule resolves only the names this pod needs.
+
+    toFQDNs only matches names Cilium saw resolved, so the proxy rule is required; it is limited
+    to the pull hosts, the cluster-service patterns (search-domain expansions and peer names) and
+    ``extra_patterns`` instead of ``*``.
+    """
+    names, patterns = pull_hosts(cfg, hf=hf, ollama=ollama)
+    rules: list[dict[str, str]] = [{"matchName": n} for n in names]
+    allowed = [*patterns, *cfg.dns_cluster_patterns, *extra_patterns]
+    rules += [{"matchPattern": p} for p in dict.fromkeys(allowed)]
     return {
         "toEndpoints": [
             {
@@ -149,29 +192,35 @@ def dns_rule() -> dict[str, Any]:
                 }
             }
         ],
-        "toPorts": [
-            {
-                "ports": [{"port": "53", "protocol": "ANY"}],
-                "rules": {"dns": [{"matchPattern": "*"}]},
-            }
-        ],
+        "toPorts": [{"ports": [{"port": "53", "protocol": "ANY"}], "rules": {"dns": rules}}],
     }
 
 
 def pull_rule(cfg: ModelPodSecurityConfig, *, hf: bool, ollama: bool) -> dict[str, Any] | None:
     """TCP/443-only toFQDNs rule for the enabled presets plus extra FQDNs; None when all are off."""
-    names: list[str] = []
-    patterns: list[str] = []
-    for wanted, preset in ((hf, cfg.huggingface), (ollama, cfg.ollama)):
-        if wanted and preset.enabled:
-            names += preset.fqdns
-            patterns += preset.patterns
-    names += cfg.extra_fqdns
-    fqdns = [{"matchName": n} for n in dict.fromkeys(names)]
-    fqdns += [{"matchPattern": p} for p in dict.fromkeys(patterns)]
+    names, patterns = pull_hosts(cfg, hf=hf, ollama=ollama)
+    fqdns = [{"matchName": n} for n in names] + [{"matchPattern": p} for p in patterns]
     if not fqdns:
         return None
     return {"toFQDNs": fqdns, "toPorts": [{"ports": [{"port": "443", "protocol": "TCP"}]}]}
+
+
+def owner_of(labels: dict[str, str]) -> str | None:
+    """The deployment public id carried by a selector (the label whose key ends ``-public-id``)."""
+    return next((v for k, v in labels.items() if k.endswith("-public-id")), None)
+
+
+def _meta(name: str, namespace: str, labels: dict[str, str]) -> dict[str, Any]:
+    """Object metadata: fleet-owned marker + owner public id (used to adopt on a 409)."""
+    meta: dict[str, Any] = {
+        "name": name,
+        "namespace": namespace,
+        "labels": {MANAGED_BY_LABEL: MANAGED_BY_FLEET},
+    }
+    owner = owner_of(labels)
+    if owner:
+        meta["labels"][OWNER_LABEL] = owner
+    return meta
 
 
 def cnp(
@@ -188,6 +237,8 @@ def cnp(
     peer_egress: list[dict[str, Any]] | None = None,
     serving: bool = True,
     auth: dict[str, str] | None = None,
+    mgmt_http: tuple[dict[str, str], ...] | None = None,
+    dns_extra: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
     """CNP for one model pod set: proxy (and management) in on ``ports``, DNS + peers + pull out.
 
@@ -197,25 +248,38 @@ def cnp(
     """
     ingress: list[dict[str, Any]] = []
     if serving:
-        sources = [{"matchLabels": dict(cfg.proxy_selector)}]
-        if cfg.management_ingress:
-            sources.append({"matchLabels": dict(cfg.management_selector)})
-        rule: dict[str, Any] = {
-            "fromEndpoints": sources,
-            "toPorts": [{"ports": [{"port": str(p), "protocol": "TCP"} for p in ports]}],
+        port_list = [{"port": str(p), "protocol": "TCP"} for p in ports]
+        proxy_rule: dict[str, Any] = {
+            "fromEndpoints": [{"matchLabels": dict(cfg.proxy_selector)}],
+            "toPorts": [{"ports": port_list}],
         }
         if auth:
-            rule["authentication"] = auth
-        ingress.append(rule)
+            proxy_rule["authentication"] = auth
+        ingress.append(proxy_rule)
+        if cfg.management_ingress:
+            # management may only make the calls the manager code makes (L7), never full access
+            mgmt_ports: dict[str, Any] = {"ports": port_list}
+            if mgmt_http:
+                mgmt_ports["rules"] = {"http": [dict(r) for r in mgmt_http]}
+            mgmt_rule: dict[str, Any] = {
+                "fromEndpoints": [{"matchLabels": dict(cfg.management_selector)}],
+                "toPorts": [mgmt_ports],
+            }
+            if auth:
+                mgmt_rule["authentication"] = auth
+            ingress.append(mgmt_rule)
     ingress += peer_ingress or []
-    egress: list[dict[str, Any]] = [dns_rule(), *(peer_egress or [])]
+    egress: list[dict[str, Any]] = [
+        dns_rule(cfg, hf=hf, ollama=ollama, extra_patterns=dns_extra),
+        *(peer_egress or []),
+    ]
     pull = pull_rule(cfg, hf=hf, ollama=ollama)
     if pull:
         egress.append(pull)
     return {
         "apiVersion": "cilium.io/v2",
         "kind": "CiliumNetworkPolicy",
-        "metadata": {"name": name, "namespace": namespace},
+        "metadata": _meta(name, namespace, labels),
         "spec": {
             "description": description,
             "endpointSelector": {"matchLabels": dict(labels)},
@@ -241,7 +305,7 @@ def _tracing(
     return {
         "apiVersion": f"{TRACING_GROUP}/{TRACING_VERSION}",
         "kind": TRACING_KIND,
-        "metadata": {"name": name, "namespace": namespace},
+        "metadata": _meta(name, namespace, labels),
         "spec": spec,
     }
 
@@ -254,20 +318,27 @@ def exec_policy(
     allowed: tuple[str, ...] | list[str],
     cfg: ModelPodSecurityConfig,
     containers: list[str] | None = None,
+    allowed_prefixes: tuple[str, ...] | list[str] = (),
 ) -> dict[str, Any]:
-    """Allowlist of executables: any other execve is killed (shells/package managers excluded)."""
+    """Allowlist of executables: any other binary is killed (shells/package managers excluded).
+
+    Hooks ``security_bprm_check`` (the resolved binary being executed, for execve AND execveat,
+    and again for a ``#!`` interpreter) instead of matching ``execve``'s arg0 string, which
+    ``execveat``/fexecve and symlink names bypass. Paths are therefore REAL paths (symlinks
+    resolved). ``allowed_prefixes`` covers toolchain trees with versioned paths (gcc's cc1).
+    """
     if not allowed:
         raise ValueError("an exec allowlist must not be empty (that would kill every exec)")
+    match_args: list[dict[str, Any]] = [
+        {"index": 0, "operator": "NotEqual", "values": list(allowed)}
+    ]
+    if allowed_prefixes:
+        match_args.append({"index": 0, "operator": "NotPrefix", "values": list(allowed_prefixes)})
     kprobe = {
-        "call": "sys_execve",
-        "syscall": True,
-        "args": [{"index": 0, "type": "string"}],
-        "selectors": [
-            {
-                "matchArgs": [{"index": 0, "operator": "NotIn", "values": list(allowed)}],
-                "matchActions": [{"action": cfg.action}],
-            }
-        ],
+        "call": "security_bprm_check",
+        "syscall": False,
+        "args": [{"index": 0, "type": "linux_binprm"}],
+        "selectors": [{"matchArgs": match_args, "matchActions": [{"action": cfg.action}]}],
     }
     return _tracing(name, namespace, labels, containers, kprobe)
 
@@ -398,3 +469,53 @@ def serve_policies(
             )
         )
     return out
+
+
+def apply_policy(custom: Any, namespace: str, doc: dict[str, Any]) -> str:
+    """Create ``doc``; on a 409 adopt it (replace) only if it belongs to the same deployment.
+
+    Returns ``created`` or ``replaced``. A 409 on an object owned by another deployment (or not
+    fleet-managed at all) raises: never overwrite someone else's policy.
+    """
+    group, version, plural = (
+        ("cilium.io", "v2", "ciliumnetworkpolicies")
+        if doc["kind"] == "CiliumNetworkPolicy"
+        else (TRACING_GROUP, TRACING_VERSION, TRACING_PLURAL)
+    )
+    try:
+        custom.create_namespaced_custom_object(group, version, namespace, plural, doc)
+        return "created"
+    except Exception as exc:
+        if getattr(exc, "status", None) != 409:
+            raise
+    name = doc["metadata"]["name"]
+    existing = custom.get_namespaced_custom_object(group, version, namespace, plural, name)
+    have = (existing.get("metadata") or {}).get("labels") or {}
+    want = doc["metadata"]["labels"]
+    if have.get(OWNER_LABEL) is None or have.get(OWNER_LABEL) != want.get(OWNER_LABEL):
+        raise RuntimeError(
+            f"{doc['kind']}/{name} exists and belongs to another owner; not adopting"
+        )
+    replacement = {**doc, "metadata": {**doc["metadata"]}}
+    version_ = (existing.get("metadata") or {}).get("resourceVersion")
+    if version_:
+        replacement["metadata"]["resourceVersion"] = version_
+    custom.replace_namespaced_custom_object(group, version, namespace, plural, name, replacement)
+    return "replaced"
+
+
+def delete_policy(custom: Any, namespace: str, kind: str, name: str) -> bool:
+    """Delete one policy; True when it is gone (a 404 counts), False on any other failure."""
+    group, version, plural = (
+        ("cilium.io", "v2", "ciliumnetworkpolicies")
+        if kind == "CiliumNetworkPolicy"
+        else (TRACING_GROUP, TRACING_VERSION, TRACING_PLURAL)
+    )
+    try:
+        custom.delete_namespaced_custom_object(group, version, namespace, plural, name)
+    except Exception as exc:
+        if getattr(exc, "status", None) == 404:
+            return True
+        logger.error("failed to delete %s %s: %s", kind, name, exc)
+        return False
+    return True

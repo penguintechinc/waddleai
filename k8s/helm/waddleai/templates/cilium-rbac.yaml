@@ -17,8 +17,6 @@ rules:
       - ciliumnetworkpolicies
       - ciliumenvoyconfigs
       - ciliumclusterwidenetworkpolicies
-      # per-deployment model-pod runtime policies (model_pod_security.py)
-      - tracingpoliciesnamespaced
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["apiextensions.k8s.io"]
     resources:

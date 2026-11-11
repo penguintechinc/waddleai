@@ -6,7 +6,7 @@ and per concern, each scoped by the chart's pod labels, and where an engine has 
 serve vs pull/init containers the policy is scoped to the container (Tetragon >= 1.1
 `containerSelector`) so a shell/curl is allowed only in the pull container, never the
 serving one:
-  exec    sys_execve NotIn allowlist -> kill (no shells, no package managers)
+  exec    security_bprm_check NotEqual allowlist (resolved real paths; execveat-safe) -> kill (no shells, no package managers)
   write   security_file_permission with a write mask under readOnlyPaths -> kill
   egress  tcp_connect to an address outside tetragon.model.privateCIDRs -> kill, EXCEPT where
           the container may pull (then Post: the CNP FQDN allowlist is the control; a kprobe
@@ -48,19 +48,27 @@ spec:
         values: {{ toJson $serve }}
   {{- end }}
   kprobes:
-    - call: "sys_execve"
-      syscall: true
+    - call: "security_bprm_check"
+      syscall: false
       args:
         - index: 0
-          type: "string"
+          type: "linux_binprm"
       selectors:
         - matchArgs:
             - index: 0
-              operator: "NotIn"
+              operator: "NotEqual"
               values:
                 {{- range $cfg.allowedExecs }}
                 - {{ . | quote }}
                 {{- end }}
+            {{- with $cfg.allowedPrefixes }}
+            - index: 0
+              operator: "NotPrefix"
+              values:
+                {{- range . }}
+                - {{ . | quote }}
+                {{- end }}
+            {{- end }}
           matchActions:
             - action: {{ $action }}
 {{- end }}
@@ -88,19 +96,27 @@ spec:
         operator: In
         values: {{ toJson $pull }}
   kprobes:
-    - call: "sys_execve"
-      syscall: true
+    - call: "security_bprm_check"
+      syscall: false
       args:
         - index: 0
-          type: "string"
+          type: "linux_binprm"
       selectors:
         - matchArgs:
             - index: 0
-              operator: "NotIn"
+              operator: "NotEqual"
               values:
                 {{- range $cfg.pullAllowedExecs }}
                 - {{ . | quote }}
                 {{- end }}
+            {{- with $cfg.pullAllowedPrefixes }}
+            - index: 0
+              operator: "NotPrefix"
+              values:
+                {{- range . }}
+                - {{ . | quote }}
+                {{- end }}
+            {{- end }}
           matchActions:
             - action: {{ $action }}
 {{- end }}

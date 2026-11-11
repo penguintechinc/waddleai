@@ -149,7 +149,9 @@ def test_head_policy_ingress_egress(mgr, dep):
     ingress = head["ingress"][0]
     assert ingress["authentication"] == {"mode": "required"}
     assert ingress["toPorts"] == [{"ports": [{"port": "8080", "protocol": "TCP"}]}]
-    assert len(ingress["fromEndpoints"]) == 2
+    assert len(ingress["fromEndpoints"]) == 1  # proxy: full serving access
+    mgmt = head["ingress"][1]  # management: L7-limited to the health path
+    assert mgmt["toPorts"][0]["rules"] == {"http": [{"method": "GET", "path": "^/health$"}]}
     kinds = [tuple(sorted(rule)) for rule in head["egress"]]
     assert ("toEndpoints", "toPorts") in kinds
     worker_rule = next(r for r in head["egress"] if r.get("authentication"))
@@ -184,11 +186,9 @@ def test_topology_selectors_from_env(mgr, dep, monkeypatch):
         "CILIUM_TOPOLOGY",
         '{"selectors": {"aiproxy": {"app": "px"}, "management": {"app": "mg"}}}',
     )
-    ingress = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]["ingress"][0]
-    assert ingress["fromEndpoints"] == [
-        {"matchLabels": {"app": "px"}},
-        {"matchLabels": {"app": "mg"}},
-    ]
+    rules = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]["ingress"]
+    assert rules[0]["fromEndpoints"] == [{"matchLabels": {"app": "px"}}]
+    assert rules[1]["fromEndpoints"] == [{"matchLabels": {"app": "mg"}}]
     monkeypatch.setenv("CILIUM_TOPOLOGY", "{not json")
     fallback = kind(mgr, dep, "CiliumNetworkPolicy")[1]["spec"]["ingress"][0]
     assert fallback["fromEndpoints"][0]["matchLabels"]["app.kubernetes.io/component"] == "proxy"

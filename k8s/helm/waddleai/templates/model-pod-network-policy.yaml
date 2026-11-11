@@ -17,8 +17,8 @@ policies (tetragon-model-policy.yaml) draw that line.
 {{- $t := .Values.cilium.topology }}
 {{- $np := .Values.modelPodSecurity.networkPolicy }}
 {{- $engines := list
-      (dict "name" "ollama" "components" (list "ollama" "ollama-embeddings") "ports" (list .Values.ollama.service.targetPort) "hf" false "ollama" true)
-      (dict "name" "llamacpp" "components" (list "llamacpp") "ports" (list .Values.llamacpp.service.targetPort) "hf" true "ollama" false) }}
+      (dict "name" "ollama" "components" (list "ollama" "ollama-embeddings") "ports" (list .Values.ollama.service.targetPort) "hf" false "ollama" true "mgmtHttp" (list (dict "method" "GET" "path" "^/$") (dict "method" "GET" "path" "^/api/tags$") (dict "method" "POST" "path" "^/api/pull$")))
+      (dict "name" "llamacpp" "components" (list "llamacpp") "ports" (list .Values.llamacpp.service.targetPort) "hf" true "ollama" false "mgmtHttp" (list (dict "method" "GET" "path" "^/health$"))) }}
 {{- range $e := $engines }}
 ---
 apiVersion: cilium.io/v2
@@ -42,18 +42,31 @@ spec:
           - {{ . | quote }}
           {{- end }}
   ingress:
+    # proxy: full serving access
     - fromEndpoints:
         - matchLabels:
             {{- toYaml $t.selectors.aiproxy | nindent 12 }}
-        {{- if $np.managementIngress }}
-        - matchLabels:
-            {{- toYaml $t.selectors.management | nindent 12 }}
-        {{- end }}
       toPorts:
         - ports:
             {{- range $e.ports }}
             - {port: {{ . | quote }}, protocol: TCP}
             {{- end }}
+    {{- if $np.managementIngress }}
+    # management: only the calls the fleet manager makes (L7)
+    - fromEndpoints:
+        - matchLabels:
+            {{- toYaml $t.selectors.management | nindent 12 }}
+      toPorts:
+        - ports:
+            {{- range $e.ports }}
+            - {port: {{ . | quote }}, protocol: TCP}
+            {{- end }}
+          rules:
+            http:
+              {{- range $e.mgmtHttp }}
+              - {method: {{ .method | quote }}, path: {{ .path | quote }}}
+              {{- end }}
+    {{- end }}
     {{- if $np.metricsPorts }}
     - fromEndpoints:
         - matchLabels:
@@ -85,7 +98,8 @@ spec:
     matchLabels:
       app.kubernetes.io/name: waddleai
       app.kubernetes.io/component: model-pull
-  ingress: []
+  ingress:
+    - {} # explicit default deny (an empty list may be dropped)
   egress:
     {{- include "waddleai.modelPull.egress" (dict "ctx" $ "hf" true "ollama" false) | nindent 4 }}
 {{- end }}

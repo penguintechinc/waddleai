@@ -54,12 +54,47 @@ spec:
             imagePullPolicy: IfNotPresent
             securityContext:
               {{- include "waddleai.vllmRay.containerSecurityContext" . | nindent 14 }}
+            {{- /* Explicit, shell-free start (no `bash -lc -- 'ulimit..; ray start'` wrapper): KubeRay
+                   keeps a user-set command/args (it only rewrites them with the
+                   ray.io/overwrite-container-cmd annotation), so the exec allowlist needs no shell.
+                   Flags mirror what KubeRay 1.6 generates for this head. */}}
+            command: [{{ $v.startCommand | quote }}]
+            args:
+              - start
+              - --head
+              - --block
+              - --no-monitor
+              - --node-ip-address=$(POD_IP)
+              - --dashboard-host=0.0.0.0
+              - --dashboard-port={{ $v.dashboard.port }}
+              - --port={{ $v.ports.gcs }}
+              - --ray-client-server-port={{ $v.ports.client }}
+              - --num-cpus=0
+              - --num-gpus=0
+              - --include-dashboard=true
+              - --metrics-export-port=8080
+              - --dashboard-agent-listen-port=52365
+            {{- /* KubeRay's default probes exec `bash -c wget ...`; httpGet needs no exec in the container. */}}
+            readinessProbe:
+              httpGet: {path: /api/gcs_healthz, port: 52365}
+              initialDelaySeconds: 10
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 60
+            livenessProbe:
+              httpGet: {path: /api/gcs_healthz, port: 52365}
+              initialDelaySeconds: 30
+              periodSeconds: 5
+              timeoutSeconds: 3
+              failureThreshold: 120
             ports:
               - {name: gcs, containerPort: {{ $v.ports.gcs }}}
               - {name: dashboard, containerPort: {{ $v.dashboard.port }}}
               - {name: client, containerPort: {{ $v.ports.client }}}
               - {name: serve, containerPort: {{ $v.serve.port }}}
             env:
+              - name: POD_IP
+                valueFrom: {fieldRef: {fieldPath: status.podIP}}
               {{- include "waddleai.vllmRay.authEnv" . | nindent 14 }}
             resources:
               {{- toYaml $v.head.resources | nindent 14 }}
@@ -109,7 +144,33 @@ spec:
               imagePullPolicy: IfNotPresent
               securityContext:
                 {{- include "waddleai.vllmRay.containerSecurityContext" $ | nindent 16 }}
+              command: [{{ $v.startCommand | quote }}]
+              args:
+                - start
+                - --block
+                - --address=$(FQ_RAY_IP):{{ $v.ports.gcs }}
+                - --node-ip-address=$(POD_IP)
+                - --num-gpus={{ int $g.gpusPerWorker }}
+                - {{ printf "--resources=%s" (toJson $res) | quote }}
+                - --min-worker-port={{ $v.ports.workerMin }}
+                - --max-worker-port={{ $v.ports.workerMax }}
+                - --metrics-export-port=8080
+                - --dashboard-agent-listen-port=52365
+              readinessProbe:
+                httpGet: {path: /api/local_raylet_healthz, port: 52365}
+                initialDelaySeconds: 10
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 60
+              livenessProbe:
+                httpGet: {path: /api/local_raylet_healthz, port: 52365}
+                initialDelaySeconds: 30
+                periodSeconds: 5
+                timeoutSeconds: 3
+                failureThreshold: 120
               env:
+                - name: POD_IP
+                  valueFrom: {fieldRef: {fieldPath: status.podIP}}
                 - {name: NCCL_SOCKET_NTHREADS, value: "4"}
                 - {name: NCCL_NSOCKS_PERTHREAD, value: "4"}
                 - {name: NCCL_IB_DISABLE, value: "1"}

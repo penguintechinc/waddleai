@@ -20,12 +20,16 @@ import requests
 import yaml
 
 from services.management.app.services.model_pod_security import (
+    LLAMA_MGMT_HTTP,
+    OWNER_LABEL,
     RPC_SERVE_EXECS,
     RPC_WAIT_EXECS,
     TRACING_GROUP,
     TRACING_KIND,
     TRACING_PLURAL,
     TRACING_VERSION,
+    apply_policy,
+    delete_policy,
     serve_policies,
 )
 from services.management.app.services.model_pod_security import (
@@ -74,6 +78,17 @@ RPC_DEVICE_BY_VENDOR: dict[int, str] = {1: "CUDA0", 2: "ROCm0", 3: "SYCL0"}
 RPC_RESOURCE_BY_VENDOR: dict[int, str] = {2: "amd.com/gpu", 3: "gpu.intel.com/i915"}
 _NVIDIA = 1
 _CNP = "CiliumNetworkPolicy"
+
+
+def _policy_meta(name: str, namespace: str, pid: str) -> dict:
+    """Metadata for a hand-built policy: fleet-owned marker + owner public id (adopt on 409)."""
+    return {
+        "name": name,
+        "namespace": namespace,
+        "labels": {"app.kubernetes.io/managed-by": "waddleai-fleet", OWNER_LABEL: pid},
+    }
+
+
 _TRACING_SUFFIXES = ("exec", "pull-exec", "readonly", "egress", "pull-egress")
 _ROLE_LABEL = "waddleai.penguintech.io/llamacpp-role"
 _DEPLOYMENT_LABEL = "waddleai.penguintech.io/llamacpp-deployment"
@@ -488,6 +503,7 @@ class LlamaCppManager(InferenceFleetBackend):
                     cfg=cfg,
                     ports=[8080],
                     hf=True,
+                    mgmt_http=LLAMA_MGMT_HTTP,
                 )
             )
         if cfg.tetragon:
@@ -514,29 +530,34 @@ class LlamaCppManager(InferenceFleetBackend):
 
         namespace = deployment.k8s_namespace or "waddleai"
         ds_name = deployment.k8s_daemonset_name or self._daemonset_name(deployment.name)
-        if policy_docs:  # policies first: no pod ever starts without its network/runtime policy
-            custom = get_k8s_custom_client()
-            for doc in policy_docs:
-                self._create_policy(custom, namespace, doc)
-        apps_client = get_k8s_apps_client()
-
+        applied: list[dict] = []
+        custom = None
         try:
-            apps_client.create_namespaced_daemon_set(
-                namespace=namespace,
-                body=ds_doc,
-            )
-        except Exception as e:
-            logger.error(f"Failed to create DaemonSet {ds_name}: {e}")
-            raise
-
-        core_client = get_k8s_core_client()
-        try:
-            core_client.create_namespaced_service(
-                namespace=namespace,
-                body=svc_doc,
-            )
-        except Exception as e:
-            logger.error(f"Failed to create Service for {ds_name}: {e}")
+            if policy_docs:  # policies first: no pod ever starts without its policy
+                custom = get_k8s_custom_client()
+                for doc in policy_docs:
+                    if apply_policy(custom, namespace, doc) == "created":
+                        applied.append(doc)  # adopted (replaced) policies are not ours to roll back
+            apps_client = get_k8s_apps_client()
+            try:
+                apps_client.create_namespaced_daemon_set(namespace=namespace, body=ds_doc)
+            except Exception as e:
+                logger.error(f"Failed to create DaemonSet {ds_name}: {e}")
+                if getattr(e, "status", None) == 409:
+                    applied.clear()  # the DaemonSet exists and its pods need these policies
+                raise
+            core_client = get_k8s_core_client()
+            try:
+                core_client.create_namespaced_service(namespace=namespace, body=svc_doc)
+            except Exception as e:
+                logger.error(f"Failed to create Service for {ds_name}: {e}")
+                self._best_effort_delete_daemonset(apps_client, namespace, ds_name)
+                raise
+        except Exception:
+            # roll back only the policies this call created
+            if custom is not None:
+                for doc in reversed(applied):
+                    delete_policy(custom, namespace, doc["kind"], doc["metadata"]["name"])
             raise
 
         svc_endpoint = f"http://{ds_name}-svc.{namespace}:8080"
@@ -549,16 +570,13 @@ class LlamaCppManager(InferenceFleetBackend):
         logger.info(f"Deployed llama.cpp DaemonSet {ds_name} in {namespace}")
 
     @staticmethod
-    def _create_policy(custom, namespace: str, doc: dict) -> None:
-        """Create one CiliumNetworkPolicy or TracingPolicyNamespaced object."""
-        if doc["kind"] == _CNP:
-            custom.create_namespaced_custom_object(
-                "cilium.io", "v2", namespace, "ciliumnetworkpolicies", doc
-            )
-        else:
-            custom.create_namespaced_custom_object(
-                TRACING_GROUP, TRACING_VERSION, namespace, TRACING_PLURAL, doc
-            )
+    def _best_effort_delete_daemonset(apps_client, namespace: str, ds_name: str) -> None:
+        """Remove a half-created DaemonSet during rollback (404 ok; other errors logged)."""
+        try:
+            apps_client.delete_namespaced_daemon_set(name=ds_name, namespace=namespace)
+        except Exception as exc:
+            if getattr(exc, "status", None) != 404:
+                logger.error("rollback could not delete DaemonSet %s: %s", ds_name, exc)
 
     def remove_daemonset(self, deployment, force: bool = False) -> None:
         """Delete the DaemonSet and Service. Requires force=True if status is running."""
@@ -969,6 +987,11 @@ class LlamaCppManager(InferenceFleetBackend):
             cfg=cfg,
             ports=[8080],
             hf=True,
+            mgmt_http=LLAMA_MGMT_HTTP,
+            dns_extra=[
+                f"*.{base}-rpc.{namespace}.svc",
+                f"*.{base}-rpc.{namespace}.svc.cluster.local",
+            ],
             peer_egress=[
                 {
                     "toEndpoints": [{"matchLabels": self._rpc_labels(base, "worker", pid)}],
@@ -985,7 +1008,7 @@ class LlamaCppManager(InferenceFleetBackend):
         return {
             "apiVersion": "cilium.io/v2",
             "kind": "CiliumNetworkPolicy",
-            "metadata": {"name": f"{base}-rpc-allow", "namespace": namespace},
+            "metadata": _policy_meta(f"{base}-rpc-allow", namespace, pid),
             "spec": {
                 "description": "rpc-server pods: no auth/TLS of their own, so only the head",
                 "endpointSelector": {"matchLabels": self._rpc_labels(base, "worker", pid)},
@@ -996,7 +1019,7 @@ class LlamaCppManager(InferenceFleetBackend):
                         "toPorts": [{"ports": [{"port": str(RPC_PORT), "protocol": "TCP"}]}],
                     }
                 ],
-                "egress": [],  # rpc-server never initiates a connection
+                "egress": [{}],  # explicit default-deny: rpc-server never initiates a connection
             },
         }
 
@@ -1051,14 +1074,8 @@ class LlamaCppManager(InferenceFleetBackend):
         try:
             for doc in manifests:
                 kind, name = doc["kind"], doc["metadata"]["name"]
-                if kind == _CNP:
-                    custom.create_namespaced_custom_object(
-                        "cilium.io", "v2", namespace, "ciliumnetworkpolicies", doc
-                    )
-                elif kind == TRACING_KIND:
-                    custom.create_namespaced_custom_object(
-                        TRACING_GROUP, TRACING_VERSION, namespace, TRACING_PLURAL, doc
-                    )
+                if kind in (_CNP, TRACING_KIND):
+                    apply_policy(custom, namespace, doc)  # idempotent: adopts the same owner's
                 elif kind == "Service":
                     core.create_namespaced_service(namespace=namespace, body=doc)
                 elif kind == "StatefulSet":

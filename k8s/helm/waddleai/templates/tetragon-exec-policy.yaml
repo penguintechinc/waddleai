@@ -1,5 +1,5 @@
 {{/*
-Tetragon exec-guard: an ENFORCED allowlist of each targeted component's own
+Tetragon exec-guard: an ENFORCED allowlist (hooks security_bprm_check, so execveat cannot bypass it) of each targeted component's own
 runtime binaries (spec §12.2; house security mandate — allowlist, not
 observe-only). One TracingPolicyNamespaced per component so the allowlist
 stays scoped to that pod's actual process inventory (a Python service's
@@ -34,20 +34,38 @@ spec:
       - key: app.kubernetes.io/component
         operator: In
         values: [{{ $comp | quote }}]
+  {{- with $cfg.containers }}
+  containerSelector:
+    matchExpressions:
+      - key: name
+        operator: In
+        values: {{ toJson . }}
+  {{- end }}
   kprobes:
-    - call: "sys_execve"
-      syscall: true
+    # security_bprm_check sees the RESOLVED binary of every execve AND execveat/fexecve (and a
+    # `#!` interpreter), unlike a sys_execve arg0 match. Allowlist entries are therefore REAL
+    # paths (symlinks resolved), e.g. /usr/local/bin/python3.13, not /usr/local/bin/python3.
+    - call: "security_bprm_check"
+      syscall: false
       args:
         - index: 0
-          type: "string"
+          type: "linux_binprm"
       selectors:
         - matchArgs:
             - index: 0
-              operator: "NotIn"
+              operator: "NotEqual"
               values:
                 {{- range $cfg.allowedExecs }}
                 - {{ . | quote }}
                 {{- end }}
+            {{- with $cfg.allowedPrefixes }}
+            - index: 0
+              operator: "NotPrefix"
+              values:
+                {{- range . }}
+                - {{ . | quote }}
+                {{- end }}
+            {{- end }}
           matchActions:
             {{- if eq $cfg.mode "enforce" }}
             - action: Sigkill

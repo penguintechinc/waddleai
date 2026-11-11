@@ -1,5 +1,6 @@
 """Model-pod hardening: CNP isolation + enforced Tetragon policies + model-pull FQDN presets."""
 
+import json
 from pathlib import Path
 
 from tests.helm.conftest import find, render
@@ -25,22 +26,35 @@ def _fqdns(cnp: dict) -> list[str]:
     return out
 
 
-def test_ollama_and_llamacpp_ingress_is_proxy_and_management_only():
-    """Serving ports admit only the AI proxy (+management); no other source, no extra ports."""
+def test_ingress_is_proxy_full_and_management_l7_limited():
+    """Proxy gets the serving port; management only the calls the fleet manager makes."""
     docs = _docs()
-    for name, port in (("waddleai-model-ollama", "11434"), ("waddleai-model-llamacpp", "8080")):
+    expected = {
+        "waddleai-model-ollama": (
+            "11434",
+            {("GET", "^/$"), ("GET", "^/api/tags$"), ("POST", "^/api/pull$")},
+        ),
+        "waddleai-model-llamacpp": ("8080", {("GET", "^/health$")}),
+    }
+    for name, (port, calls) in expected.items():
         spec = find(docs, "CiliumNetworkPolicy", name)["spec"]
-        assert len(spec["ingress"]) == 1
-        sources = [e["matchLabels"] for e in spec["ingress"][0]["fromEndpoints"]]
-        assert sources[0] == PROXY
-        assert len(sources) == 2 and sources[1]["app.kubernetes.io/component"] == "management"
-        assert spec["ingress"][0]["toPorts"][0]["ports"] == [{"port": port, "protocol": "TCP"}]
+        assert len(spec["ingress"]) == 2
+        proxy, mgmt = spec["ingress"]
+        assert [e["matchLabels"] for e in proxy["fromEndpoints"]] == [PROXY]
+        assert "rules" not in proxy["toPorts"][0]
+        assert proxy["toPorts"][0]["ports"] == [{"port": port, "protocol": "TCP"}]
+        assert (
+            mgmt["fromEndpoints"][0]["matchLabels"]["app.kubernetes.io/component"] == "management"
+        )
+        http = mgmt["toPorts"][0]["rules"]["http"]
+        assert {(r["method"], r["path"]) for r in http} == calls
 
 
 def test_proxy_only_when_management_ingress_disabled():
     """modelPodSecurity.networkPolicy.managementIngress=false leaves the proxy as sole caller."""
     docs = _docs(**{"modelPodSecurity.networkPolicy.managementIngress": "false"})
     spec = find(docs, "CiliumNetworkPolicy", "waddleai-model-llamacpp")["spec"]
+    assert len(spec["ingress"]) == 1
     assert [e["matchLabels"] for e in spec["ingress"][0]["fromEndpoints"]] == [PROXY]
 
 
@@ -48,7 +62,10 @@ def test_egress_is_dns_proxy_rule_plus_https_fqdns_only():
     """Egress = kube-dns WITH the DNS proxy rule + TCP/443 FQDNs; nothing to db/valkey/mgmt."""
     spec = find(_docs(), "CiliumNetworkPolicy", "waddleai-model-llamacpp")["spec"]
     assert len(spec["egress"]) == 2
-    assert spec["egress"][0]["toPorts"][0]["rules"] == {"dns": [{"matchPattern": "*"}]}
+    dns = spec["egress"][0]["toPorts"][0]["rules"]["dns"]
+    assert {"matchPattern": "*"} not in dns  # no wildcard resolver
+    assert {"matchName": "huggingface.co"} in dns and {"matchPattern": "*.cluster.local"} in dns
+    assert {"matchName": "registry.ollama.ai"} not in dns
     assert spec["egress"][1]["toPorts"] == [{"ports": [{"port": "443", "protocol": "TCP"}]}]
     assert not any("toEndpoints" in r and "toFQDNs" in r for r in spec["egress"])
 
@@ -111,7 +128,7 @@ def test_model_pull_job_policy_is_the_only_vllm_internet_egress():
         pull["spec"]["endpointSelector"]["matchLabels"]["app.kubernetes.io/component"]
         == "model-pull"
     )
-    assert pull["spec"]["ingress"] == []
+    assert pull["spec"]["ingress"] == [{}]  # explicit default deny
     assert "huggingface.co" in _fqdns(pull)
     for ray in ("waddleai-vllm-ray-head", "waddleai-vllm-ray-worker"):
         assert _fqdns(find(docs, "CiliumNetworkPolicy", ray)) == []
@@ -129,7 +146,7 @@ def _exec_lists(docs: list[dict], needle: str) -> list[tuple[str, list[str]]]:
     for d in docs:
         if d["kind"] == "TracingPolicyNamespaced" and needle in d["metadata"]["name"]:
             kp = d["spec"]["kprobes"][0]
-            if kp["call"] == "sys_execve":
+            if kp["call"] == "security_bprm_check":
                 out.append((d["metadata"]["name"], kp["selectors"][0]["matchArgs"][0]["values"]))
     return out
 
@@ -213,19 +230,142 @@ def test_tetragon_toggle_and_observe_mode():
     assert exec_tp["spec"]["kprobes"][0]["selectors"][0]["matchActions"] == [{"action": "Post"}]
 
 
-def test_management_env_and_rbac_carry_the_settings():
-    """The fleet manager receives the same presets, and may manage TracingPolicyNamespaced."""
-    docs = _docs()
+def test_management_env_carries_the_settings():
+    """The fleet manager receives the same presets and DNS patterns."""
+    env = _mgmt_env(_docs())
+    cfg = json.loads(env["WADDLEAI_MODEL_POD_SECURITY"])
+    assert "huggingface" in cfg and cfg["dns_cluster_patterns"] == ["*.cluster.local"]
+    assert "100.64.0.0/10" in cfg["private_cidrs"]
+    assert cfg["tetragon"] is True and cfg["network_policy"] is True
+
+
+def _mgmt_env(docs: list[dict]) -> dict:
     dep = next(
         d for d in docs if d["kind"] == "Deployment" and "management" in d["metadata"]["name"]
     )
-    env = {
+    return {
         e["name"]: e.get("value") for e in dep["spec"]["template"]["spec"]["containers"][0]["env"]
     }
-    assert '"huggingface"' in env["WADDLEAI_MODEL_POD_SECURITY"]
-    role = next(
-        d
-        for d in docs
-        if d["kind"] == "ClusterRole" and d["metadata"]["name"].endswith("cilium-reconciler")
+
+
+def test_manager_flags_use_the_charts_crd_capability_gate():
+    """Without the CRDs (and no forceRender) the manager is told NOT to generate policies."""
+    docs = render(BASE)  # no --api-versions: neither cilium.io/v2 nor the Tetragon CRD
+    cfg = json.loads(_mgmt_env(docs)["WADDLEAI_MODEL_POD_SECURITY"])
+    assert cfg["tetragon"] is False and cfg["network_policy"] is False
+    forced = json.loads(
+        _mgmt_env(render(BASE, set_values={"tetragon.forceRender": "true"}))[
+            "WADDLEAI_MODEL_POD_SECURITY"
+        ]
     )
-    assert "tracingpoliciesnamespaced" in role["rules"][0]["resources"]
+    assert forced["tetragon"] is True
+
+
+def test_namespaced_role_for_tracing_policies_not_cluster_wide():
+    """Tetragon policy access is granted by a namespaced Role + binding, minimal verbs."""
+    docs = _docs()
+    role = find(docs, "Role", "waddleai-model-pod-tracing")
+    rule = role["rules"][0]
+    assert rule["resources"] == ["tracingpoliciesnamespaced"]
+    assert set(rule["verbs"]) == {"get", "list", "create", "update", "delete"}
+    find(docs, "RoleBinding", "waddleai-model-pod-tracing")
+    cluster = find(docs, "ClusterRole", "waddleai-cilium-reconciler")
+    assert all("tracingpoliciesnamespaced" not in r["resources"] for r in cluster["rules"])
+    more = _docs(**{"modelPodSecurity.networkPolicy.namespaces[0]": "models-a"})
+    assert any(d["kind"] == "Role" and d["metadata"]["namespace"] == "models-a" for d in more)
+
+
+def test_admission_policy_protects_chart_owned_policies_from_management():
+    """VAP + binding deny the management SA update/delete of Helm-owned model policies."""
+    docs = render(BASE, set_values={"admissionPolicies.forceRender": "true"}, api_versions=APIS)
+    vap = find(docs, "ValidatingAdmissionPolicy", "waddleai-protect-model-policies")["spec"]
+    ops = {tuple(r["operations"]) for r in vap["matchConstraints"]["resourceRules"]}
+    assert ops == {("UPDATE", "DELETE")}
+    expr = vap["validations"][0]["expression"]
+    assert "system:serviceaccount:waddleai:waddleai" in expr
+    variables = {v["name"]: v["expression"] for v in vap["variables"]}
+    assert "'Helm'" in variables["chartOwned"]
+    binding = find(
+        docs, "ValidatingAdmissionPolicyBinding", "waddleai-protect-model-policies-binding"
+    )
+    assert binding["spec"]["validationActions"] == ["Deny"]
+    off = render(
+        BASE,
+        set_values={
+            "admissionPolicies.forceRender": "true",
+            "modelPodSecurity.networkPolicy.protectChartPolicies.enabled": "false",
+        },
+        api_versions=APIS,
+    )
+    assert not [d for d in off if "protect-model-policies" in d["metadata"]["name"]]
+
+
+def test_exec_policies_hook_the_resolved_binary_not_execve_arg0():
+    """execveat/fexecve bypass a sys_execve arg0 match: every exec policy must hook bprm_check."""
+    docs = _docs()
+    execs = [
+        d for d in docs
+        if d["kind"] == "TracingPolicyNamespaced"
+        and ("-exec-" in d["metadata"]["name"] or "-model-pull-exec-" in d["metadata"]["name"])
+    ]  # fmt: skip
+    assert len(execs) >= 6, [d["metadata"]["name"] for d in execs]
+    for d in execs:
+        kp = d["spec"]["kprobes"][0]
+        assert kp["call"] == "security_bprm_check", d["metadata"]["name"]
+        assert kp["args"] == [{"index": 0, "type": "linux_binprm"}]
+        assert kp["selectors"][0]["matchArgs"][0]["operator"] == "NotEqual"
+    assert not [d for d in docs if "sys_execve" in json.dumps(d.get("spec", {}))]
+
+
+def _ray_containers(docs: list[dict]) -> dict:
+    rc = find(docs, "RayCluster", "waddleai-inference")["spec"]
+    head = rc["headGroupSpec"]["template"]["spec"]["containers"][0]
+    worker = rc["workerGroupSpecs"][0]["template"]["spec"]["containers"][0]
+    return {"ray-head": head, "ray-worker": worker}
+
+
+def test_ray_pods_start_without_a_shell_and_binaries_are_allowlisted():
+    """Golden: head/worker exec the ray binary directly; command[0] is in the enforced allowlist."""
+    docs = _docs()
+    for comp, c in _ray_containers(docs).items():
+        assert c["name"] == comp
+        assert c["command"] == ["/home/ray/anaconda3/bin/ray"]
+        assert c["args"][0] == "start" and "--block" in c["args"]
+        assert not [a for a in [*c["command"], *c["args"]] if a.rsplit("/", 1)[-1] in SHELLS]
+        tp = find(docs, "TracingPolicyNamespaced", f"waddleai-exec-allowlist-{comp}")["spec"]
+        allowed = tp["kprobes"][0]["selectors"][0]["matchArgs"][0]["values"]
+        assert c["command"][0] in allowed
+        # scoped to the ray container only: KubeRay's bash init/autoscaler containers are untouched
+        assert tp["containerSelector"]["matchExpressions"][0]["values"] == [comp]
+        # probes must not exec inside the container (KubeRay's default is bash+wget)
+        for probe in ("readinessProbe", "livenessProbe"):
+            assert "httpGet" in c[probe] and "exec" not in c[probe]
+
+
+def test_ray_worker_args_carry_resources_gpus_and_head_address():
+    """Worker start flags that KubeRay used to inject are present and well formed."""
+    w = _ray_containers(_docs())["ray-worker"]
+    args = w["args"]
+    assert "--address=$(FQ_RAY_IP):6379" in args
+    res = next(a for a in args if a.startswith("--resources="))
+    assert json.loads(res.split("=", 1)[1])
+    assert any(a.startswith("--num-gpus=") and int(a.split("=")[1]) >= 1 for a in args)
+    assert any(e["name"] == "POD_IP" for e in w["env"])
+    head = _ray_containers(_docs())["ray-head"]["args"]
+    assert "--no-monitor" in head  # in-tree autoscaler sidecar owns the monitor
+
+
+def test_ray_worker_allowlist_has_jit_toolchain_prefixes_but_no_shell():
+    """Triton/gcc prefixes and nvidia-smi are allowed; shells are not."""
+    tp = find(_docs(), "TracingPolicyNamespaced", "waddleai-exec-allowlist-ray-worker")["spec"]
+    sel = tp["kprobes"][0]["selectors"][0]["matchArgs"]
+    assert "/usr/bin/nvidia-smi" in sel[0]["values"]
+    assert sel[1]["operator"] == "NotPrefix"
+    assert "/usr/lib/gcc/x86_64-linux-gnu/" in sel[1]["values"]
+    assert not {p.rsplit("/", 1)[-1] for p in sel[0]["values"]} & SHELLS
+
+
+def test_default_deny_policies_use_an_explicit_empty_rule():
+    """An empty list can be dropped on serialization; `[{}]` is Cilium's explicit default deny."""
+    deny = find(_docs(), "CiliumNetworkPolicy", "waddleai-default-deny")["spec"]
+    assert deny["ingress"] == [{}] and deny["egress"] == [{}]

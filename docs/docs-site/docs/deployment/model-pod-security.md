@@ -35,14 +35,48 @@ reached by or reach another's. The proxy is the sole shared entry point.
 | `tetragon.model.enabled` / `.mode` | `true` / `enforce` | per-engine policies; `observe` logs instead of killing |
 | `tetragon.model.engines.*` | see values.yaml | allowlists, read-only paths, container names |
 
+## Exec enforcement details
+
+- Policies hook `security_bprm_check` (the resolved binary of every `execve`, `execveat`/`fexecve`
+  and `#!` interpreter), not `sys_execve` arg0, which `execveat` bypasses. Allowlists therefore hold
+  REAL paths (e.g. `/usr/local/bin/python3.13`, not the `python3` symlink).
+- Ray pods start without a shell: head and worker exec `/home/ray/anaconda3/bin/ray start ...`
+  directly (KubeRay keeps a user-set command/args), probes are `httpGet` on the agent port, and the
+  exec policy is scoped by `containerSelector` to the `ray-head`/`ray-worker` container, so KubeRay's
+  bash init and autoscaler containers are untouched. `ulimit -n 65536` from KubeRay's wrapper is
+  dropped (container runtime default applies).
+- The Ray worker allowlist also covers nvidia-smi, ldconfig and the gcc toolchain prefixes Triton
+  needs for JIT. These were derived, not verified against the pinned image: run once in
+  `tetragon.exec.components.ray-worker.mode: observe` and trim.
+
+## Access control of the policies themselves
+
+- `model-pod-rbac.yaml`: the manager gets `tracingpoliciesnamespaced` through a namespaced Role
+  (get/list/create/update/delete) in `modelPodSecurity.networkPolicy.namespaces` only. The model
+  CNPs remain under the existing cilium-reconciler ClusterRole (narrowing it needs a reconciler
+  change).
+- `admission-model-policy-protect.yaml`: a ValidatingAdmissionPolicy (`Deny`) stops the management
+  service account updating or deleting chart-owned (`managed-by=Helm`) Tetragon policies and
+  `waddleai-model-*` / `waddleai-vllm-ray-*` CNPs. Fleet-generated objects carry
+  `managed-by=waddleai-fleet` and stay manageable.
+- Fleet applies are idempotent: a 409 on an object with the same owner label is replaced, anything
+  else raises. A failed deploy rolls back only the policies it created.
+
 ## Limits to know
 
 - The preset hosts are what HuggingFace and the Ollama registry redirect to today; confirm against
   a live pull when you change environments.
 - Cilium enforces egress per pod, not per container. The pull-phase split (sh/curl only in the
-  init container, kprobe egress only logs there) is done by Tetragon `containerSelector`
-  (Tetragon 1.1 or newer). Ollama pulls through its own API in the serving container, so its
-  egress is pod-wide and `/models` stays writable.
-- DNS is allowed to resolve any name (needed for the DNS proxy and in-cluster peers).
-- The Ray exec allowlist has no shell. KubeRay's default start wrapper is `bash -lc`; validate on
-  a live cluster before relying on it and fix the RayCluster command rather than re-allowing a shell.
+  init container) is done by Tetragon `containerSelector` (Tetragon 1.1 or newer). The egress
+  kprobe is **observe-only (Post) for Ollama and for every pull container**: a kprobe cannot match
+  FQDNs, so the CNP FQDN allowlist is the only enforcement there. Ollama pulls through its own API
+  in the serving container, so its egress is pod-wide and `/models` stays writable.
+- `tetragon.model.privateCIDRs` (default includes 100.64.0.0/10 and the IPv6 private ranges) is
+  configurable; connect() outside it is killed in serving containers.
+- DNS is restricted to the pull hosts plus `modelPodSecurity.networkPolicy.dnsClusterPatterns`
+  (default `*.cluster.local`, needed for peers and search-domain expansions). Not validated on a
+  live cluster: widen it if a resolver treats the proxy's REFUSED on an expansion as fatal.
+- The namespace default-deny now uses an explicit `[{}]` rule (an empty list can be dropped).
+- Ollama workloads are applied from the exported manifest (which carries the policies);
+  `OllamaDeploymentManager.apply_policies` / `remove_policies` are the programmatic path with
+  rollback and ordered teardown (Tetragon first, CNP last).
