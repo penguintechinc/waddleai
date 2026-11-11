@@ -1548,21 +1548,27 @@ jobs:
         fi
         bash tests/images/test_vllm_ray_images.sh "$ref" "$RAY_VERSION" "$PYTHON_MINOR"
 
-    # The ROCm image (~15 GB) exhausted the runner disk when Trivy exported it from the docker daemon
-    # (`no space left on device`, a scan error that masked the real findings). Drop the build cache and scan the
-    # pushed digest straight from the registry (TRIVY_IMAGE_SRC=remote): no daemon export, and it is exactly what ships.
-    - name: Free build cache before Trivy
+    # The ROCm image (~15 GB) exhausted the runner disk during the Trivy scan (`no space left on device`, a scan
+    # error that masked the real findings): the buildx builder's cache (not touched by `docker builder prune`) and the
+    # pulled image still held ~140 GB. Scan the pushed digest straight from the registry (TRIVY_IMAGE_SRC=remote: no
+    # daemon export, exactly what ships), free the buildx cache and local images first, and point Trivy's scratch
+    # files at /mnt, which has its own volume. df is printed so a regression is visible.
+    - name: Free disk before Trivy
       if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       run: |
         set -euo pipefail
-        docker builder prune --all --force
-        df -h /
+        docker buildx prune --all --force
+        docker system prune --all --force
+        sudo mkdir -p /mnt/trivy-tmp
+        sudo chown "$(id -u):$(id -g)" /mnt/trivy-tmp
+        df -h / /mnt
 
     - name: Trivy vulnerability gate
       if: github.event_name != 'pull_request' && needs.determine-tier.outputs.push == 'true'
       uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
       env:
         TRIVY_IMAGE_SRC: remote
+        TMPDIR: /mnt/trivy-tmp
         # Per-image secret allowlist (xpu only: anthropic SDK docstring examples); empty = trivy default.
         TRIVY_SECRET_CONFIG: ${{ matrix.image == 'xpu' && 'images/vllm-ray-xpu/trivy-secret.yaml' || '' }}
       with:
