@@ -303,6 +303,16 @@ Per §5.1.1/§10.1: passthrough request carries the `wa-` key (org + entitlement
 
 ---
 
+## Amendment (2026-11-05): External webhooks hook points — see `2026-11-05-external-webhooks-W3-proxy-hooks.md`
+
+> Marked addition; implements `docs/superpowers/specs/2026-11-05-external-webhooks-design.md`. P2 builds only the **seams**; W3 supplies the stages. No behavior changes in P2 with flags OFF.
+
+- **Named hook points in `build_pipeline`** (reserve these positions; stages are no-ops/absent until W3): `ext_decision_start` immediately after `security_in` (so the external Decide can overlap `cache`/`routing`/`quota`); `ext_decision_pre_dispatch` immediately before `dispatch` (after P4's `plugins_pre_dispatch`); `ext_decision_post_dispatch` after `dispatch` and **before** `security_out` and before `_depseudonymize` restores real values.
+- **`ctx.extensions`** (P4 seam) also carries the W3 `ExternalDecisionState` and `ProxyEventDraft`; no new public `PipelineContext` fields.
+- **Event seam:** `MeterStage` tail and the block paths call an injected `EventSink` (`request.completed`, `request.blocked`, `security.violation`, `pii.detected`, `quota.exceeded`) — `NoopSink` in P2; W3 provides the Valkey `XADD` sink. Never blocks or fails a request.
+- **Depseudonymize ordering constraint:** the post-dispatch external hook must see pseudonymized response text; record in P3 where restore runs (egress transform vs inside `dispatch`) — W3 Task 5 adds a `defer_depseudonymize` seam if needed.
+- **Streaming:** a route with a bound external `post_dispatch` decision is buffered and replayed via the existing synthetic SSE `ctx.stream_iter` path (Task 12 routes).
+
 ## Self-Review
 
 - **Spec coverage (§5.1 stage table, P2 row):** Auth+modes T3; TokenBudget T2; SecurityIn/Out regex T4–T6 (NER seam T5, v2/LLM-auditor fail-loud); Quota Lua-verbatim + single-writer T7; Cache T8; Routing T9; Dispatch (local only, seams) T10; Meter T11; Axum routes T12; shadow-compare (§11) T13; contract gate (§7) T14. Deferred by design: commercial/passthrough dispatch, depseudonymize, NER impl (P3); plugin hooks (P4); `/mem0`, MCP, gRPC, `count_tokens` (P6).
