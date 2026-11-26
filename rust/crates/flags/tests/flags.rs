@@ -591,6 +591,37 @@ async fn per_id_null_does_not_poison_other_ids() {
 #[derive(Clone, Default)]
 struct Cap(Arc<Mutex<Vec<String>>>);
 
+struct GlobalCap;
+
+struct CapGuard;
+
+impl Drop for CapGuard {
+    fn drop(&mut self) {
+        TLS_CAP.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+    }
+}
+
+thread_local! {
+    static TLS_CAP: std::cell::RefCell<Option<Cap>> = const { std::cell::RefCell::new(None) };
+}
+
+static INIT_TRACE: std::sync::Once = std::sync::Once::new();
+
+impl Cap {
+    fn install() -> (Self, CapGuard) {
+        INIT_TRACE.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(GlobalCap);
+        });
+        let cap = Self::default();
+        TLS_CAP.with(|cell| {
+            *cell.borrow_mut() = Some(cap.clone());
+        });
+        (cap, CapGuard)
+    }
+}
+
 struct Fields(String);
 impl tracing::field::Visit for Fields {
     fn record_str(&mut self, f: &tracing::field::Field, v: &str) {
@@ -601,7 +632,7 @@ impl tracing::field::Visit for Fields {
     }
 }
 
-impl tracing::Subscriber for Cap {
+impl tracing::Subscriber for GlobalCap {
     fn enabled(&self, m: &tracing::Metadata<'_>) -> bool {
         *m.level() <= tracing::Level::WARN
     }
@@ -611,9 +642,13 @@ impl tracing::Subscriber for Cap {
     fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
     fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
     fn event(&self, e: &tracing::Event<'_>) {
-        let mut v = Fields(String::new());
-        e.record(&mut v);
-        self.0.lock().unwrap().push(v.0);
+        TLS_CAP.with(|cell| {
+            if let Some(cap) = cell.borrow().as_ref() {
+                let mut v = Fields(String::new());
+                e.record(&mut v);
+                cap.0.lock().unwrap().push(v.0);
+            }
+        });
     }
     fn enter(&self, _: &tracing::span::Id) {}
     fn exit(&self, _: &tracing::span::Id) {}
@@ -630,8 +665,7 @@ fn count(cap: &Cap, needle: &str) -> usize {
 
 #[tokio::test]
 async fn negative_cache_hit_emits_no_warn() {
-    let cap = Cap::default();
-    let _g = tracing::subscriber::set_default(cap.clone());
+    let (cap, _g) = Cap::install();
     let (f, l) = (
         Arc::new(FakeFlags::default()),
         Arc::new(FakeLicense::default()),
@@ -662,8 +696,7 @@ async fn negative_cache_hit_emits_no_warn() {
 
 #[tokio::test]
 async fn stale_license_warn_is_named_and_throttled() {
-    let cap = Cap::default();
-    let _g = tracing::subscriber::set_default(cap.clone());
+    let (cap, _g) = Cap::install();
     let (f, l) = (
         Arc::new(FakeFlags::default()),
         Arc::new(FakeLicense::default()),
@@ -690,8 +723,7 @@ async fn stale_license_warn_is_named_and_throttled() {
 
 #[tokio::test]
 async fn warn_throttle_evicts_oldest_only() {
-    let cap = Cap::default();
-    let _g = tracing::subscriber::set_default(cap.clone());
+    let (cap, _g) = Cap::install();
     let (f, l) = (
         Arc::new(FakeFlags::default()),
         Arc::new(FakeLicense::default()),

@@ -242,8 +242,8 @@
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.107.0",
-    "@typescript-eslint/eslint-plugin": "^8.68.0",
-    "@typescript-eslint/parser": "^8.68.0",
+    "@typescript-eslint/eslint-plugin": "8.74.0",
+    "@typescript-eslint/parser": "8.74.0",
     "@vscode/vsce": "4.0.0",
     "eslint": "^8.54.0",
     "ts-loader": "^9.5.0",
@@ -252,6 +252,9 @@
     "webpack-cli": "^5.1.4"
   },
   "overrides": {
-    "@azure/msal-node": "7.1.1"
+    "@azure/msal-node": "7.1.1",
+    "@vscode/vsce": {
+      "minimatch": "11.0.9"
+    }
   }
 }
