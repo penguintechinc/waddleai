@@ -1,7 +1,7 @@
 """Unit tests for AI provider management routes: /api/v1/providers/*."""
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -369,10 +369,62 @@ class TestTestProvider:
         provider = make_mock_provider()
         app_mock_db.return_value.select.return_value.first.return_value = provider
 
-        resp = await client.post("/api/v1/providers/1/test", headers=auth_headers)
+        fake_resp = MagicMock(status_code=200)
+        fake_client = MagicMock()
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=None)
+        fake_client.request = AsyncMock(return_value=fake_resp)
+
+        with patch(
+            "services.management.app.api.v1.providers.httpx.AsyncClient", return_value=fake_client
+        ):
+            resp = await client.post("/api/v1/providers/1/test", headers=auth_headers)
         assert resp.status_code == 200
         data = await resp.get_json()
         assert data["status"] == "connected"
+
+    async def test_test_provider_auth_failed(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """401/403 from upstream maps to auth_failed."""
+        provider = make_mock_provider()
+        app_mock_db.return_value.select.return_value.first.return_value = provider
+
+        fake_resp = MagicMock(status_code=401)
+        fake_client = MagicMock()
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=None)
+        fake_client.request = AsyncMock(return_value=fake_resp)
+
+        with patch(
+            "services.management.app.api.v1.providers.httpx.AsyncClient", return_value=fake_client
+        ):
+            resp = await client.post("/api/v1/providers/1/test", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["status"] == "auth_failed"
+
+    async def test_test_provider_unreachable(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Network error maps to unreachable."""
+        import httpx
+
+        provider = make_mock_provider()
+        app_mock_db.return_value.select.return_value.first.return_value = provider
+
+        fake_client = MagicMock()
+        fake_client.__aenter__ = AsyncMock(return_value=fake_client)
+        fake_client.__aexit__ = AsyncMock(return_value=None)
+        fake_client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+
+        with patch(
+            "services.management.app.api.v1.providers.httpx.AsyncClient", return_value=fake_client
+        ):
+            resp = await client.post("/api/v1/providers/1/test", headers=auth_headers)
+        assert resp.status_code == 200
+        data = await resp.get_json()
+        assert data["status"] == "unreachable"
 
     async def test_test_provider_not_found(
         self, client, app_mock_db: MagicMock, auth_headers: dict
@@ -557,10 +609,13 @@ class TestUpdateProviderAllFields:
         )
         assert resp.status_code == 200
 
+        from shared.security.credential_encryption import decrypt_credential, is_encrypted
+
         update_kwargs = app_mock_db.return_value.update.call_args.kwargs
         assert update_kwargs["name"] == "Renamed Provider"
         assert update_kwargs["endpoint_url"] == "https://api.openai.com/v2"
-        assert update_kwargs["api_key"] == "sk-rotated"
+        assert is_encrypted(update_kwargs["api_key"])
+        assert decrypt_credential(update_kwargs["api_key"]) == "sk-rotated"
         assert update_kwargs["model_list"] == ["gpt-4o"]
         assert update_kwargs["rate_limits"] == {"tpm_limit": 5000}
         assert update_kwargs["enabled"] is False

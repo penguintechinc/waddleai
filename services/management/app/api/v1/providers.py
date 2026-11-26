@@ -1,13 +1,20 @@
 """WaddleAI Management API v1 - AI Provider Management Endpoints."""
 
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime
 
+import httpx
 from quart import current_app, jsonify
 from quart_schema import security_scheme, tag, validate_request, validate_response
 
 from shared.auth.rbac import Permission
+from shared.security.credential_encryption import (
+    decrypt_credential,
+    encrypt_credential,
+    is_encrypted,
+)
 
 from ...extensions import db
 from . import api_v1_bp
@@ -495,11 +502,16 @@ async def create_provider(data: CreateProviderRequest):
         return jsonify({"error": f"{provider_type} requires an API key"}), 400
 
     def _create():
+        stored_key = (
+            encrypt_credential(data.api_key)
+            if data.api_key and not is_encrypted(data.api_key)
+            else data.api_key
+        )
         provider_id = db.ai_providers.insert(
             name=data.name,
             provider_type=provider_type,
             endpoint_url=data.endpoint_url,
-            api_key=data.api_key,
+            api_key=stored_key,
             model_list=data.model_list if data.model_list is not None else provider_info["models"],
             rate_limits=data.rate_limits if data.rate_limits is not None else {},
             enabled=data.enabled if data.enabled is not None else True,
@@ -557,7 +569,11 @@ async def update_provider(provider_id, data: UpdateProviderRequest):
             update_fields["endpoint_url"] = data.endpoint_url
 
         if data.api_key is not None:
-            update_fields["api_key"] = data.api_key
+            update_fields["api_key"] = (
+                encrypt_credential(data.api_key)
+                if data.api_key and not is_encrypted(data.api_key)
+                else data.api_key
+            )
 
         if data.model_list is not None:
             update_fields["model_list"] = data.model_list
@@ -628,6 +644,45 @@ async def delete_provider(provider_id):
     return {"message": "Provider disabled successfully."}
 
 
+def _build_probe_request(
+    provider_type: str, endpoint_url: str, api_key: str | None
+) -> tuple[str, str, dict[str, str], dict[str, str]]:
+    """Build (method, url, headers, params) for a provider connectivity probe."""
+    base = endpoint_url.rstrip("/")
+    headers: dict[str, str] = {}
+    params: dict[str, str] = {}
+
+    if provider_type == "ollama":
+        return "GET", f"{base}/api/tags", headers, params
+    if provider_type == "anthropic":
+        url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+        if api_key:
+            headers["x-api-key"] = api_key
+        headers["anthropic-version"] = "2023-06-01"
+        return "GET", url, headers, params
+    if provider_type == "gemini":
+        if api_key:
+            params["key"] = api_key
+        return "GET", f"{base}/models", headers, params
+    if provider_type == "cohere":
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return "GET", f"{base}/models", headers, params
+    if provider_type == "azure_openai":
+        if api_key:
+            headers["api-key"] = api_key
+        params["api-version"] = "2024-02-01"
+        return "GET", f"{base}/openai/models", headers, params
+    if provider_type == "bedrock":
+        return "HEAD", f"{base}/", headers, params
+
+    # openai, vllm, and generic OpenAI-compatible endpoints
+    url = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return "GET", url, headers, params
+
+
 @api_v1_bp.route("/providers/<int:provider_id>/test", methods=["POST"])
 @tag(["Providers"])
 @security_scheme(_BEARER_AUTH)
@@ -643,15 +698,58 @@ async def test_provider(provider_id):
     if not provider:
         return jsonify({"error": "Provider not found"}), 404
 
-    # TODO: Implement actual connectivity test based on provider type
-    # For now, return a mock response
+    base_url = (
+        provider.endpoint_url
+        or SUPPORTED_PROVIDERS.get(provider.provider_type, {}).get("default_endpoint")
+        or ""
+    )
+    if not base_url:
+        return {
+            "provider_id": provider_id,
+            "provider_type": provider.provider_type,
+            "endpoint_url": provider.endpoint_url or "",
+            "status": "error",
+            "latency_ms": 0,
+            "message": "Provider has no endpoint_url configured",
+        }
+
+    raw_key = getattr(provider, "api_key", None)
+    api_key = decrypt_credential(raw_key) if raw_key and is_encrypted(raw_key) else raw_key
+    method, url, headers, params = _build_probe_request(provider.provider_type, base_url, api_key)
+
+    start = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.request(method, url, headers=headers, params=params)
+        latency_ms = int((time.monotonic() - start) * 1000)
+        if resp.status_code < 400:
+            status = "connected"
+            message = f"Connection test successful (HTTP {resp.status_code})"
+        elif resp.status_code in (401, 403):
+            status = "auth_failed"
+            message = f"Authentication failed (HTTP {resp.status_code})"
+        elif provider.provider_type == "bedrock" and resp.status_code < 500:
+            status = "connected"
+            message = f"Endpoint reachable (HTTP {resp.status_code})"
+        else:
+            status = "error"
+            message = f"Provider returned HTTP {resp.status_code}"
+    except httpx.TimeoutException:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        status = "timeout"
+        message = "Connection timed out"
+    except httpx.HTTPError as exc:
+        latency_ms = int((time.monotonic() - start) * 1000)
+        status = "unreachable"
+        message = f"Connection failed: {type(exc).__name__}"
+
     return {
         "provider_id": provider_id,
         "provider_type": provider.provider_type,
-        "endpoint_url": provider.endpoint_url,
-        "status": "connected",
-        "latency_ms": 150,
-        "message": "Connection test successful",
+        "endpoint_url": provider.endpoint_url or base_url,
+        "status": status,
+        "latency_ms": latency_ms,
+        "message": message,
     }
 
 

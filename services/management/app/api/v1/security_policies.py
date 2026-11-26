@@ -322,8 +322,18 @@ async def list_policies() -> tuple:
     )
 
 
+@dataclass(slots=True)
+class ResolvePolicyResponse:
+    """Response body for GET /api/v1/security-policies/resolve."""
+
+    status: str
+    data: dict[str, Any]
+    meta: dict[str, Any]
+
+
 @security_policies_bp.route("/resolve", methods=["GET"])
 @require_auth
+@validate_response(ResolvePolicyResponse, 200)
 async def resolve_policy() -> tuple:
     """Resolution-preview: what policy applies to org X + model Y + tool Z."""
     org_id: str | None = request.args.get("org")
@@ -338,34 +348,32 @@ async def resolve_policy() -> tuple:
     resolved = await resolver.resolve(org_id, model, tool, direction=direction)
 
     return (
-        jsonify(
-            {
-                "status": "success",
-                "data": {
-                    "tier1_enabled": resolved.tier1_enabled,
-                    "tier2_enabled": resolved.tier2_enabled,
-                    "tier3_enabled": resolved.tier3_enabled,
-                    "tier4_enabled": resolved.tier4_enabled,
-                    "tier4_model": resolved.tier4_model,
-                    "intent_classifier_enabled": resolved.intent_classifier_enabled,
-                    "intent_categories": list(resolved.intent_categories),
-                    "block_action": resolved.block_action,
-                    "fail_mode": resolved.fail_mode,
-                    "on_unclassifiable": resolved.on_unclassifiable,
-                    "auditor_timeout_ms": resolved.auditor_timeout_ms,
-                    "latency_budget_ms": resolved.latency_budget_ms,
-                    "sample_rate": resolved.sample_rate,
-                    "upstream_filters": resolved.upstream_filters,
-                },
-                "meta": {
-                    "org": org_id,
-                    "model": model,
-                    "tool": tool,
-                    "direction": direction,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                },
-            }
-        ),
+        {
+            "status": "success",
+            "data": {
+                "tier1_enabled": resolved.tier1_enabled,
+                "tier2_enabled": resolved.tier2_enabled,
+                "tier3_enabled": resolved.tier3_enabled,
+                "tier4_enabled": resolved.tier4_enabled,
+                "tier4_model": resolved.tier4_model,
+                "intent_classifier_enabled": resolved.intent_classifier_enabled,
+                "intent_categories": list(resolved.intent_categories),
+                "block_action": resolved.block_action,
+                "fail_mode": resolved.fail_mode,
+                "on_unclassifiable": resolved.on_unclassifiable,
+                "auditor_timeout_ms": resolved.auditor_timeout_ms,
+                "latency_budget_ms": resolved.latency_budget_ms,
+                "sample_rate": resolved.sample_rate,
+                "upstream_filters": resolved.upstream_filters,
+            },
+            "meta": {
+                "org": org_id,
+                "model": model,
+                "tool": tool,
+                "direction": direction,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+            },
+        },
         200,
     )
 

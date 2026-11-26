@@ -1827,7 +1827,10 @@ async def get_current_user():
     state = request.scope.get("state") if hasattr(request, "scope") else None
     claims_d = state.get("claims") if isinstance(state, dict) else None
     if isinstance(claims_d, dict) and claims_d:
-        return claims_dict_to_user_context(claims_d)
+        try:
+            return claims_dict_to_user_context(claims_d)
+        except AuthenticationError as e:
+            abort(401, description=str(e))
 
     # Read header once into locals (no Quart objects in to_thread closures)
     authorization = request.headers.get("Authorization")

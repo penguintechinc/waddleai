@@ -618,28 +618,30 @@ async def start_ollama_deployment(deployment_id):
             {"error": "Orchestrated mode is disabled. Use docker-compose export instead."}
         ), 400
 
+    from ...services.ollama_manager import OllamaDeploymentManager
+
     def _start():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
 
         if not deployment:
-            return "not_found"
+            return "not_found", None
 
         if deployment.deployment_type not in ["docker"]:
-            return "invalid_type"
+            return "invalid_type", None
 
-        # TODO: Implement Docker API integration
-        # For now, return a mock response
-        db(db.ollama_deployments.id == deployment_id).update(status="running")
-        db.commit()
+        manager = OllamaDeploymentManager(db)
+        res = manager.start_deployment(deployment_id)
+        return ("ok" if res.get("success") else "error"), res.get("error")
 
-        return "ok"
+    status_key, err_msg = await asyncio.to_thread(_start)
 
-    result = await asyncio.to_thread(_start)
-
-    if result == "not_found":
+    if status_key == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
-    if result == "invalid_type":
+    if status_key == "invalid_type":
         return jsonify({"error": "Only docker deployments can be started via API"}), 400
+    if status_key == "error":
+        code = 503 if err_msg and "not available" in err_msg.lower() else 502
+        return jsonify({"error": err_msg or "Failed to start deployment"}), code
 
     return {
         "deployment_id": deployment_id,
@@ -658,22 +660,25 @@ async def stop_ollama_deployment(deployment_id):
     if mode == "manual":
         return jsonify({"error": "Orchestrated mode is disabled"}), 400
 
+    from ...services.ollama_manager import OllamaDeploymentManager
+
     def _stop():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
 
         if not deployment:
-            return "not_found"
+            return "not_found", None
 
-        # TODO: Implement Docker API integration
-        db(db.ollama_deployments.id == deployment_id).update(status="stopped")
-        db.commit()
+        manager = OllamaDeploymentManager(db)
+        res = manager.stop_deployment(deployment_id)
+        return ("ok" if res.get("success") else "error"), res.get("error")
 
-        return "ok"
+    status_key, err_msg = await asyncio.to_thread(_stop)
 
-    result = await asyncio.to_thread(_stop)
-
-    if result == "not_found":
+    if status_key == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
+    if status_key == "error":
+        code = 503 if err_msg and "not available" in err_msg.lower() else 502
+        return jsonify({"error": err_msg or "Failed to stop deployment"}), code
 
     return {
         "deployment_id": deployment_id,
@@ -692,22 +697,25 @@ async def restart_ollama_deployment(deployment_id):
     if mode == "manual":
         return jsonify({"error": "Orchestrated mode is disabled"}), 400
 
+    from ...services.ollama_manager import OllamaDeploymentManager
+
     def _restart():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
 
         if not deployment:
-            return "not_found"
+            return "not_found", None
 
-        # TODO: Implement Docker API integration
-        db(db.ollama_deployments.id == deployment_id).update(status="running")
-        db.commit()
+        manager = OllamaDeploymentManager(db)
+        res = manager.restart_deployment(deployment_id)
+        return ("ok" if res.get("success") else "error"), res.get("error")
 
-        return "ok"
+    status_key, err_msg = await asyncio.to_thread(_restart)
 
-    result = await asyncio.to_thread(_restart)
-
-    if result == "not_found":
+    if status_key == "not_found":
         return jsonify({"error": "Deployment not found"}), 404
+    if status_key == "error":
+        code = 503 if err_msg and "not available" in err_msg.lower() else 502
+        return jsonify({"error": err_msg or "Failed to restart deployment"}), code
 
     return {
         "deployment_id": deployment_id,
@@ -760,18 +768,31 @@ async def get_ollama_logs(deployment_id):
 
     lines = request.args.get("lines", 100, type=int)
 
-    deployment = await asyncio.to_thread(
-        lambda: db(db.ollama_deployments.id == deployment_id).select().first()
-    )
+    from ...services.ollama_manager import OllamaDeploymentManager
+
+    def _fetch_logs():
+        deployment = db(db.ollama_deployments.id == deployment_id).select().first()
+        if not deployment:
+            return None, None
+        manager = OllamaDeploymentManager(db)
+        return deployment, manager.get_logs(deployment_id, lines=lines)
+
+    deployment, logs_output = await asyncio.to_thread(_fetch_logs)
 
     if not deployment:
         return jsonify({"error": "Deployment not found"}), 404
 
-    # TODO: Implement Docker API to get logs
+    if logs_output == "Docker client not available":
+        return jsonify({"error": logs_output}), 503
+    if logs_output == "Orchestrated mode not enabled":
+        return jsonify({"error": logs_output}), 400
+    if logs_output and logs_output.startswith("Error: "):
+        return jsonify({"error": logs_output}), 502
+
     return {
         "deployment_id": deployment_id,
         "lines": lines,
-        "logs": "Log retrieval not yet implemented",
+        "logs": logs_output or "",
     }, 200
 
 
@@ -834,6 +855,7 @@ async def pull_ollama_model(deployment_id):
 @validate_response(RemoveOllamaModelResponse, 200)
 async def remove_ollama_model(deployment_id, model_name):
     """Remove a model from Ollama deployment."""
+    from ...services.ollama_manager import OllamaDeploymentManager
 
     def _remove():
         deployment = db(db.ollama_deployments.id == deployment_id).select().first()
@@ -853,9 +875,9 @@ async def remove_ollama_model(deployment_id, model_name):
         if not model:
             return "model_not_found"
 
-        # TODO: Implement actual Ollama API call to remove model
-        db(db.ollama_models.id == model.id).update(status="removed")
-        db.commit()
+        manager = OllamaDeploymentManager(db)
+        if not manager.remove_model(deployment_id, model_name):
+            return "daemon_error"
 
         return "ok"
 
@@ -865,6 +887,8 @@ async def remove_ollama_model(deployment_id, model_name):
         return jsonify({"error": "Deployment not found"}), 404
     if result == "model_not_found":
         return jsonify({"error": "Model not found"}), 404
+    if result == "daemon_error":
+        return jsonify({"error": "Failed to remove model from Ollama daemon"}), 503
 
     return {
         "deployment_id": deployment_id,

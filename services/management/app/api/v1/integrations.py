@@ -534,10 +534,20 @@ def _verify_caller_owns_key(virtual_key: str, org_id: int, user_id: int):
     return None
 
 
+@dataclass(slots=True)
+class OpenCodeConfigResponse:
+    """Response body for POST /api/v1/integrations/opencode-config."""
+
+    status: str
+    data: dict[str, Any]
+    meta: dict[str, Any]
+
+
 @api_v1_bp.route("/integrations/opencode-config", methods=["POST"])
 @tag(["Integrations"])
 @security_scheme(_BEARER_AUTH)
 @require_auth
+@validate_response(OpenCodeConfigResponse, 200)
 async def opencode_config():
     """Render a per-virtual-key OpenCode config (custom provider + `/mcp` entry).
 
@@ -590,13 +600,11 @@ async def opencode_config():
             }
         },
     }
-    return jsonify(
-        {
-            "status": "success",
-            "data": config,
-            "meta": {"key_id": key_row.id, "timestamp": datetime.utcnow().isoformat() + "Z"},
-        }
-    )
+    return {
+        "status": "success",
+        "data": config,
+        "meta": {"key_id": key_row.id, "timestamp": datetime.utcnow().isoformat() + "Z"},
+    }
 
 
 # ---------------------------------------------------------------------------

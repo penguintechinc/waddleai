@@ -340,3 +340,22 @@ class TestEdgeCases:
         # Should handle fractional division correctly
         assert waddleai_tokens > 0
         assert isinstance(waddleai_tokens, int)
+
+    def test_estimate_credits_floors_at_heuristic_for_unmatched_provider(self, mock_db):
+        """Reserve must never be smaller than reconcile on unmatched-provider heuristic (gh-347)."""
+        manager = TokenManager(mock_db)
+        manager.conversion_rates = {
+            "ollama:llama3.2": ConversionRate(
+                provider="ollama",
+                model="llama3.2",
+                input_rate=100.0,
+                output_rate=50.0,
+                base_cost_per_waddleai_token=0.0001,
+            )
+        }
+
+        reserved = manager.estimate_credits("llama3.2", 5000, 3000)
+        reconciled_unmatched = manager.calculate_waddleai_tokens(
+            5000, 3000, "unmatched-provider", "llama3.2"
+        )
+        assert reserved >= reconciled_unmatched == 1100

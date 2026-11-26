@@ -4,6 +4,7 @@ import asyncio
 import math
 from dataclasses import dataclass
 from datetime import date
+from typing import Any
 
 from penguin_dal.db import DB
 from quart import g, jsonify, request
@@ -174,9 +175,30 @@ def _validate_key_quota_bounds(data: SetKeyQuotaRequest) -> str | None:
     return None
 
 
+@dataclass(slots=True)
+class QuotaListResponse:
+    """Response body for GET /api/v1/quotas."""
+
+    quotas: list[dict[str, Any]]
+    total: int
+    pagination: dict[str, int | None]
+
+
+@dataclass(slots=True)
+class QuotaStatusResponse:
+    """Response body for GET /api/v1/quotas/status/<entity_id>."""
+
+    type: str
+    id: int
+    name: str
+    quotas: dict[str, Any]
+    usage: dict[str, Any] | None = None
+
+
 @api_v1_bp.route("/quotas", methods=["GET"])
 @require_auth
 @require_scope(Permission.QUOTA_LIST)
+@validate_response(QuotaListResponse, 200)
 async def list_quotas():
     """List all quota configurations."""
     org_id = g.user.get("organization_id")
@@ -260,7 +282,7 @@ async def list_quotas():
             }
         )
 
-    return jsonify({"quotas": quotas, "total": len(quotas), **page.meta()})
+    return {"quotas": quotas, **page.meta(), "total": len(quotas)}
 
 
 @api_v1_bp.route("/quotas/user/<int:user_id>", methods=["PUT"])
@@ -418,6 +440,7 @@ async def set_key_quota(key_id: int, data: SetKeyQuotaRequest) -> ResponseReturn
 
 @api_v1_bp.route("/quotas/status/<int:entity_id>", methods=["GET"])
 @require_auth
+@validate_response(QuotaStatusResponse, 200)
 async def get_quota_status(entity_id):
     """Get current quota status for an entity."""
     entity_type = request.args.get("type", "key")  # key, user, or org
@@ -463,38 +486,39 @@ async def get_quota_status(entity_id):
                 return jsonify({"error": "Access denied"}), 403
 
         daily_tokens = daily_usage.waddleai_tokens if daily_usage else 0
+        daily_cost = float(daily_usage.cost_usd_total or 0) if daily_usage else 0.0
         monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
         monthly_cost = sum(u.cost_usd_total or 0 for u in monthly_usage)
 
-        return jsonify(
-            {
-                "type": "key",
-                "id": entity_id,
-                "name": key.name,
-                "quotas": {
-                    "daily": {
-                        "budget_limit": key.budget_limit_daily,
-                        "used_cost": 0,  # TODO: Calculate from daily usage
-                        "percentage": 0,
-                    },
-                    "monthly": {
-                        "budget_limit": key.budget_limit_monthly,
-                        "used_cost": monthly_cost,
-                        "percentage": (
-                            (monthly_cost / key.budget_limit_monthly * 100)
-                            if key.budget_limit_monthly
-                            else 0
-                        ),
-                    },
-                    "rate_limits": {"tpm_limit": key.tpm_limit, "rpm_limit": key.rpm_limit},
+        return {
+            "type": "key",
+            "id": entity_id,
+            "name": key.name,
+            "quotas": {
+                "daily": {
+                    "budget_limit": key.budget_limit_daily,
+                    "used_cost": daily_cost,
+                    "percentage": (
+                        (daily_cost / key.budget_limit_daily * 100) if key.budget_limit_daily else 0
+                    ),
                 },
-                "usage": {
-                    "daily_tokens": daily_tokens,
-                    "monthly_tokens": monthly_tokens,
-                    "monthly_cost_usd": monthly_cost,
+                "monthly": {
+                    "budget_limit": key.budget_limit_monthly,
+                    "used_cost": monthly_cost,
+                    "percentage": (
+                        (monthly_cost / key.budget_limit_monthly * 100)
+                        if key.budget_limit_monthly
+                        else 0
+                    ),
                 },
-            }
-        )
+                "rate_limits": {"tpm_limit": key.tpm_limit, "rpm_limit": key.rpm_limit},
+            },
+            "usage": {
+                "daily_tokens": daily_tokens,
+                "monthly_tokens": monthly_tokens,
+                "monthly_cost_usd": monthly_cost,
+            },
+        }
 
     elif entity_type == "user":
 
@@ -525,33 +549,31 @@ async def get_quota_status(entity_id):
         daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)
         monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
 
-        return jsonify(
-            {
-                "type": "user",
-                "id": entity_id,
-                "name": user.username,
-                "quotas": {
-                    "daily": {
-                        "limit": user.token_quota_daily,
-                        "used": daily_tokens,
-                        "remaining": max(0, (user.token_quota_daily or 0) - daily_tokens),
-                        "percentage": (daily_tokens / user.token_quota_daily * 100)
-                        if user.token_quota_daily
-                        else 0,
-                    },
-                    "monthly": {
-                        "limit": user.token_quota_monthly,
-                        "used": monthly_tokens,
-                        "remaining": max(0, (user.token_quota_monthly or 0) - monthly_tokens),
-                        "percentage": (
-                            (monthly_tokens / user.token_quota_monthly * 100)
-                            if user.token_quota_monthly
-                            else 0
-                        ),
-                    },
+        return {
+            "type": "user",
+            "id": entity_id,
+            "name": user.username,
+            "quotas": {
+                "daily": {
+                    "limit": user.token_quota_daily,
+                    "used": daily_tokens,
+                    "remaining": max(0, (user.token_quota_daily or 0) - daily_tokens),
+                    "percentage": (daily_tokens / user.token_quota_daily * 100)
+                    if user.token_quota_daily
+                    else 0,
                 },
-            }
-        )
+                "monthly": {
+                    "limit": user.token_quota_monthly,
+                    "used": monthly_tokens,
+                    "remaining": max(0, (user.token_quota_monthly or 0) - monthly_tokens),
+                    "percentage": (
+                        (monthly_tokens / user.token_quota_monthly * 100)
+                        if user.token_quota_monthly
+                        else 0
+                    ),
+                },
+            },
+        }
 
     elif entity_type == "org":
 
@@ -579,32 +601,30 @@ async def get_quota_status(entity_id):
         daily_tokens = sum(u.waddleai_tokens or 0 for u in daily_usage)
         monthly_tokens = sum(u.waddleai_tokens or 0 for u in monthly_usage)
 
-        return jsonify(
-            {
-                "type": "organization",
-                "id": entity_id,
-                "name": org.name,
-                "quotas": {
-                    "daily": {
-                        "limit": org.token_quota_daily,
-                        "used": daily_tokens,
-                        "remaining": max(0, (org.token_quota_daily or 0) - daily_tokens),
-                        "percentage": (daily_tokens / org.token_quota_daily * 100)
-                        if org.token_quota_daily
-                        else 0,
-                    },
-                    "monthly": {
-                        "limit": org.token_quota_monthly,
-                        "used": monthly_tokens,
-                        "remaining": max(0, (org.token_quota_monthly or 0) - monthly_tokens),
-                        "percentage": (
-                            (monthly_tokens / org.token_quota_monthly * 100)
-                            if org.token_quota_monthly
-                            else 0
-                        ),
-                    },
+        return {
+            "type": "organization",
+            "id": entity_id,
+            "name": org.name,
+            "quotas": {
+                "daily": {
+                    "limit": org.token_quota_daily,
+                    "used": daily_tokens,
+                    "remaining": max(0, (org.token_quota_daily or 0) - daily_tokens),
+                    "percentage": (daily_tokens / org.token_quota_daily * 100)
+                    if org.token_quota_daily
+                    else 0,
                 },
-            }
-        )
+                "monthly": {
+                    "limit": org.token_quota_monthly,
+                    "used": monthly_tokens,
+                    "remaining": max(0, (org.token_quota_monthly or 0) - monthly_tokens),
+                    "percentage": (
+                        (monthly_tokens / org.token_quota_monthly * 100)
+                        if org.token_quota_monthly
+                        else 0
+                    ),
+                },
+            },
+        }
 
     return jsonify({"error": "Invalid entity type"}), 400

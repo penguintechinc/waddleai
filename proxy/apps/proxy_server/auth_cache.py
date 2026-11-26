@@ -56,6 +56,7 @@ from shared.auth.rbac import (
     AuthenticationError,
     RBACManager,
     UserContext,
+    _is_key_expired,
     auth_cache_key,
     parse_wa_key_id,
 )
@@ -155,6 +156,7 @@ class CachedKeyRecord:
     #: keep entries written by pre-teams replicas readable during a rolling deploy.
     team_id: int | None = None
     team_role: str | None = None
+    expires_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a plain dict suitable for ``json.dumps``."""
@@ -174,6 +176,7 @@ class CachedKeyRecord:
             user_enabled=bool(payload.get("user_enabled", True)),
             team_id=payload.get("team_id"),
             team_role=payload.get("team_role"),
+            expires_at=payload.get("expires_at"),
         )
 
 
@@ -348,6 +351,10 @@ def _db_lookup_and_verify(
     key_record, user = found
     secret_ok = bool(bcrypt.verify(credential, key_record.key_hash))
     team_id, team_role = rbac.resolve_key_team(key_record, user)
+    raw_exp = getattr(key_record, "expires_at", None)
+    expires_at_str = (
+        raw_exp.isoformat() if raw_exp is not None and hasattr(raw_exp, "isoformat") else raw_exp
+    )
     record = CachedKeyRecord(
         key_record_id=key_record.id,
         key_hash=key_record.key_hash,
@@ -359,6 +366,7 @@ def _db_lookup_and_verify(
         user_enabled=bool(user.enabled),
         team_id=team_id,
         team_role=team_role,
+        expires_at=expires_at_str if isinstance(expires_at_str, str) else None,
     )
     return record, secret_ok
 
@@ -442,6 +450,8 @@ class ApiKeyAuthenticator:
         self, credential: str, cached: CachedKeyRecord
     ) -> UserContext:
         """Verify a cache hit: bcrypt still runs (off the loop), the DB does not."""
+        if _is_key_expired(cached.expires_at):
+            raise AuthenticationError("API key expired")
         verified = await run_in_auth_executor(_verify_cached, credential, cached.key_hash)
         if not verified:
             raise AuthenticationError("Invalid API key")

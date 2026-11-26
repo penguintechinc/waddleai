@@ -195,3 +195,39 @@ async def test_clear_org_all_has_no_author_filter() -> None:
     assert "scope_type = 'org'" in sql
     assert "author_user_id" not in sql
     assert "user_id = %s" not in sql
+
+
+async def test_search_and_recent_pass_tuple_params_and_fail_loud() -> None:
+    """PgvectorMemoryStore passes tuple params to executesql and raises on DB errors (gh-334)."""
+    from datetime import datetime
+
+    import pytest
+
+    from shared.utils.memory_integration import MemoryEntry
+
+    store, db = _store()
+    await store.search_memories("q", user_id=5, organization_id=3)
+    await store.get_recent_memories(user_id=5, organization_id=3)
+    for _sql, params in db.calls:
+        assert isinstance(params, tuple)
+
+    def _boom(_sql: str, _params: object) -> list[object]:
+        raise RuntimeError("column embedding does not exist")
+
+    db.executesql = _boom  # type: ignore[assignment]
+    entry = MemoryEntry(
+        id="",
+        user_id=5,
+        organization_id=3,
+        session_id="s1",
+        content="hello",
+        metadata={},
+        embedding=None,
+        created_at=datetime.utcnow(),
+    )
+    with pytest.raises(RuntimeError, match="embedding"):
+        await store.store_memory(entry)
+    with pytest.raises(RuntimeError, match="embedding"):
+        await store.search_memories("q", user_id=5, organization_id=3)
+    with pytest.raises(RuntimeError, match="embedding"):
+        await store.get_recent_memories(user_id=5, organization_id=3)

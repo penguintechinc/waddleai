@@ -10,9 +10,11 @@ another without its reviewed record.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from quart import Blueprint, current_app, g, jsonify, request
+from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
 from shared.dac.manifest import (
@@ -156,9 +158,21 @@ async def _persist_apply_result(
     await asyncio.to_thread(_write)
 
 
+@dataclass(slots=True)
+class ApplyManifestResponse:
+    """Response body for POST /api/v1/manifests/apply."""
+
+    plan_id: str
+    items: list[dict[str, Any]]
+    dry_run: bool
+    manifest_digest: str | None = None
+    expires_at: float | str | None = None
+
+
 @manifests_bp.route("/apply", methods=["POST"])
 @require_auth
 @require_scope(Permission.FLEET_ADMIN)
+@validate_response(ApplyManifestResponse, 200)
 async def apply_manifest() -> tuple:
     """Apply a previously reviewed configuration manifest plan.
 
@@ -180,15 +194,16 @@ async def apply_manifest() -> tuple:
             plan = DacPlanner(_current).plan(parsed, organization_id=org_id)
             _store().put(plan)
             await _persist_reviewed_plan(plan, parsed, g.user.get("user_id"))
-            return jsonify(
+            return (
                 {
                     "plan_id": plan.id,
                     "manifest_digest": plan.manifest_digest,
                     "expires_at": plan.expires_at,
                     "items": [_item_dict(item) for item in plan.items],
                     "dry_run": True,
-                }
-            ), 200
+                },
+                200,
+            )
         plan_id = body.get("plan_id")
         if not isinstance(plan_id, str) or not plan_id:
             return jsonify({"error": "apply requires a reviewed plan_id"}), 400
@@ -201,8 +216,9 @@ async def apply_manifest() -> tuple:
             return jsonify({"error": "DAC executor is not configured"}), 503
         items = _store().apply(plan_id, organization_id=org_id, executor=executor)
         await _persist_apply_result(plan_id, org_id, items, "applied")
-        return jsonify(
-            {"plan_id": plan_id, "items": [_item_dict(item) for item in items], "dry_run": False}
-        ), 200
+        return (
+            {"plan_id": plan_id, "items": [_item_dict(item) for item in items], "dry_run": False},
+            200,
+        )
     except DacError as exc:
         return jsonify({"error": str(exc)}), 400

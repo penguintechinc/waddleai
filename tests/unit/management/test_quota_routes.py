@@ -1372,3 +1372,27 @@ class TestQuotaAdminScopeReconciliation:
         app_mock_db.return_value.select.side_effect = [make_select_result([org]), empty, empty]
         resp = await client.get("/api/v1/quotas/status/1?type=org", headers=divergent_headers([]))
         assert resp.status_code == 200
+
+    async def test_key_quota_status_calculates_daily_used_cost_and_percentage(
+        self, client, app_mock_db: MagicMock, auth_headers: dict
+    ) -> None:
+        """Daily used_cost and percentage are computed from daily token_usage (no-stubs)."""
+        from tests.unit.management.route_conftest import make_mock_key
+
+        key = make_mock_key(key_id=1)
+        key.budget_limit_daily = 20.0
+        key.budget_limit_monthly = 200.0
+        daily_usage = MagicMock(waddleai_tokens=500, cost_usd_total=5.0)
+        monthly_usage = make_select_result([daily_usage])
+
+        app_mock_db.return_value.select.side_effect = [
+            make_select_result([key]),
+            make_select_result([daily_usage]),
+            monthly_usage,
+        ]
+
+        resp = await client.get("/api/v1/quotas/status/1?type=key", headers=auth_headers)
+        assert resp.status_code == 200
+        body = await resp.get_json()
+        assert body["quotas"]["daily"]["used_cost"] == 5.0
+        assert body["quotas"]["daily"]["percentage"] == 25.0

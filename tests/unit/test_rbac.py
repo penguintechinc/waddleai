@@ -210,3 +210,38 @@ class TestExceptions:
         """Test AuthorizationError."""
         with pytest.raises(AuthorizationError):
             raise AuthorizationError("Insufficient permissions")
+
+
+class TestApiKeyExpiry:
+    """Regression tests for gh-350: API-key expiry enforcement."""
+
+    def test_expired_api_key_rejected(self):
+        """An expired api_keys.expires_at raises AuthenticationError (gh-350)."""
+        from datetime import datetime, timedelta
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from passlib.hash import bcrypt
+
+        from shared.auth.rbac import RBACManager
+
+        key_id = "0000000000000001"
+        raw_key = f"wa-{key_id}-testsecret000000"
+        key_hash = bcrypt.hash(raw_key)
+        expired_row = SimpleNamespace(
+            id=1,
+            key_id=key_id,
+            key_hash=key_hash,
+            enabled=True,
+            user_id=10,
+            expires_at=datetime.utcnow() - timedelta(minutes=5),
+        )
+        db = MagicMock()
+        db.return_value.select.return_value.first.return_value = expired_row
+
+        mgr = RBACManager(db)
+        with pytest.raises(AuthenticationError, match="expired"):
+            mgr.authenticate_api_key(raw_key)
+
+        with pytest.raises(AuthenticationError, match="expired"):
+            mgr.fetch_key_and_user(key_id)
