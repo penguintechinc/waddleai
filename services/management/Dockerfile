@@ -31,7 +31,6 @@ FROM python:3.13-slim-bookworm@sha256:c45a22ea000adfd9cda29364bbe7edd23001ce5cc2
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
-    curl \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/* \
     && useradd -r -s /bin/false waddleai

@@ -59,9 +59,9 @@ USER waddleai
 # Expose port
 EXPOSE 8080
 
-# Health check
+# Health check (nginx:stable-bookworm has no node/python; use bash /dev/tcp instead of curl/wget)
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8080/ || exit 1
+    CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET / HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n1 <&3 | grep -q '200'"]
 
 # Start nginx
 CMD ["nginx", "-g", "daemon off;"]
