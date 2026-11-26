@@ -140,17 +140,10 @@ class TestMigrationJobCommandAndEnv:
         job_sc = dict(job["spec"]["template"]["spec"]["containers"][0]["securityContext"])
         mgmt_sc = dict(mgmt["spec"]["template"]["spec"]["containers"][0]["securityContext"])
 
-        assert mgmt_sc.pop("readOnlyRootFilesystem") is True
-        known_gap = job_sc.pop("readOnlyRootFilesystem")
-
+        assert mgmt_sc["readOnlyRootFilesystem"] is True
         assert job_sc == mgmt_sc
         assert job_sc["runAsNonRoot"] is True
         assert job_sc["capabilities"]["drop"] == ["ALL"]
-        # Fails the day the Job is hardened too, as the prompt to delete this
-        # carve-out and restore the plain equality assertion above.
-        assert known_gap is False, (
-            "migration Job now sets readOnlyRootFilesystem — remove this carve-out"
-        )
 
 
 class TestSixPreviouslyUntemplatedEnvVars:

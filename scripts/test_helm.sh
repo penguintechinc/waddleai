@@ -3,6 +3,9 @@
 # examined zero tests is a failure. Usage: scripts/test_helm.sh [python]
 set -euo pipefail
 py="${1:-python3}"
+if command -v helm >/dev/null 2>&1; then
+  helm dependency build k8s/helm/waddleai >/dev/null
+fi
 out="$(mktemp)"
 trap 'rm -f "$out"' EXIT
 

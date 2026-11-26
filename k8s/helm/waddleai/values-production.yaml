@@ -9,9 +9,7 @@ global:
     - name: ghcr-pull-secret
 
 # Classification Service - Production
-# Image pinned by SHA256 digest (house rule). The digest below is a PLACEHOLDER
-# that the release pipeline MUST replace -- an all-zero digest never resolves, so
-# an unreplaced value fails loudly at image pull rather than running unpinned.
+# Image pinned by SHA256 digest (house rule).
 classification:
   # REDIS_URL from a Secret (clsf: ACL user + rediss://); ops provisions the value.
   redisUrlSecret:
@@ -27,7 +25,7 @@ classification:
   image:
     repository: classification
     tag: ""
-    digest: "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    digest: "sha256:d1e84d8b3949f7bd360bbf04345cc31b6b3b70b6314a947bcb94d48da1061e43"
     pullPolicy: IfNotPresent
   autoscaling:
     enabled: true

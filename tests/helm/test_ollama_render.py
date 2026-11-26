@@ -9,7 +9,10 @@ versa), never both.
 
 from tests.helm.conftest import find, render
 
-HARDENED_IMAGE = "ghcr.io/penguintechinc/waddleai/ollama:hardened"
+HARDENED_IMAGE = (
+    "ghcr.io/penguintechinc/waddleai/ollama"
+    "@sha256:e35daf8e5543a8054669731e30c4c4fc6b3ae0b7900a5122224bd8af90d9af9e"
+)
 
 RESTRICTED_SET_VALUES = {
     "ollama.enabled": "true",

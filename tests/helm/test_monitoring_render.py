@@ -14,6 +14,7 @@ Integrity warns about.
 """
 
 import json
+import re
 import shutil
 import subprocess
 
@@ -23,6 +24,7 @@ import yaml
 from tests.helm.conftest import find, render
 
 PROMTOOL_MISSING = shutil.which("promtool") is None
+_DURATION_RE = re.compile(r"^(?:0|[0-9]+(?:ms|s|m|h|d|w|y))+$")
 
 _DISABLED_VALUES_FILES = ["values.yaml", "values-alpha.yaml", "values-beta.yaml"]
 
@@ -35,6 +37,66 @@ def _rule_groups(doc: dict) -> list[dict]:
 def _count_rules(groups: list[dict]) -> int:
     """Total alert/recording rules across every group."""
     return sum(len(g["rules"]) for g in groups)
+
+
+def _assert_balanced_promql(expr: str, context: str) -> None:
+    """Verify PromQL expression has balanced delimiters and non-empty content."""
+    assert isinstance(expr, str) and expr.strip(), f"{context}: empty expr"
+    pairs = {"(": ")", "{": "}", "[": "]"}
+    closing = {v: k for k, v in pairs.items()}
+    stack: list[str] = []
+    in_quote: str | None = None
+    escaped = False
+    for ch in expr:
+        if escaped:
+            escaped = False
+            continue
+        if in_quote:
+            if ch == "\\" and in_quote != "`":
+                escaped = True
+            elif ch == in_quote:
+                in_quote = None
+            continue
+        if ch in ('"', "'", "`"):
+            in_quote = ch
+        elif ch in pairs:
+            stack.append(ch)
+        elif ch in closing:
+            assert stack and stack[-1] == closing[ch], f"{context}: unbalanced {ch!r} in {expr!r}"
+            stack.pop()
+    assert in_quote is None, f"{context}: unterminated quote in {expr!r}"
+    assert not stack, f"{context}: unclosed {stack!r} in {expr!r}"
+
+
+def _validate_rule_structure(name: str, groups: list[dict]) -> int:
+    """Validate PrometheusRule groups/rules structurally when promtool is absent."""
+    assert groups, f"{name}: no rule groups"
+    total = 0
+    for group in groups:
+        gname = group.get("name")
+        assert isinstance(gname, str) and gname.strip(), f"{name}: group missing name"
+        rules = group.get("rules") or []
+        assert rules, f"{name}/{gname}: group has zero rules"
+        for idx, rule in enumerate(rules):
+            ctx = f"{name}/{gname}[{idx}]"
+            is_alert = "alert" in rule
+            is_record = "record" in rule
+            assert is_alert ^ is_record, f"{ctx}: rule must set exactly one of alert/record"
+            _assert_balanced_promql(rule.get("expr", ""), ctx)
+            if "for" in rule:
+                assert _DURATION_RE.match(str(rule["for"])), (
+                    f"{ctx}: invalid for duration {rule['for']!r}"
+                )
+            if is_alert:
+                assert (rule.get("labels") or {}).get("severity"), (
+                    f"{ctx}: alert missing labels.severity"
+                )
+                ann = rule.get("annotations") or {}
+                assert ann.get("summary") or ann.get("description"), (
+                    f"{ctx}: alert missing summary/description"
+                )
+            total += 1
+    return total
 
 
 def _promtool_check(tmp_path, name: str, groups: list[dict]) -> int:
@@ -106,6 +168,9 @@ class TestMonitoringEnabled:
         assert any(d["metadata"]["name"] == "waddleai-allow-prometheus-scrape" for d in cnps), [
             d["metadata"]["name"] for d in cnps
         ]
+        deny = find(docs, "CiliumNetworkPolicy", "waddleai-default-deny")
+        assert deny["spec"]["ingress"] == [{}]
+        assert deny["spec"]["egress"] == [{}]
 
     @pytest.mark.parametrize("service_name", ["management", "proxy"])
     def test_prometheusrule_groups_cover_symptom_and_cause(self, service_name):
@@ -136,11 +201,13 @@ class TestMonitoringEnabled:
         parsed = json.loads(cm["data"][json_key])
         assert parsed["panels"], f"{json_key} has no panels"
 
-    @pytest.mark.skipif(PROMTOOL_MISSING, reason="promtool binary not available")
     @pytest.mark.parametrize("service_name", ["management", "proxy"])
     def test_prometheusrule_passes_promtool_check(self, service_name, tmp_path):
-        """Each service's PrometheusRule is syntactically valid per `promtool check rules`."""
+        """Each service's PrometheusRule is valid structurally and via promtool."""
         docs = render("values.yaml", self.SET_VALUES, self.API_VERSIONS)
         rule = find(docs, "PrometheusRule", f"waddleai-{service_name}")
-        rule_count = _promtool_check(tmp_path, service_name, _rule_groups(rule))
+        groups = _rule_groups(rule)
+        rule_count = _validate_rule_structure(service_name, groups)
+        if not PROMTOOL_MISSING:
+            rule_count = _promtool_check(tmp_path, service_name, groups)
         assert rule_count > 0, f"waddleai-{service_name} PrometheusRule has zero rules"
