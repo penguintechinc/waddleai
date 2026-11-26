@@ -165,6 +165,10 @@ test-vllm-ray-images: ## Image contract (uid 1000, Ray + Python versions) for ea
 	  bash tests/images/test_vllm_ray_images.sh waddleai/vllm-ray-$$v:$(IMG_TAG) $(VLLM_RAY_RAY_VERSION) $(VLLM_RAY_PY_MINOR); \
 	done
 
+CUDA_BASE_IMAGE ?= rayproject/ray-llm:2.60.0-py312-cu130@sha256:07ab1bbe9304f3de1d957df482db76b3a7b0f4ed5141793d0675555801024725
+regen-vllm-ray-cuda-requirements: ## Regenerate images/vllm-ray-cuda/requirements.txt (hash-pinned delta over the ray-llm base)
+	@python3 images/vllm-ray-cuda/regen_requirements.py "$(CUDA_BASE_IMAGE)"
+
 test-classification: ## Unit tests + >=90% coverage for services/classification/app (fails on zero collected)
 	@$(PY) -m pytest tests/unit/classification -o addopts="" -p no:warnings -q \
 	  --cov=services/classification/app --cov-config=.coveragerc --cov-report=term-missing \
