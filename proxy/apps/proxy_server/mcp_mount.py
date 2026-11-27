@@ -25,14 +25,17 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.auth.rbac import AuthenticationError, RBACManager, Role, UserContext
-from shared.mcp.server import build_admin_server, build_user_server
-from shared.mcp.stub_adapters import (
-    NotWiredAdminConfigService,
-    NotWiredKnowledgeService,
-    NotWiredMemoryService,
-    NotWiredRoutingService,
-    NotWiredUsageService,
+from shared.mcp.adapters import (
+    DbAdminConfigService,
+    DbHubAdminService,
+    DbHubUserService,
+    DbKnowledgeService,
+    DbMemoryService,
+    DbRoutingService,
+    DbUsageService,
+    require_db_engine,
 )
+from shared.mcp.server import build_admin_server, build_user_server
 from shared.mcp.tools import AdminTools, ToolContext, WaddleAITools
 from shared.utils.feature_flags import is_feature_enabled
 
@@ -51,18 +54,55 @@ ASGIApp = Callable[
 class McpServiceFactory:
     """Constructs the per-request tool collaborators.
 
-    Defaults to the "not wired yet" stub adapters (see
-    ``shared/mcp/stub_adapters.py``) -- swap in real adapters here once
-    ``feature/knowledge-layer``/``feature/smart-routing`` merge. Kept as a
-    factory (not a singleton) so tests can inject mocks without touching
-    the mount itself.
+    All collaborator factories are required — production constructs this
+    via ``McpServiceFactory.from_proxy_server(proxy_server)`` or
+    ``McpServiceFactory.from_db(db)`` and fails loudly if DB/service
+    configuration is missing.
     """
 
-    knowledge_factory: Callable[[], Any] = NotWiredKnowledgeService
-    memory_factory: Callable[[], Any] = NotWiredMemoryService
-    routing_factory: Callable[[], Any] = NotWiredRoutingService
-    usage_factory: Callable[[], Any] = NotWiredUsageService
-    admin_config_factory: Callable[[], Any] = NotWiredAdminConfigService
+    knowledge_factory: Callable[[], Any]
+    memory_factory: Callable[[], Any]
+    routing_factory: Callable[[], Any]
+    usage_factory: Callable[[], Any]
+    admin_config_factory: Callable[[], Any]
+    hub_user_factory: Callable[[], Any]
+    hub_admin_factory: Callable[[], Any]
+
+    @classmethod
+    def from_db(
+        cls,
+        db: Any,
+        *,
+        valkey: Any = None,
+        routing_engine: Any = None,
+        scanner: Any = None,
+    ) -> McpServiceFactory:
+        """Build a production ``McpServiceFactory`` backed by ``db``; fails loudly if missing."""
+        require_db_engine(db)
+        return cls(
+            knowledge_factory=lambda: DbKnowledgeService(db),
+            memory_factory=lambda: DbMemoryService(db, scanner=scanner),
+            routing_factory=lambda: DbRoutingService(
+                db, valkey=valkey, routing_engine=routing_engine
+            ),
+            usage_factory=lambda: DbUsageService(db),
+            admin_config_factory=lambda: DbAdminConfigService(db),
+            hub_user_factory=lambda: DbHubUserService(db),
+            hub_admin_factory=lambda: DbHubAdminService(db),
+        )
+
+    @classmethod
+    def from_proxy_server(cls, proxy_server: Any) -> McpServiceFactory:
+        """Build a production ``McpServiceFactory`` from ``ProxyServer``; fails loudly."""
+        if proxy_server is None:
+            raise RuntimeError("proxy_server is required for McpServiceFactory")
+        db = getattr(proxy_server, "db", None)
+        return cls.from_db(
+            db,
+            valkey=getattr(proxy_server, "memory_valkey", None),
+            routing_engine=getattr(proxy_server, "routing_engine", None),
+            scanner=getattr(proxy_server, "security_scanner", None),
+        )
 
     def user_tools(self, ctx: ToolContext) -> WaddleAITools:
         """Build a ``WaddleAITools`` bound to ``ctx`` and this factory's collaborators."""
@@ -72,11 +112,17 @@ class McpServiceFactory:
             memory=self.memory_factory(),
             routing=self.routing_factory(),
             usage=self.usage_factory(),
+            hub=self.hub_user_factory(),
         )
 
     def admin_tools(self, ctx: ToolContext) -> AdminTools:
         """Build an ``AdminTools`` bound to ``ctx`` and this factory's collaborators."""
-        return AdminTools(ctx, usage=self.usage_factory(), config=self.admin_config_factory())
+        return AdminTools(
+            ctx,
+            usage=self.usage_factory(),
+            config=self.admin_config_factory(),
+            hub=self.hub_admin_factory(),
+        )
 
 
 def _decode_headers(scope: dict) -> dict[str, str]:
@@ -163,10 +209,14 @@ class MCPMount:
         service_factory: McpServiceFactory | None = None,
     ) -> None:
         """Wrap ``app``, resolving `/mcp*` auth via ``rbac``/``jwks_verifier``."""
+        if service_factory is None:
+            raise ValueError(
+                "service_factory is required for MCPMount; refusing to fall back to NotWired stubs"
+            )
         self._app = app
         self._rbac = rbac
         self._jwks_verifier = jwks_verifier
-        self._service_factory = service_factory or McpServiceFactory()
+        self._service_factory = service_factory
 
     async def __call__(self, scope: dict, receive: Callable, send: Callable) -> None:
         """Dispatch `/mcp`/`/mcp/admin` to a fresh scoped FastMCP app; pass through otherwise."""

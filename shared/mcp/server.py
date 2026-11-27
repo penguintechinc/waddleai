@@ -59,6 +59,12 @@ USER_TOOL_NAMES: frozenset[str] = frozenset(
         "get_routing_policy",
         "usage_summary",
         "set_preference",
+        "list_keys",
+        "list_knowledge",
+        "get_knowledge",
+        "list_teams",
+        "get_my_quota",
+        "routing_dry_run",
     }
 )
 
@@ -69,6 +75,33 @@ ADMIN_READ_TOOL_NAMES: frozenset[str] = frozenset(
         "cost_attribution",
         "quota_status",
         "provider_budget_headroom",
+        "list_users",
+        "list_organizations",
+        "list_teams",
+        "list_providers",
+        "list_keys",
+        "list_routing_rules",
+        "list_routing_assignments",
+        "list_model_aliases",
+        "list_access_policies",
+        "list_routing_decisions",
+        "list_security_policies",
+        "list_bypass_grants",
+        "list_hook_rules",
+        "list_hook_configs",
+        "get_hook_metrics",
+        "list_mcp_endpoints",
+        "list_cache_configs",
+        "list_fleet_backends",
+        "list_gpu_inventory",
+        "list_vllm_deployments",
+        "list_llamacpp_deployments",
+        "list_ollama_deployments",
+        "get_fleet_savings",
+        "get_fleet_chargeback",
+        "get_cilium_status",
+        "get_usage_breakdown",
+        "get_pooled_quota",
     }
 )
 
@@ -80,6 +113,22 @@ ADMIN_WRITE_TOOL_NAMES: frozenset[str] = frozenset(
         "remove_destination",
         "update_quota",
         "update_provider_config",
+        "manage_key",
+        "manage_user",
+        "manage_organization",
+        "manage_team",
+        "manage_routing_rule",
+        "manage_model_alias",
+        "manage_access_policy",
+        "manage_security_policy",
+        "manage_hook_rule",
+        "manage_cache_config",
+        "manage_mcp_endpoint",
+        "manage_vllm_deployment",
+        "manage_llamacpp_deployment",
+        "manage_ollama_deployment",
+        "reconcile_cilium",
+        "apply_manifest",
     }
 )
 
@@ -115,16 +164,8 @@ def build_user_server(
     is reachable from the returned object at all, let alone advertised.
     """
     mcp = FastMCP(USER_SERVER_NAME, instructions=instructions, stateless_http=True)
-    mcp.tool(name="search_code")(tools.search_code)
-    mcp.tool(name="get_symbol")(tools.get_symbol)
-    mcp.tool(name="search_docs")(tools.search_docs)
-    mcp.tool(name="fetch_docs")(tools.fetch_docs)
-    mcp.tool(name="memory_add")(tools.memory_add)
-    mcp.tool(name="memory_search")(tools.memory_search)
-    mcp.tool(name="list_models")(tools.list_models)
-    mcp.tool(name="get_routing_policy")(tools.get_routing_policy)
-    mcp.tool(name="usage_summary")(tools.usage_summary)
-    mcp.tool(name="set_preference")(tools.set_preference)
+    for name in sorted(USER_TOOL_NAMES):
+        mcp.tool(name=name)(getattr(tools, name))
     for binding in external_tools:
         _register_external_tool(mcp, binding)
     return mcp
@@ -200,15 +241,6 @@ def build_admin_server(tools: AdminTools, *, instructions: str | None = None) ->
     ``proxy/apps/proxy_server/mcp_mount.py``.
     """
     mcp = FastMCP(ADMIN_SERVER_NAME, instructions=instructions, stateless_http=True)
-    mcp.tool(name="usage_by_user")(tools.usage_by_user)
-    mcp.tool(name="usage_by_org")(tools.usage_by_org)
-    mcp.tool(name="cost_attribution")(tools.cost_attribution)
-    mcp.tool(name="quota_status")(tools.quota_status)
-    mcp.tool(name="provider_budget_headroom")(tools.provider_budget_headroom)
-    mcp.tool(name="add_model")(tools.add_model)
-    mcp.tool(name="remove_model")(tools.remove_model)
-    mcp.tool(name="add_destination")(tools.add_destination)
-    mcp.tool(name="remove_destination")(tools.remove_destination)
-    mcp.tool(name="update_quota")(tools.update_quota)
-    mcp.tool(name="update_provider_config")(tools.update_provider_config)
+    for name in sorted(ADMIN_TOOL_NAMES):
+        mcp.tool(name=name)(getattr(tools, name))
     return mcp

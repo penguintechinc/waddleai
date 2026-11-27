@@ -70,7 +70,7 @@ from shared.utils.token_manager import create_token_manager
 from . import streaming
 from .feature_flag_cache import FeatureFlagsHelper
 from .grpc_server import CallerIdentity, ServerComponents, run_grpc_in_thread
-from .mcp_mount import MCPMount
+from .mcp_mount import MCPMount, McpServiceFactory
 from .mem0_api import mem0_bp, set_memory_manager
 from .pipeline import (
     METERING_FLAG,
@@ -1689,7 +1689,10 @@ async def on_startup():
     # Neither path is in _PUBLIC_PATHS; unauthenticated/non-admin callers
     # never reach a FastMCP app, so no tool list is ever advertised to them.
     app.asgi_app = MCPMount(
-        app.asgi_app, rbac=proxy_server.rbac, jwks_verifier=proxy_server.jwks_verifier
+        app.asgi_app,
+        rbac=proxy_server.rbac,
+        jwks_verifier=proxy_server.jwks_verifier,
+        service_factory=McpServiceFactory.from_proxy_server(proxy_server),
     )
     logger.info("MCP /mcp and /mcp/admin mounted (flag-gated: waddleai.mcp_v2)")
 
