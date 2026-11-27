@@ -379,9 +379,10 @@ jobs:
     - name: Run dependency & secrets security scan (pip-audit, npm audit, gitleaks)
       run: |
         set -euo pipefail
-        export XDG_CACHE_HOME="$RUNNER_TEMP/.cache"
+        export XDG_CACHE_HOME="/tmp/xdg-cache-${GITHUB_RUN_ID}"
         mkdir -p "$XDG_CACHE_HOME"
         chmod 700 "$XDG_CACHE_HOME"
+        trap 'rm -rf "$XDG_CACHE_HOME"' EXIT
         bash scripts/dependency-security-scan.sh
 
   # Python lint and typing ran only in the local pre-commit hook and `make
