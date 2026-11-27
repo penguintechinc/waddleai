@@ -248,4 +248,34 @@ describe('GpuFleetDeployments extended fleet & llamacpp actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete llama.cpp' }));
     await waitFor(() => expect(api.deleteLlamaCppDeployment).toHaveBeenCalledWith(7));
   });
+
+  it('surfaces deleteModelWeights and llamacpp errors, dismisses status, and updates replicas input', async () => {
+    const api = await import('../api/vllmFleet');
+    vi.spyOn(api, 'deleteModelWeights').mockRejectedValue(new Error('weights locked'));
+    vi.spyOn(api, 'listLlamaCppDeployments').mockResolvedValue([
+      { id: 8, public_id: 'lc-8', name: 'llama-err', model_name: 'm.gguf', status: 'ready' },
+    ]);
+    vi.spyOn(api, 'patchLlamaCppDeployment').mockRejectedValue(new Error('patch failed'));
+    vi.spyOn(api, 'getLlamaCppHealth').mockResolvedValue({});
+
+    setup([dep({ model_ref: 'org/m' })]);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Weights' }));
+    await waitFor(() => expect(screen.getByText('weights locked')).toBeInTheDocument());
+
+    await waitFor(() => expect(screen.getByLabelText('llama.cpp replicas 8')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('llama.cpp replicas 8'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(screen.getByText('patch failed')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Health' }));
+    await waitFor(() => expect(screen.getByText('Health: ok')).toBeInTheDocument());
+    const statusBanner = screen.getByText('Health: ok').closest('.alert');
+    fireEvent.click(statusBanner.querySelector('button'));
+    expect(screen.queryByText('Health: ok')).not.toBeInTheDocument();
+
+    vi.spyOn(api, 'exportLlamaCppK8s').mockResolvedValue({ kind: 'Deployment' });
+    fireEvent.click(screen.getByRole('button', { name: 'Export K8s' }));
+    await waitFor(() => expect(screen.getByText(/"kind": "Deployment"/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close K8s' }));
+  });
 });

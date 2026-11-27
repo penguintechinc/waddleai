@@ -788,5 +788,10 @@ describe('VirtualKeys', () => {
 
     fireEvent.click(screen.getAllByTitle('Edit key')[0]);
     expect(document.getElementById('edit-key-rpm')).toHaveValue(10);
+    fireEvent.change(document.getElementById('edit-key-models'), { target: { value: '' } });
+    fireEvent.change(document.getElementById('edit-key-providers'), { target: { value: '' } });
+    axios.put.mockResolvedValue({ data: {} });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(axios.put).toHaveBeenCalled());
   });
 });

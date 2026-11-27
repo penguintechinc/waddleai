@@ -457,6 +457,44 @@ describe('Providers page', () => {
     expect(screen.queryByText('Credentials — OpenAI Production')).not.toBeInTheDocument();
   });
 
+  it('handles empty models/credentials and surfaces credential CRUD errors', async () => {
+    const creds = [
+      { id: 11, provider_id: 1, label: 'sec', api_key_masked: '****', weight: 50, enabled: false },
+    ];
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/providers') return Promise.resolve({ data: { providers: mockProviders } });
+      if (url === '/api/v1/providers/types') return Promise.reject(new Error('no types'));
+      if (url === '/api/v1/providers/1/models') return Promise.resolve({ data: { models: [] } });
+      if (url === '/api/v1/providers/1/credentials') return Promise.resolve({ data: { data: creds } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    axios.post.mockRejectedValue(new Error('add err'));
+    axios.patch.mockRejectedValue(new Error('patch err'));
+    axios.delete.mockRejectedValue(new Error('del err'));
+
+    render(<Providers />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Models' }).length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Models' })[0]);
+    await waitFor(() => expect(screen.getByText('No models available for this provider.')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Credentials' })[0]);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument());
+
+    fireEvent.change(document.getElementById('cred-weight'), { target: { value: '200' } });
+    fireEvent.change(document.getElementById('cred-label'), { target: { value: 'x' } });
+    fireEvent.change(document.getElementById('cred-api-key'), { target: { value: 'k' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Credential' }));
+    await waitFor(() => expect(screen.getByText('Failed to add credential')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(screen.getByText('Failed to update credential')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete credential')).toBeInTheDocument());
+  });
+
   it('renders Active/Inactive badges on providers', async () => {
     render(<Providers />);
 

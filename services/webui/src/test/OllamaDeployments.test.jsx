@@ -618,5 +618,22 @@ describe('OllamaDeployments', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Sync Models' }));
     await waitFor(() => expect(screen.getByText('Failed to sync models')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(document.getElementById('edit-ollama-endpoint'), { target: { value: 'http://new:11434' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Deployment' }));
+    await waitFor(() => expect(screen.getByText('Failed to update deployment')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Route Status' }));
+    await waitFor(() => expect(screen.getByText('Failed to route-status model')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Assign Deployment ID'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Assign Model Name'), { target: { value: 'm' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Assign Model' }));
+    await waitFor(() => expect(screen.getByText('Failed to assign model')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Bulk Assign' }));
+    await waitFor(() => expect(screen.getByText('Failed to bulk assign models')).toBeInTheDocument());
   });
 });

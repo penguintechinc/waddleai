@@ -717,4 +717,17 @@ describe('Routing page - admin: Test Routing Decision', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Delete Access Policy' }));
     await waitFor(() => expect(screen.getByText('Failed to delete access policy')).toBeInTheDocument());
   });
+
+  it('renders sparse decisions without request_id or selected_model', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/routing/policies/1') return Promise.resolve({ data: { data: {} } });
+      if (url === '/api/v1/routing/assignments/') return Promise.resolve({ data: { data: [] } });
+      if (url === '/api/v1/routing/decisions/') return Promise.resolve({ data: { data: [{ model: 'fallback-m', tool_type: 'chat' }] } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    render(<Routing />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Decisions' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('tab', { name: 'Decisions' }));
+    await waitFor(() => expect(screen.getByText(/fallback-m/)).toBeInTheDocument());
+  });
 });

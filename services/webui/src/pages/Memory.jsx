@@ -12,6 +12,10 @@ const DEFAULT_EMBEDDING = {
 };
 const DEFAULT_SCOPING = { enabled: true, relevance_cutoff: 0.7, top_k: 3, configured: false };
 
+function errMsg(err, fallback) {
+  return err?.response?.data?.error || fallback;
+}
+
 // Thin presentation layer over /api/v1/{memory-config,rag-config,
 // embedding-config,memory-scoping} and /api/v1/memory/<id>/{promote,correct,dispute}.
 function Memory() {
@@ -48,7 +52,7 @@ function Memory() {
       setScopingConfig(scopingRes.data);
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to fetch memory configuration');
+      setError(errMsg(err, 'Failed to fetch memory configuration'));
     } finally {
       setLoading(false);
     }
@@ -61,7 +65,7 @@ function Memory() {
       setError(null);
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || `Failed to save ${label.toLowerCase()}`);
+      setError(errMsg(err, `Failed to save ${label.toLowerCase()}`));
     }
   };
 
@@ -80,7 +84,7 @@ function Memory() {
       setSuccess(`Memory #${id} promoted to ${res.data?.scope_type || promoteScope}`);
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to promote memory item');
+      setError(errMsg(err, 'Failed to promote memory item'));
     }
   };
 
@@ -100,7 +104,7 @@ function Memory() {
       setCorrectionContent('');
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to correct memory item');
+      setError(errMsg(err, 'Failed to correct memory item'));
     }
   };
 
@@ -115,7 +119,7 @@ function Memory() {
       setSuccess(`Memory #${id} flagged as disputed`);
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to dispute memory item');
+      setError(errMsg(err, 'Failed to dispute memory item'));
     }
   };
 

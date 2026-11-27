@@ -62,13 +62,13 @@ describe('GpuFleetBackend', () => {
 
   it('surfaces create and delete errors', async () => {
     hooks.useVllmBackend.mockReturnValue({ data: null, isLoading: false, error: null });
-    api.createBackend.mockRejectedValue(new Error('Create failed'));
+    api.createBackend.mockRejectedValue(new Error(''));
 
     const { unmount } = renderWithQuery(<GpuFleetBackend />);
     fireEvent.change(screen.getByLabelText('Backend Name'), { target: { value: 'b1' } });
     fireEvent.change(screen.getByLabelText('Backend Type'), { target: { value: 'llamacpp' } });
     fireEvent.click(screen.getByRole('button', { name: 'Register Backend' }));
-    await waitFor(() => expect(screen.getByText('Create failed')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Failed to register backend')).toBeInTheDocument());
     unmount();
 
     hooks.useVllmBackend.mockReturnValue({
@@ -76,9 +76,9 @@ describe('GpuFleetBackend', () => {
       isLoading: false,
       error: null,
     });
-    api.deleteBackend.mockRejectedValue(new Error('Delete failed'));
+    api.deleteBackend.mockRejectedValue(new Error(''));
     renderWithQuery(<GpuFleetBackend />);
     fireEvent.click(screen.getByRole('button', { name: 'Delete Backend' }));
-    await waitFor(() => expect(screen.getByText('Delete failed')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Failed to delete backend')).toBeInTheDocument());
   });
 });
