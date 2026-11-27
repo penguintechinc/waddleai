@@ -12,7 +12,7 @@ WORKDIR /src
 RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.git \
     && git fetch --depth 1 origin "${LLAMACPP_COMMIT}" && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
-RUN cmake -B build -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF \
+RUN cmake -B build -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NATIVE=OFF \
       -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES="75;80;86;89;90" \
       -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
     && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
@@ -28,7 +28,7 @@ RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.gi
     && git fetch --depth 1 origin "${LLAMACPP_COMMIT}" && git checkout FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${LLAMACPP_COMMIT}"
 RUN HIPCXX="$(hipconfig -l)/clang" HIP_PATH="$(hipconfig -R)" cmake -B build \
-      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_HIP=ON \
+      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NATIVE=OFF -DGGML_HIP=ON \
       -DAMDGPU_TARGETS="gfx906;gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1101;gfx1200;gfx1201" \
       -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
@@ -49,7 +49,7 @@ RUN git init . && git remote add origin https://github.com/ggml-org/llama.cpp.gi
 # runtime), which llama.cpp's configure check requires; pass it so oneDNN GPU stays enabled.
 RUN command -v icx && command -v icpx && test "${SETVARS_COMPLETED}" = 1 \
     && cmake -B build \
-      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DGGML_NATIVE=OFF -DGGML_SYCL=ON \
+      -DGGML_RPC=ON -DLLAMA_OPENSSL=ON -DLLAMA_CURL=OFF -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DGGML_NATIVE=OFF -DGGML_SYCL=ON \
       -DDNNL_GPU_VENDOR=INTEL -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx -DCMAKE_BUILD_TYPE=Release \
     && cmake --build build --config Release -j "$(nproc)" --target llama-server ggml-rpc-server
 RUN mkdir -p /out/bin /out/lib && cp build/bin/llama-server /out/bin/ && cp build/bin/ggml-rpc-server /out/bin/rpc-server \
