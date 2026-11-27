@@ -1,0 +1,8 @@
+# cargo-audit configuration for the Rust proxy workspace.
+# Keep this list minimal and remove entries once upstream dependencies patch.
+
+[advisories]
+# sqlx 0.9.x only enables the `postgres` feature in this workspace (`sqlite` /
+# `sqlx-sqlite` is not enabled), so `libsqlite3-sys 0.37.0` is an uncompiled
+# optional dependency in Cargo.lock capped `<0.38.0` by `sqlx-sqlite 0.9.x`.
+ignore = ["RUSTSEC-2026-0459"]

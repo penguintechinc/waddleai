@@ -24,6 +24,7 @@ jobs:
       - name: Check if .version file exists
         id: check_version
         run: |
+          set -euo pipefail
           if [ ! -f .version ]; then
             echo "0.0.0" > .version
             echo "version=0.0.0" >> "$GITHUB_OUTPUT"
@@ -52,6 +53,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STEPS_CHECK_VERSION_OUTPUTS_VERSION: ${{ steps.check_version.outputs.version }}
         run: |
+          set -euo pipefail
           VERSION="${STEPS_CHECK_VERSION_OUTPUTS_VERSION}"
           if gh release view "v$VERSION" > /dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
@@ -65,6 +67,7 @@ jobs:
         id: release_notes
         if: steps.check_version.outputs.should_release == 'true' && steps.check_release.outputs.exists != 'true'
         run: |
+          set -euo pipefail
           VERSION="${STEPS_CHECK_VERSION_OUTPUTS_VERSION}"
           FULL_VERSION="${STEPS_CHECK_VERSION_OUTPUTS_FULL_VERSION}"
 
@@ -97,6 +100,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STEPS_CHECK_VERSION_OUTPUTS_VERSION: ${{ steps.check_version.outputs.version }}
         run: |
+          set -euo pipefail
           VERSION="${STEPS_CHECK_VERSION_OUTPUTS_VERSION}"
           gh release create "v$VERSION" \
             --title "v$VERSION" \
@@ -109,6 +113,7 @@ jobs:
       - name: Skip release (version is default or release exists)
         if: steps.check_version.outputs.should_release != 'true' || steps.check_release.outputs.exists == 'true'
         run: |
+          set -euo pipefail
           if [ "${STEPS_CHECK_VERSION_OUTPUTS_SHOULD_RELEASE}" != "true" ]; then
             echo "⏭️ Skipping release - version is 0.0.0 (default)"
           else

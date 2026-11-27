@@ -86,7 +86,7 @@ jobs:
   # build-platform had actually pushed.
   determine-tier:
     name: Determine release tier
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     outputs:
       tier: ${{ steps.tier.outputs.tier }}
       tag_prefix: ${{ steps.tier.outputs.tag_prefix }}
@@ -209,12 +209,14 @@ jobs:
     - name: Generate epoch64 timestamp
       id: timestamp
       run: |
+        set -euo pipefail
         EPOCH64=$(date +%s)
         echo "epoch64=$EPOCH64" >> "$GITHUB_OUTPUT"
 
     - name: Check version file
       id: version
       run: |
+        set -euo pipefail
         if [ -f .version ]; then
           VERSION=$(tr -d '[:space:]' < .version)
           SEMVER=$(echo "$VERSION" | cut -d'.' -f1-3 | sed 's/^v//')
@@ -246,6 +248,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        set -euo pipefail
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r services/management/requirements.txt
@@ -254,6 +257,7 @@ jobs:
 
     - name: Run unit tests
       run: |
+        set -euo pipefail
         # --cov sources come from pytest.ini's addopts (shared,
         # services/management/app, proxy) so CI measures the identical
         # surface as `make test-unit` locally -- previously this step's
@@ -272,6 +276,7 @@ jobs:
 
     - name: Run real-Valkey quota tests
       run: |
+        set -euo pipefail
         python -m pytest tests/integration/quota -v --no-cov
       env:
         PYTHONPATH: ${{ github.workspace }}
@@ -279,6 +284,7 @@ jobs:
 
     - name: Run security check (bandit)
       run: |
+        set -euo pipefail
         # Two passes on purpose: the first records every medium+ finding to the
         # JSON report without gating the build; the second gates on HIGH only, so
         # a high-severity finding fails CI instead of being swallowed.
@@ -322,7 +328,7 @@ jobs:
   # instead of landing already broken.
   dependency-security:
     name: Dependency & secrets security scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -333,6 +339,11 @@ jobs:
       uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: '3.13'
+
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      with:
+        node-version: '24'
 
     - name: Install pip-audit
       run: |
@@ -354,7 +365,9 @@ jobs:
           https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz
         echo "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba  gitleaks.tar.gz" | sha256sum -c -
         tar -xzf gitleaks.tar.gz gitleaks
-        sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 gitleaks "$HOME/.local/bin/gitleaks"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
         rm -f gitleaks.tar.gz gitleaks
 
     # No venv here -- scripts/dependency-security-scan.sh falls back to
@@ -364,7 +377,13 @@ jobs:
     # script, non-zero exit fails this job, which build-platform/release both
     # gate on via `needs:` below.
     - name: Run dependency & secrets security scan (pip-audit, npm audit, gitleaks)
-      run: bash scripts/dependency-security-scan.sh
+      run: |
+        set -euo pipefail
+        export XDG_CACHE_HOME="/tmp/xdg-cache-${GITHUB_RUN_ID}"
+        mkdir -p "$XDG_CACHE_HOME"
+        chmod 700 "$XDG_CACHE_HOME"
+        trap 'rm -rf "$XDG_CACHE_HOME"' EXIT
+        bash scripts/dependency-security-scan.sh
 
   # Python lint and typing ran only in the local pre-commit hook and `make
   # lint`, never in CI. mypy-baseline.txt drifted to 212 unrecorded errors
@@ -373,7 +392,7 @@ jobs:
   # block the PR, so the baseline can only shrink.
   lint:
     name: Python lint and typing
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
 
     steps:
     - name: Checkout code
@@ -388,6 +407,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        set -euo pipefail
         # The full runtime requirements, not just the linters: mypy resolves
         # real imports, so a thin install would silently degrade every
         # third-party type to Any and the gate would pass on nothing.
@@ -470,7 +490,7 @@ jobs:
   # API PR", and the repo's documented history of || true-masked checks in
   # the `test` job's bandit step, which this job does not repeat).
   openapi-lint:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -484,12 +504,14 @@ jobs:
 
     - name: Install management service dependencies
       run: |
+        set -euo pipefail
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r services/management/requirements.txt
 
     - name: Regenerate spec and fail on drift
       run: |
+        set -euo pipefail
         python scripts/generate_openapi_spec.py --output /tmp/v1.yaml
         diff -u openapi/v1.yaml /tmp/v1.yaml || {
           echo "::error::openapi/v1.yaml is out of date -- run 'make generate-openapi' and commit the result.";
@@ -517,7 +539,7 @@ jobs:
   # grpcio-tools and fails if anything differs from what is committed. No
   # `|| true`: both the generate step and the diff are real gates.
   classification-proto-drift:
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     steps:
     - name: Checkout code
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -534,6 +556,7 @@ jobs:
 
     - name: Regenerate classification stubs and fail on drift
       run: |
+        set -euo pipefail
         scripts/gen-classification-proto.sh
         git diff --exit-code -- proto/waddleai/classification services/classification/app/grpc_gen || {
           echo "::error::classification proto stubs/golden are stale -- run scripts/gen-classification-proto.sh and commit.";
@@ -584,6 +607,7 @@ jobs:
     # (hypercorn/quart/etc.), not just imports of `shared`.
     - name: Install dependencies
       run: |
+        set -euo pipefail
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r proxy/requirements.txt
@@ -628,6 +652,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        set -euo pipefail
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r proxy/requirements.txt
@@ -674,6 +699,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        set -euo pipefail
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install -r proxy/requirements.txt
@@ -762,7 +788,8 @@ jobs:
       run: |
         set -euo pipefail
         python -m pip install --upgrade pip
-        pip install -e '.[dev]'
+        pip install --require-hashes -r requirements.txt
+        pip install --no-deps -e .
 
     # Ratchet gate (scripts/lint_gate.py via `make lint`, job default
     # working-directory is services/penguincode): fails on any `ruff
@@ -815,7 +842,7 @@ jobs:
 
   build-platform:
     needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-classification-real, test-contract, test-integration, test-e2e, test-penguincode]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main') && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       contents: read
       packages: write
@@ -877,6 +904,7 @@ jobs:
     - name: Determine arch suffix
       id: arch
       run: |
+        set -euo pipefail
         ARCH=${{ matrix.platform }}
         SUFFIX=${ARCH#linux/}
         echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
@@ -951,7 +979,7 @@ jobs:
   build-platform-arm64:
     needs: [determine-tier, test, dependency-security, lint, test-webui, openapi-lint, classification-proto-drift, test-classification-real, test-contract, test-integration, test-e2e, test-penguincode]
     if: ${{ vars.ENABLE_ARM64_BUILDS == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main') && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       contents: read
       packages: write
@@ -1011,6 +1039,7 @@ jobs:
     - name: Determine arch suffix
       id: arch
       run: |
+        set -euo pipefail
         ARCH=${{ matrix.platform }}
         SUFFIX=${ARCH#linux/}
         echo "suffix=$SUFFIX" >> "$GITHUB_OUTPUT"
@@ -1081,7 +1110,7 @@ jobs:
 
   merge-manifests:
     needs: [determine-tier, build-platform, build-platform-arm64]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       contents: read
       packages: write
@@ -1221,7 +1250,7 @@ jobs:
   # security-scan job below — Task 13 explicitly calls for a blocking gate.
   build-ollama-image:
     needs: [determine-tier, test, dependency-security, lint]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main') && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       contents: read
       packages: write
@@ -1362,7 +1391,7 @@ jobs:
   # digest and gate on Trivy by digest.
   build-llamacpp-rpc-images:
     needs: [determine-tier, test, dependency-security, lint]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main') && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       contents: read
       packages: write
@@ -1458,7 +1487,7 @@ jobs:
   # one run-unique tag, gate on Trivy by digest, then promote the floating ray<version>-py<minor> tag.
   build-vllm-ray-images:
     needs: [determine-tier, test, dependency-security, lint]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main') && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       contents: read
       packages: write
@@ -1614,12 +1643,13 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
+        set -euo pipefail
         docker image prune --all --force || true
         docker builder prune --all --force || true
 
   security-scan:
     needs: merge-manifests
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     permissions:
       security-events: write
     strategy:
@@ -1680,6 +1710,7 @@ jobs:
 
     - name: Create test environment
       run: |
+        set -euo pipefail
         cat << EOF > docker-compose.test.yml
         services:
           proxy:
@@ -1776,6 +1807,7 @@ jobs:
       # which names the exact failing dependency instead of leaving a bare
       # `curl: (22)` to re-diagnose from scratch next time.
       run: |
+        set -euo pipefail
         check() {
           url="$1"
           body=$(curl -s -w '\n%{http_code}' "$url")
@@ -1803,7 +1835,7 @@ jobs:
       # next run shows *why* the proxy never came up instead of a bare
       # `curl: (7) Connection refused`.
       run: |
-        set -uo pipefail
+        set -euo pipefail
         ready=""
         for i in $(seq 1 30); do
           if curl -sf http://localhost:8000/healthz -o /dev/null; then
@@ -1822,7 +1854,7 @@ jobs:
 
     - name: Test OpenAI-compatible API endpoint
       run: |
-        set -uo pipefail
+        set -euo pipefail
         response=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/v1/chat/completions)
         if [ "$response" != "401" ]; then
           echo "Expected 401 response, got $response"
@@ -1834,11 +1866,12 @@ jobs:
     - name: Cleanup
       if: always()
       run: |
+        set -euo pipefail
         docker compose -f docker-compose.test.yml down -v
 
   release:
     needs: [test, dependency-security, security-scan, integration-test]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     # github.ref for a `release` event is also refs/tags/<tag>, so this must
     # be scoped to push events specifically -- otherwise the new release:
     # [prereleased, released] triggers added above would make this job try
@@ -1860,6 +1893,7 @@ jobs:
       env:
         REPO: ${{ github.repository }}
       run: |
+        set -euo pipefail
         PREV_TAG="$(git describe --tags --abbrev=0 HEAD^)"
         {
           echo "## What's Changed"
@@ -1879,13 +1913,14 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         TAG_NAME: ${{ github.ref_name }}
       run: |
+        set -euo pipefail
         gh release create "$TAG_NAME" \
           --title "WaddleAI $TAG_NAME" \
           --notes-file CHANGELOG.md
 
   cleanup:
     needs: [test, dependency-security, security-scan, integration-test]
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
     if: always()
     permissions:
       packages: write

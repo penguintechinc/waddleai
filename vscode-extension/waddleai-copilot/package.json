@@ -133,8 +133,8 @@
     "@types/jest": "30.0.0",
     "@types/node": "20.19.13",
     "@types/vscode": "1.103.0",
-    "@typescript-eslint/eslint-plugin": "8.67.0",
-    "@typescript-eslint/parser": "8.67.0",
+    "@typescript-eslint/eslint-plugin": "8.74.0",
+    "@typescript-eslint/parser": "8.74.0",
     "@vscode/test-electron": "2.5.2",
     "@vscode/vsce": "4.0.0",
     "eslint": "8.57.1",
@@ -156,6 +156,22 @@
     "theme": "dark"
   },
   "overrides": {
-    "@azure/msal-node": "7.1.1"
+    "@azure/msal-node": "7.1.1",
+    "@vscode/vsce": {
+      "minimatch": "11.0.9"
+    },
+    "@jest/reporters": {
+      "glob": "14.0.6"
+    },
+    "jest-config": {
+      "glob": "14.0.6"
+    },
+    "jest-runtime": {
+      "glob": "14.0.6"
+    },
+    "test-exclude": {
+      "glob": "14.0.6",
+      "minimatch": "11.0.9"
+    }
   }
 }
