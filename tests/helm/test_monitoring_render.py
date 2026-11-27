@@ -14,7 +14,6 @@ Integrity warns about.
 """
 
 import json
-import re
 import shutil
 import subprocess
 
@@ -24,7 +23,29 @@ import yaml
 from tests.helm.conftest import find, render
 
 PROMTOOL_MISSING = shutil.which("promtool") is None
-_DURATION_RE = re.compile(r"^(?:0|[0-9]+(?:ms|s|m|h|d|w|y))+$")
+
+
+def _is_valid_duration(val: str) -> bool:
+    """Linear-time Prometheus duration check (e.g. '0', '5m', '1h30m')."""
+    if val == "0":
+        return True
+    i, n = 0, len(val)
+    if n == 0:
+        return False
+    while i < n:
+        start = i
+        while i < n and val[i].isdigit():
+            i += 1
+        if i == start:
+            return False
+        if val[i : i + 2] == "ms":
+            i += 2
+        elif i < n and val[i] in ("s", "m", "h", "d", "w", "y"):
+            i += 1
+        else:
+            return False
+    return True
+
 
 _DISABLED_VALUES_FILES = ["values.yaml", "values-alpha.yaml", "values-beta.yaml"]
 
@@ -84,7 +105,7 @@ def _validate_rule_structure(name: str, groups: list[dict]) -> int:
             assert is_alert ^ is_record, f"{ctx}: rule must set exactly one of alert/record"
             _assert_balanced_promql(rule.get("expr", ""), ctx)
             if "for" in rule:
-                assert _DURATION_RE.match(str(rule["for"])), (
+                assert _is_valid_duration(str(rule["for"])), (
                     f"{ctx}: invalid for duration {rule['for']!r}"
                 )
             if is_alert:
