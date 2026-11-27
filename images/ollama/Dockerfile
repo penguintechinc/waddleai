@@ -73,7 +73,7 @@ FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d
 # .trivyignore's stated policy that suppressions are only for no-fix findings
 # awaiting a vendor patch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates=20250419 \
+        ca-certificates=20250419+deb13u1 \
         libvulkan1=1.4.309.0-1 \
         libopenblas0=0.3.29+ds-3 \
         libstdc++6=14.2.0-19 \
