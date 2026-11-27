@@ -10,6 +10,7 @@ Ray is imported inside ``main()`` only, so the payload builder is unit-testable 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import socket
@@ -17,6 +18,8 @@ import subprocess  # nosec B404 - fixed argv, no shell
 import sys
 from collections.abc import Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 PAYLOAD_PREFIX = "WAGPU_JSON:"
 SMI_TIMEOUT_S = 30
@@ -69,7 +72,7 @@ def build_node_payload(
         try:
             raw = run([path, *tail])
         except (OSError, subprocess.SubprocessError) as exc:
-            print(f"{binary} failed on {node_name}: {exc}", file=sys.stderr)  # noqa: T201
+            logger.warning("%s failed on %s: %s", binary, node_name, exc)
             raw = ""
         payload: dict[str, Any] = {
             "node_uid": node_uid,
@@ -114,7 +117,8 @@ def main() -> int:
         refs.append(_probe.options(scheduling_strategy=strategy).remote(node["NodeID"], gpus))
     for payload in ray.get(refs, timeout=SMI_TIMEOUT_S * 2):
         if payload is not None:
-            print(format_line(payload), flush=True)  # noqa: T201
+            sys.stdout.write(format_line(payload) + "\n")
+            sys.stdout.flush()
     return 0
 
 

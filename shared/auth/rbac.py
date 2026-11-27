@@ -225,6 +225,22 @@ def access_level_for_role(role: str) -> str:
     return "proxy_api"
 
 
+def _is_key_expired(expires_at: object) -> bool:
+    """Return True when ``expires_at`` is set and in the past (None = no expiry)."""
+    if expires_at is None:
+        return False
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except ValueError:
+            return True
+    if not isinstance(expires_at, datetime):
+        return False
+    if expires_at.tzinfo is not None:
+        return expires_at <= datetime.now(expires_at.tzinfo)
+    return expires_at <= datetime.utcnow()
+
+
 class AuthenticationError(Exception):
     """Authentication failed."""
 
@@ -287,6 +303,9 @@ class RBACManager:
         if key_record is None or not bcrypt.verify(api_key, key_record.key_hash):
             raise AuthenticationError("Invalid API key")
 
+        if _is_key_expired(getattr(key_record, "expires_at", None)):
+            raise AuthenticationError("API key expired")
+
         # Update last used.
         # regression: bug found writing tests/e2e/ -- penguin_dal's
         # Row (penguin_dal/query.py) has no update_record() method
@@ -339,6 +358,9 @@ class RBACManager:
         )
         if key_record is None:
             return None
+
+        if _is_key_expired(getattr(key_record, "expires_at", None)):
+            raise AuthenticationError("API key expired")
 
         user = self.db(self.db.users.id == key_record.user_id).select().first()
         if not user or not user.enabled:

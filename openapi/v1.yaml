@@ -677,6 +677,29 @@ components:
       - virtual_cost
       title: ChargebackRowDTO
       type: object
+    CreatedManagedMcpData:
+      description: Created managed MCP payload.
+      properties:
+        endpoint_id:
+          title: Endpoint Id
+          type: integer
+        id:
+          title: Id
+          type: integer
+        tools:
+          items: {}
+          title: Tools
+          type: array
+        url:
+          title: Url
+          type: string
+      required:
+      - id
+      - endpoint_id
+      - url
+      - tools
+      title: CreatedManagedMcpData
+      type: object
     CredentialActionMeta:
       description: '`meta` block for a single-credential mutation response.
 
@@ -790,6 +813,16 @@ components:
       required:
       - deleted
       title: DeletedData
+      type: object
+    DeletedManagedMcpData:
+      description: Deleted managed MCP payload.
+      properties:
+        id:
+          title: Id
+          type: integer
+      required:
+      - id
+      title: DeletedManagedMcpData
       type: object
     DeletedMcpEndpointData:
       description: '`data` block for a successful endpoint deletion.'
@@ -6424,7 +6457,23 @@ paths:
       operationId: post_create_managed_mcp
       parameters: []
       responses:
-        '200': *id001
+        '201':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/integrations/managed-mcp.
+                properties:
+                  data:
+                    $ref: '#/components/schemas/CreatedManagedMcpData'
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                title: CreateManagedMcpResponse
+                type: object
+          description: Response body for POST /api/v1/integrations/managed-mcp.
       summary: Provision a managed MCP server from the request body.
   /api/v1/integrations/managed-mcp/{server_id}:
     delete:
@@ -6439,7 +6488,23 @@ paths:
         schema:
           type: number
       responses:
-        '200': *id001
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for DELETE /api/v1/integrations/managed-mcp/<id>.
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DeletedManagedMcpData'
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                title: DeleteManagedMcpResponse
+                type: object
+          description: Response body for DELETE /api/v1/integrations/managed-mcp/<id>.
       summary: Tear down a managed MCP server by id.
   /api/v1/integrations/mcp-endpoints:
     get:
@@ -6802,7 +6867,30 @@ paths:
       operationId: post_opencode_config
       parameters: []
       responses:
-        '200': *id001
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/integrations/opencode-config.
+                properties:
+                  data:
+                    additionalProperties: true
+                    title: Data
+                    type: object
+                  meta:
+                    additionalProperties: true
+                    title: Meta
+                    type: object
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                - meta
+                title: OpenCodeConfigResponse
+                type: object
+          description: Response body for POST /api/v1/integrations/opencode-config.
       security:
       - bearerAuth: []
       summary: Render a per-virtual-key OpenCode config (custom provider + `/mcp`
@@ -8120,7 +8208,44 @@ paths:
       operationId: post_apply_manifest
       parameters: []
       responses:
-        '200': *id001
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for POST /api/v1/manifests/apply.
+                properties:
+                  dry_run:
+                    title: Dry Run
+                    type: boolean
+                  expires_at:
+                    anyOf:
+                    - type: number
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Expires At
+                  items:
+                    items:
+                      additionalProperties: true
+                      type: object
+                    title: Items
+                    type: array
+                  manifest_digest:
+                    anyOf:
+                    - type: string
+                    - type: 'null'
+                    default: null
+                    title: Manifest Digest
+                  plan_id:
+                    title: Plan Id
+                    type: string
+                required:
+                - plan_id
+                - items
+                - dry_run
+                title: ApplyManifestResponse
+                type: object
+          description: Response body for POST /api/v1/manifests/apply.
       summary: Apply a previously reviewed configuration manifest plan.
   /api/v1/memory-config:
     get:
@@ -11375,7 +11500,35 @@ paths:
       operationId: get_list_quotas
       parameters: []
       responses:
-        '200': *id001
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/quotas.
+                properties:
+                  pagination:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: 'null'
+                    title: Pagination
+                    type: object
+                  quotas:
+                    items:
+                      additionalProperties: true
+                      type: object
+                    title: Quotas
+                    type: array
+                  total:
+                    title: Total
+                    type: integer
+                required:
+                - quotas
+                - total
+                - pagination
+                title: QuotaListResponse
+                type: object
+          description: Response body for GET /api/v1/quotas.
       summary: List all quota configurations.
   /api/v1/quotas/key/{key_id}:
     put:
@@ -11526,7 +11679,40 @@ paths:
         schema:
           type: number
       responses:
-        '200': *id001
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/quotas/status/<entity_id>.
+                properties:
+                  id:
+                    title: Id
+                    type: integer
+                  name:
+                    title: Name
+                    type: string
+                  quotas:
+                    additionalProperties: true
+                    title: Quotas
+                    type: object
+                  type:
+                    title: Type
+                    type: string
+                  usage:
+                    anyOf:
+                    - additionalProperties: true
+                      type: object
+                    - type: 'null'
+                    default: null
+                    title: Usage
+                required:
+                - type
+                - id
+                - name
+                - quotas
+                title: QuotaStatusResponse
+                type: object
+          description: Response body for GET /api/v1/quotas/status/<entity_id>.
       summary: Get current quota status for an entity.
   /api/v1/quotas/user/{user_id}:
     put:
@@ -13458,7 +13644,30 @@ paths:
       operationId: get_resolve_policy
       parameters: []
       responses:
-        '200': *id001
+        '200':
+          content:
+            application/json:
+              schema:
+                description: Response body for GET /api/v1/security-policies/resolve.
+                properties:
+                  data:
+                    additionalProperties: true
+                    title: Data
+                    type: object
+                  meta:
+                    additionalProperties: true
+                    title: Meta
+                    type: object
+                  status:
+                    title: Status
+                    type: string
+                required:
+                - status
+                - data
+                - meta
+                title: ResolvePolicyResponse
+                type: object
+          description: Response body for GET /api/v1/security-policies/resolve.
       summary: 'Resolution-preview: what policy applies to org X + model Y + tool
         Z.'
   /api/v1/security-policies/{policy_id}:

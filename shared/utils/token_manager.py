@@ -152,13 +152,18 @@ class TokenManager:
     def estimate_credits(self, model: str, input_tokens: int, output_tokens: int) -> int:
         """Conservative credit estimate when the provider is unknown (reserve time, spec §7).
 
-        Takes the maximum over every provider's rate for ``model``; an unknown model uses the
-        default formula. Always at least 1 so a reservation can never be free.
+        Takes the maximum over every provider's rate for ``model`` and floors at
+        the unmatched-provider heuristic so a reservation can never be smaller
+        than reconcile (gh-347). Always at least 1 so a reservation is never free.
         """
+        heuristic = max(1, (input_tokens + output_tokens * 2) // 10)
         candidates = [r for r in self.conversion_rates.values() if r.model == model]
         if not candidates:
-            return max(1, (input_tokens + output_tokens * 2) // 10)
-        return max(1, max(self._credits_for(r, input_tokens, output_tokens) for r in candidates))
+            return heuristic
+        return max(
+            heuristic,
+            *(self._credits_for(r, input_tokens, output_tokens) for r in candidates),
+        )
 
     def count_tokens(
         self, text: str, provider: str = "openai", model: str = "gpt-3.5-turbo"

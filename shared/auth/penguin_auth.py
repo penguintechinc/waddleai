@@ -254,6 +254,19 @@ def build_rbac_enforcer() -> RBACEnforcer:
 # ---------------------------------------------------------------------------
 
 
+def _parse_required_int(raw: object, field: str) -> int:
+    """Parse a required non-negative ASCII integer claim; raise AuthenticationError otherwise."""
+    if isinstance(raw, bool):
+        raise AuthenticationError(f"Invalid {field} claim")
+    if isinstance(raw, int):
+        if raw < 0:
+            raise AuthenticationError(f"Invalid {field} claim")
+        return raw
+    if isinstance(raw, str) and raw.isascii() and raw.isdigit():
+        return int(raw)
+    raise AuthenticationError(f"Invalid or missing {field} claim")
+
+
 def _parse_team_id(raw: object) -> int | None:
     """Parse a claim-borne team id; only an ASCII-digit string yields an id, anything else None."""
     if isinstance(raw, str) and raw.isascii() and raw.isdigit():
@@ -318,10 +331,10 @@ def claims_to_user_context(claims: Claims) -> UserContext:
     )
 
     return UserContext(
-        user_id=int(claims.sub) if claims.sub.isdigit() else 0,
+        user_id=_parse_required_int(claims.sub, "sub"),
         username=(claims.ext.get("username", claims.sub) if claims.ext else claims.sub),
         role=role,
-        organization_id=(int(claims.tenant) if claims.tenant and claims.tenant.isdigit() else 0),
+        organization_id=_parse_required_int(claims.tenant, "tenant"),
         managed_orgs=[int(t) for t in (claims.teams or []) if t.isdigit()],
         permissions=permissions,
         api_key_id=api_key_id,
@@ -381,10 +394,10 @@ def claims_dict_to_user_context(d: dict) -> UserContext:
     )
 
     return UserContext(
-        user_id=int(d.get("sub", "0")) if str(d.get("sub", "0")).isdigit() else 0,
+        user_id=_parse_required_int(d.get("sub"), "sub"),
         username=d.get("username", d.get("sub", "unknown")),
         role=role,
-        organization_id=(int(d.get("tenant", "0")) if str(d.get("tenant", "0")).isdigit() else 0),
+        organization_id=_parse_required_int(d.get("tenant"), "tenant"),
         managed_orgs=[int(t) for t in (d.get("teams", [])) if str(t).isdigit()],
         permissions=permissions,
         api_key_id=api_key_id,

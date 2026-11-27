@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from quart import current_app, g, jsonify, request
+from quart_schema import validate_response
 
 from shared.auth.rbac import Permission
 from shared.mcp.kubernetes_driver import KubernetesManagedMcpDriver
@@ -38,9 +40,43 @@ def _db() -> Any:
     return extensions.db
 
 
+@dataclass(slots=True)
+class CreatedManagedMcpData:
+    """Created managed MCP payload."""
+
+    id: int
+    endpoint_id: int
+    url: str
+    tools: list[Any]
+
+
+@dataclass(slots=True)
+class CreateManagedMcpResponse:
+    """Response body for POST /api/v1/integrations/managed-mcp."""
+
+    status: str
+    data: CreatedManagedMcpData
+
+
+@dataclass(slots=True)
+class DeletedManagedMcpData:
+    """Deleted managed MCP payload."""
+
+    id: int
+
+
+@dataclass(slots=True)
+class DeleteManagedMcpResponse:
+    """Response body for DELETE /api/v1/integrations/managed-mcp/<id>."""
+
+    status: str
+    data: DeletedManagedMcpData
+
+
 @api_v1_bp.route("/integrations/managed-mcp", methods=["POST"])
 @require_auth
 @require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(CreateManagedMcpResponse, 201)
 async def create_managed_mcp() -> tuple:
     """Provision a managed MCP server from the request body.
 
@@ -103,7 +139,7 @@ async def create_managed_mcp() -> tuple:
     except Exception:
         await lifecycle.cleanup(spec)
         raise
-    return jsonify(
+    return (
         {
             "status": "success",
             "data": {
@@ -112,13 +148,15 @@ async def create_managed_mcp() -> tuple:
                 "url": endpoint.url,
                 "tools": list(endpoint.discovered_tools),
             },
-        }
-    ), 201
+        },
+        201,
+    )
 
 
 @api_v1_bp.route("/integrations/managed-mcp/<int:server_id>", methods=["DELETE"])
 @require_auth
 @require_scope(Permission.INTEGRATION_ADMIN)
+@validate_response(DeleteManagedMcpResponse, 200)
 async def delete_managed_mcp(server_id: int) -> tuple:
     """Tear down a managed MCP server by id.
 
@@ -161,4 +199,4 @@ async def delete_managed_mcp(server_id: int) -> tuple:
         db.commit()
 
     await asyncio.to_thread(_delete)
-    return jsonify({"status": "success", "data": {"id": server_id}}), 200
+    return {"status": "success", "data": {"id": server_id}}, 200

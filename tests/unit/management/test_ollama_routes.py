@@ -402,13 +402,39 @@ async def test_start_ollama_deployment_success(client, app_mock_db, auth_headers
     dep = make_mock_deployment(dep_id=1)
     dep.deployment_type = "docker"
     app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(start_deployment={"success": True, "message": "started"})
 
-    resp = await client.post("/api/v1/ollama/deployments/1/start", headers=auth_headers)
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.post("/api/v1/ollama/deployments/1/start", headers=auth_headers)
 
     assert resp.status_code == 200
     data = await resp.get_json()
     assert data["deployment_id"] == 1
     assert data["status"] == "running"
+
+
+async def test_start_ollama_deployment_docker_unavailable_returns_503(
+    client, app_mock_db, auth_headers
+):
+    """Unavailable Docker daemon returns 503 without mutating DB."""
+    dep = make_mock_deployment(dep_id=1)
+    dep.deployment_type = "docker"
+    app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(
+        start_deployment={"success": False, "error": "Docker client not available"}
+    )
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.post("/api/v1/ollama/deployments/1/start", headers=auth_headers)
+
+    assert resp.status_code == 503
+    app_mock_db.return_value.update.assert_not_called()
 
 
 async def test_start_ollama_deployment_not_found(client, app_mock_db, auth_headers):
@@ -457,8 +483,13 @@ async def test_stop_ollama_deployment_success(client, app_mock_db, auth_headers)
     """Admin can stop a deployment."""
     dep = make_mock_deployment(dep_id=1, status="running")
     app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(stop_deployment={"success": True, "message": "stopped"})
 
-    resp = await client.post("/api/v1/ollama/deployments/1/stop", headers=auth_headers)
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.post("/api/v1/ollama/deployments/1/stop", headers=auth_headers)
 
     assert resp.status_code == 200
     data = await resp.get_json()
@@ -491,8 +522,13 @@ async def test_restart_ollama_deployment_success(client, app_mock_db, auth_heade
     """Admin can restart a deployment."""
     dep = make_mock_deployment(dep_id=1)
     app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(restart_deployment={"success": True, "message": "restarted"})
 
-    resp = await client.post("/api/v1/ollama/deployments/1/restart", headers=auth_headers)
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.post("/api/v1/ollama/deployments/1/restart", headers=auth_headers)
 
     assert resp.status_code == 200
     data = await resp.get_json()
@@ -835,13 +871,42 @@ async def test_remove_ollama_model_success(client, app_mock_db, auth_headers):
         make_select_result([dep]),
         make_select_result([model]),
     ]
+    fake_manager = make_mock_manager(remove_model=True)
 
-    resp = await client.delete("/api/v1/ollama/deployments/1/models/llama3.2", headers=auth_headers)
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.delete(
+            "/api/v1/ollama/deployments/1/models/llama3.2", headers=auth_headers
+        )
 
     assert resp.status_code == 200
     data = await resp.get_json()
     assert data["deployment_id"] == 1
     assert data["model"] == "llama3.2"
+
+
+async def test_remove_ollama_model_daemon_failure_returns_503(client, app_mock_db, auth_headers):
+    """Failed Ollama daemon delete returns 503 without mutating DB."""
+    dep = make_mock_deployment(dep_id=1)
+    model = make_mock_model(model_id=5, name="llama3.2")
+    app_mock_db.return_value.select.side_effect = [
+        make_select_result([dep]),
+        make_select_result([model]),
+    ]
+    fake_manager = make_mock_manager(remove_model=False)
+
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.delete(
+            "/api/v1/ollama/deployments/1/models/llama3.2", headers=auth_headers
+        )
+
+    assert resp.status_code == 503
+    app_mock_db.return_value.update.assert_not_called()
 
 
 async def test_remove_ollama_model_not_found_deployment(client, app_mock_db, auth_headers):
@@ -1085,8 +1150,13 @@ async def test_get_ollama_logs_default_lines(client, app_mock_db, auth_headers):
     """Without a 'lines' query param, defaults to 100."""
     dep = make_mock_deployment(dep_id=1)
     app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(get_logs="ollama started\n")
 
-    resp = await client.get("/api/v1/ollama/deployments/1/logs", headers=auth_headers)
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get("/api/v1/ollama/deployments/1/logs", headers=auth_headers)
 
     assert resp.status_code == 200
     data = await resp.get_json()
@@ -1098,8 +1168,13 @@ async def test_get_ollama_logs_custom_lines(client, app_mock_db, auth_headers):
     """A 'lines' query param overrides the default line count."""
     dep = make_mock_deployment(dep_id=1)
     app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(get_logs="line1\n")
 
-    resp = await client.get("/api/v1/ollama/deployments/1/logs?lines=50", headers=auth_headers)
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get("/api/v1/ollama/deployments/1/logs?lines=50", headers=auth_headers)
 
     assert resp.status_code == 200
     data = await resp.get_json()
@@ -1112,10 +1187,15 @@ async def test_get_ollama_logs_invalid_lines_falls_back_to_default(
     """A non-integer 'lines' query param silently falls back to the default (100)."""
     dep = make_mock_deployment(dep_id=1)
     app_mock_db.return_value.select.return_value = make_select_result([dep])
+    fake_manager = make_mock_manager(get_logs="line1\n")
 
-    resp = await client.get(
-        "/api/v1/ollama/deployments/1/logs?lines=not-a-number", headers=auth_headers
-    )
+    with patch(
+        "services.management.app.services.ollama_manager.OllamaDeploymentManager",
+        return_value=fake_manager,
+    ):
+        resp = await client.get(
+            "/api/v1/ollama/deployments/1/logs?lines=not-a-number", headers=auth_headers
+        )
 
     assert resp.status_code == 200
     data = await resp.get_json()

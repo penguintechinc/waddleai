@@ -854,6 +854,42 @@ class ProxyServer:
         # Wire memory manager into mem0-compatible API
         set_memory_manager(self.memory_manager)
 
+        # In test mode (SQLite, no Postgres/pgvector), wrap memory_store so
+        # contract-test endpoints degrade deterministically while production
+        # PgvectorMemoryStore remains fail-loud (gh-334).
+        if _TEST_MODE and self.memory_manager.memory_store is not None:
+            inner_store = self.memory_manager.memory_store
+
+            class _TestModeMemoryStore:
+                """Test-mode SQLite wrapper preserving write_db while returning empty results."""
+
+                def __init__(self, wrapped):
+                    self._wrapped = wrapped
+                    self.write_db = wrapped.write_db
+
+                async def initialize(self) -> None:
+                    return None
+
+                async def store_memory(self, *_args, **_kwargs) -> bool:
+                    return False
+
+                async def search_memories(self, *_args, **_kwargs) -> list:
+                    return []
+
+                async def get_conversation_history(self, *_args, **_kwargs) -> list:
+                    return []
+
+                async def get_recent_memories(self, *_args, **_kwargs) -> list:
+                    return []
+
+                async def clear_memories(self, *_args, **_kwargs) -> bool:
+                    return False
+
+                async def get_memory_stats(self, *_args, **_kwargs) -> dict:
+                    return {"total_memories": 0, "backend": "sqlite-test"}
+
+            self.memory_manager.memory_store = _TestModeMemoryStore(inner_store)
+
         # In test mode, add stub connector to llm_manager so pipeline dispatch works
         if _TEST_MODE:
             from shared.utils.llm_connectors import LLMConnector, StreamChunk
@@ -1827,7 +1863,10 @@ async def get_current_user():
     state = request.scope.get("state") if hasattr(request, "scope") else None
     claims_d = state.get("claims") if isinstance(state, dict) else None
     if isinstance(claims_d, dict) and claims_d:
-        return claims_dict_to_user_context(claims_d)
+        try:
+            return claims_dict_to_user_context(claims_d)
+        except AuthenticationError as e:
+            abort(401, description=str(e))
 
     # Read header once into locals (no Quart objects in to_thread closures)
     authorization = request.headers.get("Authorization")

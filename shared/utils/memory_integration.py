@@ -1080,7 +1080,7 @@ class PgvectorMemoryStore(MemoryStore):
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.store_memory failed: %s", exc)
-            return False
+            raise
 
     async def search_memories(
         self,
@@ -1208,7 +1208,7 @@ class PgvectorMemoryStore(MemoryStore):
                 "LIMIT %s"
             )
 
-            rows = read_db.executesql(sql, params)
+            rows = read_db.executesql(sql, tuple(params))
             if not rows:
                 return []
 
@@ -1259,7 +1259,7 @@ class PgvectorMemoryStore(MemoryStore):
 
         except Exception as exc:
             logger.error("PgvectorMemoryStore.search_memories failed: %s", exc)
-            return []
+            raise
 
     async def get_conversation_history(
         self,
@@ -1294,7 +1294,7 @@ class PgvectorMemoryStore(MemoryStore):
                 "FROM memory_embeddings "
                 "WHERE organization_id = %s" + scope_filter + " AND session_id = %s "
                 "ORDER BY created_at DESC LIMIT %s",
-                params,
+                tuple(params),
             )
             if not rows:
                 return []
@@ -1343,7 +1343,7 @@ class PgvectorMemoryStore(MemoryStore):
 
         except Exception as exc:
             logger.error("PgvectorMemoryStore.get_conversation_history failed: %s", exc)
-            return []
+            raise
 
     async def clear_memories(
         self,
@@ -1380,14 +1380,14 @@ class PgvectorMemoryStore(MemoryStore):
             self.write_db.executesql(
                 "DELETE FROM memory_embeddings WHERE "  # nosec B608 # noqa: S608 -- fixed literal fragments only
                 + where,
-                params,
+                tuple(params),
             )
             if self.retrieval_cache is not None:
                 await self.retrieval_cache.bump_corpus_version(organization_id, "memory")
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.clear_memories failed: %s", exc)
-            return False
+            raise
 
     async def get_memory_stats(self, user_id: int, organization_id: int) -> dict[str, Any]:
         """Return memory usage statistics. Routes to read replica."""
@@ -1446,7 +1446,7 @@ class PgvectorMemoryStore(MemoryStore):
                 + " "
                 "ORDER BY created_at DESC LIMIT %s"
             )
-            rows = read_db.executesql(sql, params)
+            rows = read_db.executesql(sql, tuple(params))
             if not rows:
                 return []
 
@@ -1480,7 +1480,7 @@ class PgvectorMemoryStore(MemoryStore):
             return entries
         except Exception as exc:
             logger.error("PgvectorMemoryStore.get_recent_memories failed: %s", exc)
-            return []
+            raise
 
     async def delete_memory(self, memory_id: str) -> bool:
         """Delete a specific memory by id. Always writes to primary.
@@ -1506,7 +1506,7 @@ class PgvectorMemoryStore(MemoryStore):
             return True
         except Exception as exc:
             logger.error("PgvectorMemoryStore.delete_memory failed: %s", exc)
-            return False
+            raise
 
     async def cleanup_old_memories(self, days: int = 90) -> int:
         """Delete memories older than the given number of days. Always writes to primary.
@@ -1522,4 +1522,4 @@ class PgvectorMemoryStore(MemoryStore):
             return len(rows) if rows else 0
         except Exception as exc:
             logger.error("PgvectorMemoryStore.cleanup_old_memories failed: %s", exc)
-            return 0
+            raise

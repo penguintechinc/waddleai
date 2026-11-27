@@ -237,13 +237,14 @@ class TestClaimsToUserContext:
 
         assert rebuilt.role == Role.USER
 
-    def test_non_digit_sub_yields_zero_user_id(self) -> None:
-        """A non-numeric `sub` (e.g. a SPIFFE ID) maps to user_id 0 rather than raising."""
+    def test_non_digit_sub_raises_authentication_error(self) -> None:
+        """Non-numeric `sub` (e.g. SPIFFE ID) is rejected rather than defaulting to 0 (gh-350)."""
+        from shared.auth.rbac import AuthenticationError
+
         claims = _claims(sub="spiffe://penguintech.io/prod/some-service")
 
-        rebuilt = claims_to_user_context(claims)
-
-        assert rebuilt.user_id == 0
+        with pytest.raises(AuthenticationError, match="sub"):
+            claims_to_user_context(claims)
 
     def test_non_digit_api_key_id_in_ext_is_ignored(self) -> None:
         """A non-numeric `api_key_id` in `ext` is treated as absent, not a crash."""
@@ -289,29 +290,35 @@ class TestClaimsDictToUserContext:
         assert rebuilt.role == Role.USER
         assert rebuilt.api_key_id == 5
 
-    def test_missing_keys_use_safe_defaults(self) -> None:
-        """A sparse dict (missing roles/tenant/teams/sub) still produces a usable context."""
-        rebuilt = claims_dict_to_user_context({})
+    def test_missing_sub_or_tenant_raises_authentication_error(self) -> None:
+        """A dict missing sub or tenant is rejected instead of defaulting to 0 (gh-350)."""
+        from shared.auth.rbac import AuthenticationError
 
-        assert rebuilt.user_id == 0
-        assert rebuilt.role == Role.USER
-        assert rebuilt.organization_id == 0
-        assert rebuilt.managed_orgs == []
-        assert rebuilt.api_key_id is None
+        with pytest.raises(AuthenticationError, match="sub"):
+            claims_dict_to_user_context({})
+
+        with pytest.raises(AuthenticationError, match="tenant"):
+            claims_dict_to_user_context({"sub": "1"})
 
     def test_unknown_role_in_dict_falls_back_to_user(self) -> None:
         """An unrecognised role string in the dict falls back to Role.USER."""
-        rebuilt = claims_dict_to_user_context({"roles": ["nonsense"], "sub": "1"})
+        rebuilt = claims_dict_to_user_context({"roles": ["nonsense"], "sub": "1", "tenant": "1"})
 
         assert rebuilt.role == Role.USER
 
-    def test_non_digit_tenant_and_teams_are_dropped(self) -> None:
-        """Non-numeric tenant/teams entries are treated as absent rather than raising."""
-        rebuilt = claims_dict_to_user_context(
-            {"sub": "1", "tenant": "not-a-number", "teams": ["also-not", "3"]}
-        )
+    def test_non_digit_tenant_raises_and_non_digit_teams_dropped(self) -> None:
+        """Non-numeric tenant raises AuthenticationError; non-numeric teams dropped (gh-350)."""
+        from shared.auth.rbac import AuthenticationError
 
-        assert rebuilt.organization_id == 0
+        with pytest.raises(AuthenticationError, match="tenant"):
+            claims_dict_to_user_context(
+                {"sub": "1", "tenant": "not-a-number", "teams": ["also-not", "3"]}
+            )
+
+        rebuilt = claims_dict_to_user_context(
+            {"sub": "1", "tenant": "2", "teams": ["also-not", "3"]}
+        )
+        assert rebuilt.organization_id == 2
         assert rebuilt.managed_orgs == [3]
 
 
