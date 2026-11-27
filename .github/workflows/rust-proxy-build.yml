@@ -37,7 +37,7 @@ permissions:
 jobs:
   test:
     name: fmt, clippy, test, audit, deny, coverage
-    runs-on: ${{ fromJSON((github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'release' || github.base_ref == 'main' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && '"ubuntu-latest"' || '{"group":"dal2alpha"}') }}
+    runs-on: ubuntu-latest
     # A real pgvector Postgres: the `db` crate's connection tests and the
     # entity drift gate (entities vs. the Alembic-migrated schema) need one, and
     # the whole workspace runs here so no test is ever skipped for lack of a DB.
