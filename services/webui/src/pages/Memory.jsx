@@ -10,19 +10,24 @@ const DEFAULT_EMBEDDING = {
   ollama_host: 'http://localhost:11434',
   dimensions: 768,
 };
+const DEFAULT_SCOPING = { enabled: true, relevance_cutoff: 0.7, top_k: 3, configured: false };
 
-// Thin presentation layer over /api/v1/ailb/{memory-config,rag-config,
-// embedding-config}. Ported from the legacy management plane's
-// /memory-config admin page. The legacy page's ChromaDB-specific fields
-// (chromadb_host/port) targeted a backend since dropped in favor of
-// mem0-via-pgvector; this screen configures the current architecture's
-// equivalent injection settings instead. All persistence/validation is
-// server-side.
+function errMsg(err, fallback) {
+  return err?.response?.data?.error || fallback;
+}
+
+// Thin presentation layer over /api/v1/{memory-config,rag-config,
+// embedding-config,memory-scoping} and /api/v1/memory/<id>/{promote,correct,dispute}.
 function Memory() {
   const [organizationId, setOrganizationId] = useState(1);
   const [memoryConfig, setMemoryConfig] = useState(DEFAULT_MEMORY);
   const [ragConfig, setRagConfig] = useState(DEFAULT_RAG);
   const [embeddingConfig, setEmbeddingConfig] = useState(DEFAULT_EMBEDDING);
+  const [scopingConfig, setScopingConfig] = useState(DEFAULT_SCOPING);
+  const [itemId, setItemId] = useState('');
+  const [promoteScope, setPromoteScope] = useState('repo');
+  const [scopeRef, setScopeRef] = useState('');
+  const [correctionContent, setCorrectionContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
@@ -35,17 +40,19 @@ function Memory() {
   const fetchAll = async () => {
     try {
       setLoading(true);
-      const [memoryRes, ragRes, embeddingRes] = await Promise.all([
-        axios.get('/api/v1/ailb/memory-config', { params: { organization_id: organizationId } }),
-        axios.get('/api/v1/ailb/rag-config', { params: { organization_id: organizationId } }),
-        axios.get('/api/v1/ailb/embedding-config', { params: { organization_id: organizationId } }),
+      const [memoryRes, ragRes, embeddingRes, scopingRes] = await Promise.all([
+        axios.get('/api/v1/memory-config', { params: { organization_id: organizationId } }),
+        axios.get('/api/v1/rag-config', { params: { organization_id: organizationId } }),
+        axios.get('/api/v1/embedding-config', { params: { organization_id: organizationId } }),
+        axios.get('/api/v1/memory-scoping', { params: { organization_id: organizationId } }),
       ]);
       setMemoryConfig(memoryRes.data);
       setRagConfig(ragRes.data);
       setEmbeddingConfig(embeddingRes.data);
+      setScopingConfig(scopingRes.data);
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to fetch memory configuration');
+      setError(errMsg(err, 'Failed to fetch memory configuration'));
     } finally {
       setLoading(false);
     }
@@ -58,7 +65,61 @@ function Memory() {
       setError(null);
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || `Failed to save ${label.toLowerCase()}`);
+      setError(errMsg(err, `Failed to save ${label.toLowerCase()}`));
+    }
+  };
+
+  const handlePromote = async () => {
+    const id = Number(itemId);
+    if (!id) {
+      setError('Memory Item ID is required');
+      return;
+    }
+    try {
+      const payload = { target_scope: promoteScope };
+      if (promoteScope !== 'org') {
+        payload.scope_ref = scopeRef;
+      }
+      const res = await axios.post(`/api/v1/memory/${id}/promote`, payload);
+      setSuccess(`Memory #${id} promoted to ${res.data?.scope_type || promoteScope}`);
+      setError(null);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to promote memory item'));
+    }
+  };
+
+  const handleCorrect = async () => {
+    const id = Number(itemId);
+    if (!id) {
+      setError('Memory Item ID is required');
+      return;
+    }
+    if (!correctionContent.trim()) {
+      setError('Correction content is required');
+      return;
+    }
+    try {
+      const res = await axios.post(`/api/v1/memory/${id}/correct`, { content: correctionContent });
+      setSuccess(`Memory #${id} ${res.data?.status || 'corrected'} (v${res.data?.version ?? ''})`);
+      setCorrectionContent('');
+      setError(null);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to correct memory item'));
+    }
+  };
+
+  const handleDispute = async () => {
+    const id = Number(itemId);
+    if (!id) {
+      setError('Memory Item ID is required');
+      return;
+    }
+    try {
+      await axios.post(`/api/v1/memory/${id}/dispute`, {});
+      setSuccess(`Memory #${id} flagged as disputed`);
+      setError(null);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to dispute memory item'));
     }
   };
 
@@ -133,7 +194,7 @@ function Memory() {
         </div>
         <button
           className="btn-primary"
-          onClick={() => saveSection('/api/v1/ailb/memory-config', memoryConfig, 'Memory configuration')}
+          onClick={() => saveSection('/api/v1/memory-config', memoryConfig, 'Memory configuration')}
         >
           Save Memory Configuration
         </button>
@@ -183,7 +244,7 @@ function Memory() {
         </div>
         <button
           className="btn-primary"
-          onClick={() => saveSection('/api/v1/ailb/rag-config', ragConfig, 'RAG configuration')}
+          onClick={() => saveSection('/api/v1/rag-config', ragConfig, 'RAG configuration')}
         >
           Save RAG Configuration
         </button>
@@ -233,11 +294,117 @@ function Memory() {
         <button
           className="btn-primary"
           onClick={() =>
-            saveSection('/api/v1/ailb/embedding-config', embeddingConfig, 'Embedding configuration')
+            saveSection('/api/v1/embedding-config', embeddingConfig, 'Embedding configuration')
           }
         >
           Save Embedding Configuration
         </button>
+      </div>
+
+      <div className="memory-card">
+        <h3>Memory Scoping (§9.4)</h3>
+        <div className="form-group">
+          <label>
+            <input
+              type="checkbox"
+              checked={!!scopingConfig.enabled}
+              onChange={(e) => setScopingConfig({ ...scopingConfig, enabled: e.target.checked })}
+            />
+            Scoping Enabled
+          </label>
+        </div>
+        <div className="form-group">
+          <label htmlFor="scoping-relevance-cutoff">Relevance Cutoff</label>
+          <input
+            id="scoping-relevance-cutoff"
+            type="number"
+            step="0.01"
+            min="0"
+            max="1"
+            value={scopingConfig.relevance_cutoff}
+            onChange={(e) =>
+              setScopingConfig({ ...scopingConfig, relevance_cutoff: Number(e.target.value) })
+            }
+          />
+        </div>
+        <div className="form-group">
+          <span>Top-K Injection: {scopingConfig.top_k ?? 3}</span>
+        </div>
+        <button
+          className="btn-primary"
+          onClick={() =>
+            saveSection(
+              '/api/v1/memory-scoping',
+              {
+                enabled: scopingConfig.enabled,
+                relevance_cutoff: scopingConfig.relevance_cutoff,
+              },
+              'Memory scoping'
+            )
+          }
+        >
+          Save Scoping Configuration
+        </button>
+      </div>
+
+      <div className="memory-card">
+        <h3>Memory Item Actions (§9.7)</h3>
+        <div className="form-group">
+          <label htmlFor="memory-item-id">Memory Item ID</label>
+          <input
+            id="memory-item-id"
+            type="number"
+            min="1"
+            value={itemId}
+            onChange={(e) => setItemId(e.target.value)}
+            placeholder="Enter memory item ID"
+          />
+        </div>
+        <div className="form-group">
+          <label htmlFor="promote-target-scope">Promote Target Scope</label>
+          <select
+            id="promote-target-scope"
+            value={promoteScope}
+            onChange={(e) => setPromoteScope(e.target.value)}
+          >
+            <option value="repo">repo</option>
+            <option value="project">project</option>
+            <option value="org">org</option>
+          </select>
+        </div>
+        {promoteScope !== 'org' && (
+          <div className="form-group">
+            <label htmlFor="promote-scope-ref">Scope Reference</label>
+            <input
+              id="promote-scope-ref"
+              type="text"
+              value={scopeRef}
+              onChange={(e) => setScopeRef(e.target.value)}
+              placeholder="e.g. org/repo or project-id"
+            />
+          </div>
+        )}
+        <div className="form-group">
+          <label htmlFor="correction-content">Correction Content</label>
+          <textarea
+            id="correction-content"
+            rows="2"
+            value={correctionContent}
+            onChange={(e) => setCorrectionContent(e.target.value)}
+            placeholder="Corrected memory content..."
+          />
+        </div>
+        <div className="memory-actions">
+          <button className="btn-primary" onClick={handlePromote}>
+            Promote Memory
+          </button>
+          <button className="btn-secondary" onClick={handleCorrect}>
+            Correct Memory
+          </button>
+          <button className="btn-danger" onClick={handleDispute}>
+            Dispute Memory
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -108,9 +108,75 @@ impl ApiClient {
         Self::handle_response(resp).await
     }
 
+    /// `PUT` a JSON body.
+    pub async fn put_json<B: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T> {
+        let req = self.authed(self.http.put(self.url(path)).json(body));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
+    /// `PUT` with no request body, returning JSON.
+    pub async fn put_json_empty<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
+        let req = self.authed(self.http.put(self.url(path)));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
+    /// `GET` returning raw text (used for YAML/CSV export endpoints).
+    pub async fn get_text(&self, path: &str) -> Result<String> {
+        let req = self.authed(self.http.get(self.url(path)));
+        let resp = req.send().await?;
+        Self::handle_text_response(resp).await
+    }
+
+    /// `GET` with URL-encoded query parameters returning raw text.
+    pub async fn get_text_query(&self, path: &str, query: &[(&str, String)]) -> Result<String> {
+        let mut url = url::Url::parse(&self.url(path))?;
+        if !query.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
+        }
+        let req = self.authed(self.http.get(url));
+        let resp = req.send().await?;
+        Self::handle_text_response(resp).await
+    }
+
+    async fn handle_text_response(response: reqwest::Response) -> Result<String> {
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if status.is_success() {
+            return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        }
+        let message = extract_error_message(&bytes).unwrap_or_else(|| status.to_string());
+        Err(CliError::Api {
+            status: status.as_u16(),
+            message,
+        })
+    }
+
     /// `DELETE`, returning the JSON body the GPU fleet API answers with.
     pub async fn delete_json<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         let req = self.authed(self.http.delete(self.url(path)));
+        let resp = req.send().await?;
+        Self::handle_response(resp).await
+    }
+
+    /// `DELETE` with URL-encoded query parameters, returning JSON.
+    pub async fn delete_json_query<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &[(&str, String)],
+    ) -> Result<T> {
+        let mut url = url::Url::parse(&self.url(path))?;
+        if !query.is_empty() {
+            url.query_pairs_mut()
+                .extend_pairs(query.iter().map(|(k, v)| (*k, v.as_str())));
+        }
+        let req = self.authed(self.http.delete(url));
         let resp = req.send().await?;
         Self::handle_response(resp).await
     }
@@ -217,9 +283,79 @@ impl ApiClient {
         self.post_empty("/api/v1/auth/logout").await
     }
 
+    /// `GET /api/v1/auth/me` -- current authenticated user profile.
+    pub async fn auth_me(&self) -> Result<serde_json::Value> {
+        self.get_json("/api/v1/auth/me").await
+    }
+
+    /// `GET /api/v1/auth/verify` -- verify bearer token and return claims.
+    pub async fn auth_verify(&self) -> Result<serde_json::Value> {
+        self.get_json("/api/v1/auth/verify").await
+    }
+
+    /// `POST /api/v1/auth/change-password` -- change current user's password.
+    pub async fn change_password(
+        &self,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<serde_json::Value> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            current_password: &'a str,
+            new_password: &'a str,
+        }
+        self.post_json(
+            "/api/v1/auth/change-password",
+            &Body {
+                current_password,
+                new_password,
+            },
+        )
+        .await
+    }
+
     /// `GET /api/v1/keys` -- confirmed live today.
     pub async fn list_keys(&self) -> Result<KeysResponse> {
         self.get_json("/api/v1/keys").await
+    }
+
+    /// `GET /api/v1/keys/{id}` -- fetch one virtual key.
+    pub async fn get_key(&self, key_id: i64) -> Result<serde_json::Value> {
+        self.get_json(&format!("/api/v1/keys/{key_id}")).await
+    }
+
+    /// `POST /api/v1/keys` -- create a virtual key.
+    pub async fn create_key(&self, body: &serde_json::Value) -> Result<serde_json::Value> {
+        self.post_json("/api/v1/keys", body).await
+    }
+
+    /// `PUT /api/v1/keys/{id}` -- update a virtual key.
+    pub async fn update_key(
+        &self,
+        key_id: i64,
+        body: &serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.put_json(&format!("/api/v1/keys/{key_id}"), body).await
+    }
+
+    /// `DELETE /api/v1/keys/{id}` -- delete a virtual key.
+    pub async fn delete_key(&self, key_id: i64) -> Result<serde_json::Value> {
+        self.delete_json(&format!("/api/v1/keys/{key_id}")).await
+    }
+
+    /// `POST /api/v1/keys/{id}/rotate` -- rotate a virtual key.
+    pub async fn rotate_key(&self, key_id: i64) -> Result<serde_json::Value> {
+        self.post_json_empty(&format!("/api/v1/keys/{key_id}/rotate"))
+            .await
+    }
+
+    /// `GET /api/v1/keys/{id}/usage?days=N` -- usage for a virtual key.
+    pub async fn key_usage(&self, key_id: i64, days: u32) -> Result<serde_json::Value> {
+        self.get_json_query(
+            &format!("/api/v1/keys/{key_id}/usage"),
+            &[("days", days.to_string())],
+        )
+        .await
     }
 
     /// `GET /api/v1/usage/summary?days=N` -- confirmed live today.
@@ -233,11 +369,15 @@ impl ApiClient {
         self.get_json("/v1/models").await
     }
 
-    /// `GET /api/v1/fleet/status` -- **planned**: lands with the inference
-    /// fleet backend abstraction (`feature/inference-fleet-v2`, tracked
-    /// separately). Until then this returns a 404 `CliError::Api`.
+    /// `GET /api/v1/fleet/backends` -- list registered inference fleet backends.
     pub async fn fleet_status(&self) -> Result<serde_json::Value> {
-        self.get_json("/api/v1/fleet/status").await
+        self.get_json("/api/v1/fleet/backends").await
+    }
+
+    /// `GET /api/v1/fleet/backends/{id}/health` -- check health of a specific fleet backend.
+    pub async fn fleet_backend_health(&self, backend_id: i64) -> Result<serde_json::Value> {
+        self.get_json(&format!("/api/v1/fleet/backends/{backend_id}/health"))
+            .await
     }
 
     /// `GET /api/v1/fleet/gpu-inventory` -- GPU inventory; `query` holds optional filters.
@@ -521,26 +661,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fleet_status_hits_planned_endpoint() {
+    async fn fleet_status_hits_backends_endpoint() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/fleet/status"))
+            .and(path("/api/v1/fleet/backends"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "backends": []
+                "status": "success",
+                "data": []
             })))
             .mount(&server)
             .await;
 
         let client = ApiClient::new(server.uri(), None).expect("client");
         let status = client.fleet_status().await.expect("fleet_status");
-        assert_eq!(status["backends"], serde_json::json!([]));
+        assert_eq!(status["data"], serde_json::json!([]));
     }
 
     #[tokio::test]
     async fn fleet_status_not_found_surfaces_clean_api_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/fleet/status"))
+            .and(path("/api/v1/fleet/backends"))
             .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
             .mount(&server)
             .await;

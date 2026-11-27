@@ -33,6 +33,12 @@ function Header() {
           <Link to="/memory" className="nav-link">Memory</Link>
           <Link to="/hooks" className="nav-link">Agent Hooks</Link>
           <Link to="/integrations" className="nav-link">Integrations</Link>
+          <Link to="/users" className="nav-link">Users</Link>
+          <Link to="/orgs" className="nav-link">Orgs &amp; Teams</Link>
+          <Link to="/quotas" className="nav-link">Quotas</Link>
+          <Link to="/security-policies" className="nav-link">Security</Link>
+          <Link to="/knowledge" className="nav-link">Knowledge</Link>
+          <Link to="/cache-manifests" className="nav-link">Cache &amp; DAC</Link>
           {gpuFleetEnabled && <Link to="/gpu-fleet" className="nav-link">GPU Fleet</Link>}
         </nav>
         <div className="header-user">

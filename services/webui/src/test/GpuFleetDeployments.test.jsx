@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 import GpuFleetDeployments from '../pages/GpuFleetDeployments';
@@ -196,5 +196,86 @@ describe('StatusChip and StepTimeline', () => {
     render(<StepTimeline events={[]} />);
     expect(screen.getByText('No events recorded yet.')).toBeInTheDocument();
     render(<StepTimeline />);
+  });
+});
+
+describe('GpuFleetDeployments extended fleet & llamacpp actions', () => {
+  it('deletes model weights and drives llamacpp deployment lifecycle', async () => {
+    const api = await import('../api/vllmFleet');
+    vi.spyOn(api, 'deleteModelWeights').mockResolvedValue({});
+    vi.spyOn(api, 'listLlamaCppDeployments').mockResolvedValue([
+      { id: 7, public_id: 'lc-pub-7', name: 'llama-1', model_ref: 'llama-3.gguf', status: 'ready', replicas: 1 },
+    ]);
+    vi.spyOn(api, 'getLlamaCppDeployment').mockResolvedValue({ id: 7, name: 'llama-1' });
+    vi.spyOn(api, 'patchLlamaCppDeployment').mockResolvedValue({ id: 7 });
+    vi.spyOn(api, 'deployLlamaCppDeployment').mockResolvedValue({ status: 'deploying' });
+    vi.spyOn(api, 'removeLlamaCppDeployment').mockResolvedValue({ status: 'removed' });
+    vi.spyOn(api, 'getLlamaCppHealth').mockResolvedValue({ status: 'healthy' });
+    vi.spyOn(api, 'exportLlamaCppK8s').mockResolvedValue('kind: Deployment');
+    vi.spyOn(api, 'rotateLlamaCppToken').mockResolvedValue({ fingerprint: 'fp-1' });
+    vi.spyOn(api, 'deleteLlamaCppDeployment').mockResolvedValue({});
+
+    setup([dep({ model_ref: 'Qwen/Qwen-7B' })]);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Weights' }));
+    await waitFor(() => expect(api.deleteModelWeights).toHaveBeenCalledWith('Qwen/Qwen-7B'));
+
+    await waitFor(() => expect(screen.getByText('llama-1')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    await waitFor(() => expect(api.getLlamaCppDeployment).toHaveBeenCalledWith(7));
+    fireEvent.click(screen.getByRole('button', { name: 'Close Details' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(api.patchLlamaCppDeployment).toHaveBeenCalledWith(7, { replicas: 1 }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deploy' }));
+    await waitFor(() => expect(api.deployLlamaCppDeployment).toHaveBeenCalledWith(7));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(api.removeLlamaCppDeployment).toHaveBeenCalledWith(7));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Health' }));
+    await waitFor(() => expect(api.getLlamaCppHealth).toHaveBeenCalledWith(7));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export K8s' }));
+    await waitFor(() => expect(api.exportLlamaCppK8s).toHaveBeenCalledWith(7));
+    fireEvent.click(screen.getByRole('button', { name: 'Close K8s' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rotate Token' }));
+    await waitFor(() => expect(api.rotateLlamaCppToken).toHaveBeenCalledWith('lc-pub-7'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete llama.cpp' }));
+    await waitFor(() => expect(api.deleteLlamaCppDeployment).toHaveBeenCalledWith(7));
+  });
+
+  it('surfaces deleteModelWeights and llamacpp errors, dismisses status, and updates replicas input', async () => {
+    const api = await import('../api/vllmFleet');
+    vi.spyOn(api, 'deleteModelWeights').mockRejectedValue(new Error('weights locked'));
+    vi.spyOn(api, 'listLlamaCppDeployments').mockResolvedValue([
+      { id: 8, public_id: 'lc-8', name: 'llama-err', model_name: 'm.gguf', status: 'ready' },
+    ]);
+    vi.spyOn(api, 'patchLlamaCppDeployment').mockRejectedValue(new Error('patch failed'));
+    vi.spyOn(api, 'getLlamaCppHealth').mockResolvedValue({});
+
+    setup([dep({ model_ref: 'org/m' })]);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Weights' }));
+    await waitFor(() => expect(screen.getByText('weights locked')).toBeInTheDocument());
+
+    await waitFor(() => expect(screen.getByLabelText('llama.cpp replicas 8')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('llama.cpp replicas 8'), { target: { value: '3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+    await waitFor(() => expect(screen.getByText('patch failed')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Health' }));
+    await waitFor(() => expect(screen.getByText('Health: ok')).toBeInTheDocument());
+    const statusBanner = screen.getByText('Health: ok').closest('.alert');
+    fireEvent.click(statusBanner.querySelector('button'));
+    expect(screen.queryByText('Health: ok')).not.toBeInTheDocument();
+
+    vi.spyOn(api, 'exportLlamaCppK8s').mockResolvedValue({ kind: 'Deployment' });
+    fireEvent.click(screen.getByRole('button', { name: 'Export K8s' }));
+    await waitFor(() => expect(screen.getByText(/"kind": "Deployment"/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close K8s' }));
   });
 });

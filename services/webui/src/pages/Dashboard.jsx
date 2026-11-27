@@ -2,6 +2,22 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import './Dashboard.css';
 
+function normalizeSummary(data) {
+  const s = data?.summary;
+  const src = s ? s.monthly || s.daily : data;
+  return {
+    total_requests: (src && (src.requests ?? src.total_requests)) || 0,
+    total_tokens: (src && (src.waddleai_tokens ?? src.total_tokens)) || 0,
+    total_cost: (src && (src.cost_usd ?? src.total_cost)) || 0,
+    daily_requests: (s?.daily && s.daily.requests) || 0,
+    daily_tokens: (s?.daily && s.daily.waddleai_tokens) || 0,
+  };
+}
+
+function errMsg(err, fallback) {
+  return err?.response?.data?.error || fallback;
+}
+
 function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -9,10 +25,12 @@ function Dashboard() {
     total_requests: 0,
     total_tokens: 0,
     total_cost: 0,
-    active_keys: 0
+    daily_requests: 0,
+    daily_tokens: 0,
   });
-  const [recentActivity, setRecentActivity] = useState([]);
-  const [providerHealth, setProviderHealth] = useState([]);
+  const [modelUsage, setModelUsage] = useState([]);
+  const [fleetBackends, setFleetBackends] = useState([]);
+  const [ciliumStatus, setCiliumStatus] = useState(null);
 
   useEffect(() => {
     fetchDashboardData();
@@ -23,48 +41,36 @@ function Dashboard() {
   const fetchDashboardData = async () => {
     try {
       setLoading(true);
-      const [summaryRes, statusRes] = await Promise.all([
+      const [summaryRes, byModelRes, backendsRes, ciliumRes] = await Promise.all([
         axios.get('/api/v1/usage/summary'),
-        axios.get('/api/v1/ailb/status')
+        axios.get('/api/v1/usage/by-model'),
+        axios.get('/api/v1/fleet/backends').catch((err) => {
+          const status = err?.response?.status;
+          if (status === 403 || status === 404) return { data: { data: [] } };
+          throw err;
+        }),
+        axios.get('/api/v1/cilium/status').catch((err) => {
+          const status = err?.response?.status;
+          if (status === 403 || status === 404) return { data: null };
+          throw err;
+        }),
       ]);
 
-      setStats(summaryRes.data);
-      setProviderHealth(statusRes.data.providers || []);
+      setStats(normalizeSummary(summaryRes.data));
 
-      const activityRes = await axios.get('/api/v1/usage/recent?limit=10');
-      setRecentActivity(activityRes.data.activity || []);
+      const byModelObj = byModelRes.data?.by_model || {};
+      const models = Object.entries(byModelObj)
+        .map(([model, metrics]) => ({ model, ...metrics }))
+        .sort((a, b) => (b.tokens || 0) - (a.tokens || 0));
+      setModelUsage(models);
 
+      setFleetBackends(backendsRes.data?.data || []);
+      setCiliumStatus(ciliumRes.data || null);
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to fetch dashboard data');
+      setError(errMsg(err, 'Failed to fetch dashboard data'));
     } finally {
       setLoading(false);
-    }
-  };
-
-  const formatTimestamp = (timestamp) => {
-    if (!timestamp) return 'Unknown';
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
-
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins}m ago`;
-    if (diffMins < 1440) return `${Math.floor(diffMins / 60)}h ago`;
-    return date.toLocaleDateString();
-  };
-
-  const getActivityIcon = (type) => {
-    switch (type) {
-      case 'request':
-        return { icon: '📨', className: 'info' };
-      case 'error':
-        return { icon: '❌', className: 'error' };
-      case 'key_created':
-        return { icon: '🔑', className: 'success' };
-      default:
-        return { icon: 'ℹ️', className: 'info' };
     }
   };
 
@@ -90,10 +96,10 @@ function Dashboard() {
         <div className="stat-card">
           <div className="stat-header">
             <div className="stat-icon blue">📊</div>
-            <span className="stat-label">Total Requests</span>
+            <span className="stat-label">Monthly Requests</span>
           </div>
-          <div className="stat-value">{stats.total_requests?.toLocaleString() || 0}</div>
-          <div className="stat-subtext">All time</div>
+          <div className="stat-value">{stats.total_requests.toLocaleString()}</div>
+          <div className="stat-subtext">Today: {stats.daily_requests.toLocaleString()}</div>
         </div>
 
         <div className="stat-card">
@@ -104,9 +110,9 @@ function Dashboard() {
           <div className="stat-value">
             {stats.total_tokens > 1000000
               ? `${(stats.total_tokens / 1000000).toFixed(2)}M`
-              : stats.total_tokens?.toLocaleString() || 0}
+              : stats.total_tokens.toLocaleString()}
           </div>
-          <div className="stat-subtext">Total tokens</div>
+          <div className="stat-subtext">Monthly total</div>
         </div>
 
         <div className="stat-card">
@@ -114,69 +120,71 @@ function Dashboard() {
             <div className="stat-icon purple">💰</div>
             <span className="stat-label">Total Cost</span>
           </div>
-          <div className="stat-value">${(stats.total_cost || 0).toFixed(2)}</div>
-          <div className="stat-subtext">Cumulative spending</div>
+          <div className="stat-value">${stats.total_cost.toFixed(2)}</div>
+          <div className="stat-subtext">Monthly spending</div>
         </div>
 
         <div className="stat-card">
           <div className="stat-header">
-            <div className="stat-icon orange">🔑</div>
-            <span className="stat-label">Active Keys</span>
+            <div className="stat-icon orange">🛡️</div>
+            <span className="stat-label">Cilium Policy</span>
           </div>
-          <div className="stat-value">{stats.active_keys || 0}</div>
-          <div className="stat-subtext">Virtual keys</div>
+          <div className="stat-value">
+            {ciliumStatus
+              ? ciliumStatus.degraded
+                ? 'Degraded'
+                : ciliumStatus.flag_enabled
+                  ? 'Active'
+                  : 'Disabled'
+              : 'N/A'}
+          </div>
+          <div className="stat-subtext">
+            {ciliumStatus ? `${(ciliumStatus.applied || []).length} applied` : 'Unavailable'}
+          </div>
         </div>
       </div>
 
       <div className="dashboard-grid">
         <div className="dashboard-card">
-          <h2>Recent Activity</h2>
-          {recentActivity.length === 0 ? (
+          <h2>Usage by Model</h2>
+          {modelUsage.length === 0 ? (
             <div className="empty-state">
-              <p>No recent activity</p>
+              <p>No model usage recorded</p>
             </div>
           ) : (
             <ul className="activity-list">
-              {recentActivity.map((activity, index) => {
-                const { icon, className } = getActivityIcon(activity.type);
-                return (
-                  <li key={index} className="activity-item">
-                    <div className={`activity-icon ${className}`}>{icon}</div>
-                    <div className="activity-content">
-                      <div className="activity-title">
-                        {activity.title || activity.model || 'API Request'}
-                      </div>
-                      <div className="activity-details">
-                        {activity.provider && `Provider: ${activity.provider}`}
-                        {activity.tokens && ` • ${activity.tokens.toLocaleString()} tokens`}
-                        {activity.cost && ` • $${activity.cost.toFixed(4)}`}
-                      </div>
+              {modelUsage.map((item) => (
+                <li key={item.model} className="activity-item">
+                  <div className="activity-icon info">🤖</div>
+                  <div className="activity-content">
+                    <div className="activity-title">{item.model}</div>
+                    <div className="activity-details">
+                      {(item.requests || 0).toLocaleString()} requests •{' '}
+                      {(item.tokens || 0).toLocaleString()} tokens • $
+                      {(item.cost_usd || 0).toFixed(4)}
                     </div>
-                    <div className="activity-time">
-                      {formatTimestamp(activity.timestamp)}
-                    </div>
-                  </li>
-                );
-              })}
+                  </div>
+                </li>
+              ))}
             </ul>
           )}
         </div>
 
         <div className="dashboard-card">
-          <h2>Provider Health</h2>
-          {providerHealth.length === 0 ? (
+          <h2>Fleet Backends</h2>
+          {fleetBackends.length === 0 ? (
             <div className="empty-state">
-              <p>No providers configured</p>
+              <p>No fleet backends configured</p>
             </div>
           ) : (
             <ul className="provider-list">
-              {providerHealth.map((provider, index) => (
-                <li key={index} className="provider-item">
+              {fleetBackends.map((backend) => (
+                <li key={backend.id || backend.name} className="provider-item">
                   <div className="provider-info">
-                    <span className="provider-name">{provider.name || provider.provider_type}</span>
+                    <span className="provider-name">{backend.name}</span>
                   </div>
-                  <span className={`health-badge ${provider.health_status || 'unknown'}`}>
-                    {provider.health_status || 'unknown'}
+                  <span className={`health-badge ${backend.status || 'unknown'}`}>
+                    {backend.status || 'unknown'}
                   </span>
                 </li>
               ))}

@@ -729,3 +729,67 @@ describe('Integrations page - OpenCode config (self-service, any role)', () => {
     });
   });
 });
+
+describe('Integrations page - managed MCP (admin)', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    useAuth.mockReturnValue({ user: { id: 1, username: 'admin', role: 'admin' } });
+  });
+
+  it('provisions and deletes a managed MCP server', async () => {
+    axios.get.mockResolvedValue({ data: { data: [] } });
+    axios.post.mockResolvedValue({
+      data: {
+        status: 'success',
+        data: { id: 77, endpoint_id: 12, url: 'http://mcp-docs.default.svc:8080/mcp', tools: ['search'] },
+      },
+    });
+    axios.delete.mockResolvedValue({ data: { status: 'success' } });
+
+    render(<Integrations />);
+    await waitFor(() => expect(screen.getByLabelText('Server Name')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Server Name'), { target: { value: 'docs-mcp' } });
+    fireEvent.change(screen.getByLabelText('Container Image'), { target: { value: 'ghcr.io/org/mcp:1.0' } });
+    fireEvent.change(screen.getByLabelText('K8s Namespace'), { target: { value: 'mcp-ns' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Provision Managed MCP' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/integrations/managed-mcp', {
+        name: 'docs-mcp',
+        image: 'ghcr.io/org/mcp:1.0',
+        namespace: 'mcp-ns',
+        transport: 'streamable_http',
+      });
+      expect(screen.getByText(/#77 docs-mcp/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Tear Down' }));
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith('/api/v1/integrations/managed-mcp/77');
+      expect(screen.getByText('Managed MCP server #77 deleted')).toBeInTheDocument();
+    });
+  });
+
+  it('validates managed MCP server ID input and surfaces provision/delete errors', async () => {
+    axios.get.mockResolvedValue({ data: { data: [] } });
+    axios.post.mockRejectedValue(new Error('provision failed'));
+    axios.delete.mockRejectedValue(new Error('delete failed'));
+
+    render(<Integrations />);
+    await waitFor(() => expect(screen.getByLabelText('Server Name')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Managed MCP' }));
+    expect(screen.getByText('Managed MCP Server ID is required')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Managed MCP Server ID'), { target: { value: '88' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Managed MCP' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete managed MCP server')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Server Name'), { target: { value: 'bad-mcp' } });
+    fireEvent.change(screen.getByLabelText('Container Image'), { target: { value: 'img:1' } });
+    fireEvent.change(screen.getByLabelText('Transport'), { target: { value: 'sse' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Provision Managed MCP' }));
+    await waitFor(() => expect(screen.getByText('Failed to provision managed MCP server')).toBeInTheDocument());
+  });
+});

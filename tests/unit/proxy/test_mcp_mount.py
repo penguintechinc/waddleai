@@ -6,9 +6,10 @@ from the proxy's heavier startup sequence (grpc, real DB, etc.).
 """
 
 import json
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
+from penguin_dal import DAL
 
 from proxy.apps.proxy_server.mcp_mount import (
     MCP_ADMIN_PATH,
@@ -18,6 +19,28 @@ from proxy.apps.proxy_server.mcp_mount import (
 )
 from shared.auth.jwks_verifier import JWKSVerificationError
 from shared.auth.rbac import AuthenticationError, Role, UserContext
+from shared.mcp.adapters import (
+    DbAdminConfigService,
+    DbHubAdminService,
+    DbHubUserService,
+    DbKnowledgeService,
+    DbMemoryService,
+    DbRoutingService,
+    DbUsageService,
+)
+
+
+def _factory() -> McpServiceFactory:
+    """Build a mock-backed McpServiceFactory for mount routing/auth tests."""
+    return McpServiceFactory(
+        knowledge_factory=AsyncMock,
+        memory_factory=AsyncMock,
+        routing_factory=AsyncMock,
+        usage_factory=AsyncMock,
+        admin_config_factory=AsyncMock,
+        hub_user_factory=AsyncMock,
+        hub_admin_factory=AsyncMock,
+    )
 
 
 def _headers(auth: str | None = None, extra: dict | None = None) -> list[tuple[bytes, bytes]]:
@@ -125,7 +148,9 @@ class TestNonMcpPathsPassThrough:
 
     async def test_unrelated_path_is_not_intercepted(self, passthrough_app):
         """Unrelated path is not intercepted."""
-        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=Mock(), jwks_verifier=Mock(), service_factory=_factory()
+        )
         await _call_mount(mount, "/v1/chat/completions", [])
         assert passthrough_app.calls == ["/v1/chat/completions"]
 
@@ -137,7 +162,9 @@ class TestUserMountAuth:
     async def test_missing_authorization_is_401(self, passthrough_app, monkeypatch):
         """Missing authorization is 401."""
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
-        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=Mock(), jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers())
         assert recorder.status == 401
         assert passthrough_app.calls == []
@@ -147,7 +174,9 @@ class TestUserMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.side_effect = AuthenticationError("bad key")
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("wa-bad-key"))
         assert recorder.status == 401
 
@@ -156,7 +185,9 @@ class TestUserMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "0")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context()
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("wa-good-key"))
         assert recorder.status == 404
         assert passthrough_app.calls == []
@@ -171,7 +202,9 @@ class TestUserMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context()
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("wa-good-key"))
         assert recorder.status not in (401, 403, 404)
         assert passthrough_app.calls == []  # inner app never invoked -- FastMCP handled it
@@ -186,7 +219,9 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.USER)
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-user-key"))
         assert recorder.status == 403
         assert recorder.json_body["error"] == "forbidden"
@@ -196,7 +231,9 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.RESOURCE_MANAGER)
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-rm-key"))
         assert recorder.status == 403
 
@@ -209,7 +246,9 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "0")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.ADMIN)
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-admin-key"))
         assert recorder.status == 404
 
@@ -218,7 +257,9 @@ class TestAdminMountAuth:
         monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(role=Role.ADMIN)
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_ADMIN_PATH, _headers("wa-admin-key"))
         assert recorder.status not in (401, 403, 404)
         assert passthrough_app.calls == []
@@ -243,7 +284,9 @@ class TestSessionIdTiesToDataPlane:
 
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context()
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         headers = _headers("wa-good-key", {"x-waddleai-session-id": "session-abc"})
         await _call_mount(mount, MCP_USER_PATH, headers)
         assert captured_ctx["ctx"].session_id == "session-abc"
@@ -263,7 +306,9 @@ class TestSessionIdTiesToDataPlane:
 
         rbac = Mock()
         rbac.authenticate_api_key.return_value = _user_context(user_id=7)
-        mount = MCPMount(passthrough_app, rbac=rbac, jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=rbac, jwks_verifier=Mock(), service_factory=_factory()
+        )
         await _call_mount(mount, MCP_USER_PATH, _headers("wa-good-key"))
         assert captured_ctx["ctx"].session_id == "key-99"  # api_key_id from _user_context()
 
@@ -287,7 +332,9 @@ class TestBearerTokenUsesJWKSVerification:
             "shared.auth.penguin_auth.verify_token_via_jwks",
             Mock(return_value=uc),
         )
-        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=Mock(), jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("Bearer some.jwt.token"))
         assert recorder.status not in (401, 403, 404)
 
@@ -298,7 +345,9 @@ class TestBearerTokenUsesJWKSVerification:
             "shared.auth.penguin_auth.verify_token_via_jwks",
             Mock(side_effect=AuthenticationError("JWKS endpoint unreachable")),
         )
-        mount = MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+        mount = MCPMount(
+            passthrough_app, rbac=Mock(), jwks_verifier=Mock(), service_factory=_factory()
+        )
         recorder = await _call_mount(mount, MCP_USER_PATH, _headers("Bearer some.jwt.token"))
         assert recorder.status == 401
 
@@ -311,3 +360,45 @@ def test_jwks_verification_error_is_not_swallowed_silently() -> None:
     shared.auth.jwks_verifier.JWKSVerificationError) silently drifting.
     """
     assert issubclass(JWKSVerificationError, Exception)
+
+
+class TestMcpServiceFactoryFailLoud:
+    """Production wiring refuses to fall back to NotWired stubs when DB is missing."""
+
+    def test_mount_requires_service_factory(self, passthrough_app) -> None:
+        """MCPMount raises ValueError when service_factory is omitted."""
+        with pytest.raises(ValueError, match="service_factory is required"):
+            MCPMount(passthrough_app, rbac=Mock(), jwks_verifier=Mock())
+
+    def test_from_db_fails_loudly_when_db_missing(self) -> None:
+        """McpServiceFactory.from_db raises RuntimeError when db is None."""
+        with pytest.raises(RuntimeError, match="Database handle is required"):
+            McpServiceFactory.from_db(None)
+
+    def test_from_proxy_server_fails_loudly_when_db_missing(self) -> None:
+        """McpServiceFactory.from_proxy_server raises RuntimeError when db is None."""
+        with pytest.raises(RuntimeError, match="proxy_server is required"):
+            McpServiceFactory.from_proxy_server(None)
+        with pytest.raises(RuntimeError, match="Database handle is required"):
+            McpServiceFactory.from_proxy_server(Mock(db=None))
+
+    def test_from_proxy_server_wires_real_db_adapters(self) -> None:
+        """McpServiceFactory.from_proxy_server wires all real Db* adapters."""
+        db = DAL("sqlite://:memory:", migrate=True)
+        proxy_server = Mock(db=db, memory_valkey=None, routing_engine=None, security_scanner=None)
+        factory = McpServiceFactory.from_proxy_server(proxy_server)
+        ctx = Mock(
+            org_id=1, user_uuid="1", session_id="s-1", workspace_hint=None, scopes=frozenset()
+        )
+
+        user_tools = factory.user_tools(ctx)
+        assert isinstance(user_tools._knowledge, DbKnowledgeService)
+        assert isinstance(user_tools._memory, DbMemoryService)
+        assert isinstance(user_tools._routing, DbRoutingService)
+        assert isinstance(user_tools._usage, DbUsageService)
+        assert isinstance(user_tools._hub, DbHubUserService)
+
+        admin_tools = factory.admin_tools(ctx)
+        assert isinstance(admin_tools._usage, DbUsageService)
+        assert isinstance(admin_tools._config, DbAdminConfigService)
+        assert isinstance(admin_tools._hub, DbHubAdminService)

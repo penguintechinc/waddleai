@@ -1,0 +1,39 @@
+.quotas-page {
+  color: #e2e8f0;
+}
+
+.pool-meta {
+  color: #cbd5e1;
+  font-size: 0.9rem;
+  margin: 0 0 1rem;
+}
+
+.checkbox-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.5rem !important;
+  padding-top: 1.4rem;
+}
+
+.sub-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 1rem;
+}
+
+.sub-table th,
+.sub-table td {
+  padding: 0.6rem;
+  border-bottom: 1px solid #1e293b;
+  text-align: left;
+}
+
+.sub-table th {
+  color: #d4af37;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.reservation-form {
+  margin-top: 1rem;
+}

@@ -19,6 +19,12 @@ import GpuFleetOverview from './pages/GpuFleetOverview';
 import GpuFleetDeployments from './pages/GpuFleetDeployments';
 import GpuFleetDeployWizard from './pages/GpuFleetDeployWizard';
 import GpuFleetBackend from './pages/GpuFleetBackend';
+import Users from './pages/Users';
+import OrganizationsAndTeams from './pages/OrganizationsAndTeams';
+import Quotas from './pages/Quotas';
+import SecurityPolicies from './pages/SecurityPolicies';
+import Knowledge from './pages/Knowledge';
+import CacheAndManifests from './pages/CacheAndManifests';
 import './App.css';
 
 function App() {
@@ -53,6 +59,12 @@ function App() {
                         <Route path="/gpu-fleet/deployments" element={<GpuFleetDeployments />} />
                         <Route path="/gpu-fleet/deploy" element={<GpuFleetDeployWizard />} />
                         <Route path="/gpu-fleet/backend" element={<GpuFleetBackend />} />
+                        <Route path="/users" element={<Users />} />
+                        <Route path="/orgs" element={<OrganizationsAndTeams />} />
+                        <Route path="/quotas" element={<Quotas />} />
+                        <Route path="/security-policies" element={<SecurityPolicies />} />
+                        <Route path="/knowledge" element={<Knowledge />} />
+                        <Route path="/cache-manifests" element={<CacheAndManifests />} />
                         <Route path="*" element={<Navigate to="/" replace />} />
                       </Routes>
                     </main>

@@ -128,8 +128,109 @@ export function AuthProvider({ children }) {
     setAuthStatus(AUTH_STATUS.UNAUTHENTICATED);
   };
 
+  const refreshToken = async () => {
+    try {
+      const response = await fetch('/api/v1/auth/refresh', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'include',
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        reportSuccess();
+        return { success: true, expires_in: data.expires_in };
+      }
+      if (response.status === 401 || response.status === 403) {
+        setUser(null);
+        setAuthStatus(AUTH_STATUS.UNAUTHENTICATED);
+        reportSuccess();
+        const err = await response.json().catch(() => ({}));
+        return { success: false, error: err.error || 'Session expired' };
+      }
+      setAuthStatus(AUTH_STATUS.UNREACHABLE);
+      reportFailure();
+      return { success: false, error: 'Failed to refresh session' };
+    } catch (error) {
+      console.error('[AuthContext] Refresh request failed', error);
+      reportFailure();
+      return { success: false, error: 'Network error' };
+    }
+  };
+
+  const fetchMe = async () => {
+    try {
+      const response = await fetch('/api/v1/auth/me', {
+        credentials: 'include',
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setUser(data);
+        setAuthStatus(AUTH_STATUS.AUTHENTICATED);
+        reportSuccess();
+        return { success: true, user: data };
+      }
+      if (response.status === 401 || response.status === 403) {
+        setUser(null);
+        setAuthStatus(AUTH_STATUS.UNAUTHENTICATED);
+        reportSuccess();
+        const err = await response.json().catch(() => ({}));
+        return { success: false, error: err.error || 'Unauthorized' };
+      }
+      reportFailure();
+      return { success: false, error: 'Failed to fetch user profile' };
+    } catch (error) {
+      console.error('[AuthContext] /auth/me request failed', error);
+      reportFailure();
+      return { success: false, error: 'Network error' };
+    }
+  };
+
+  const changePassword = async (currentPassword, newPassword) => {
+    try {
+      const response = await fetch('/api/v1/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          current_password: currentPassword,
+          new_password: newPassword,
+        }),
+      });
+
+      reportSuccess();
+
+      if (response.ok) {
+        const data = await response.json();
+        return { success: true, message: data.message || 'Password changed successfully' };
+      }
+      const err = await response.json().catch(() => ({}));
+      return { success: false, error: err.error || err.message || 'Failed to change password' };
+    } catch (error) {
+      console.error('[AuthContext] Change password request failed', error);
+      reportFailure();
+      return { success: false, error: 'Network error' };
+    }
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, authStatus, login, logout, retryNow }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        loading,
+        authStatus,
+        login,
+        logout,
+        retryNow,
+        refreshToken,
+        fetchMe,
+        changePassword,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

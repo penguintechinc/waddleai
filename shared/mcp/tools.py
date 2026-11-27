@@ -120,6 +120,16 @@ class KnowledgeService(Protocol):
         """Fetch a package's docs on demand, populating the cache."""
         ...
 
+    async def list_knowledge(
+        self, *, org_id: int, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List org-scoped knowledge/RAG documents."""
+        ...
+
+    async def get_knowledge(self, *, org_id: int, doc_id: int) -> dict[str, Any] | None:
+        """Fetch a single org-scoped knowledge/RAG document by id."""
+        ...
+
 
 @runtime_checkable
 class MemoryService(Protocol):
@@ -156,6 +166,12 @@ class RoutingService(Protocol):
         """Record a weight-only routing preference; never a pin (§11.5)."""
         ...
 
+    async def routing_dry_run(
+        self, *, org_id: int, prompt: str | None = None, tool_type: str | None = None
+    ) -> dict[str, Any]:
+        """Run a side-effect-free routing decision for the org."""
+        ...
+
 
 @runtime_checkable
 class UsageService(Protocol):
@@ -187,6 +203,20 @@ class UsageService(Protocol):
 
     async def provider_budget_headroom(self, *, org_id: int) -> dict[str, Any]:
         """Admin: provider plan-budget headroom (§7.3 window-based budgets)."""
+        ...
+
+    async def get_my_quota(self, *, org_id: int, user_uuid: str) -> dict[str, Any]:
+        """Caller's own quota status within their org."""
+        ...
+
+    async def get_usage_breakdown(
+        self, *, org_id: int, group_by: str = "model", window: str | None = None
+    ) -> dict[str, Any]:
+        """Admin: usage breakdown grouped by model, provider, user, or key."""
+        ...
+
+    async def get_pooled_quota(self, *, org_id: int) -> dict[str, Any]:
+        """Admin: pooled quota status (org pool, team pools, reservations, overrides)."""
         ...
 
 
@@ -224,6 +254,365 @@ class AdminConfigService(Protocol):
         self, *, provider: str, config: dict[str, Any]
     ) -> dict[str, Any]:
         """Update a provider's configuration."""
+        ...
+
+
+@runtime_checkable
+class HubUserService(Protocol):
+    """Self-scoped Hub read surface for `/mcp` user tools."""
+
+    async def list_keys(self, *, org_id: int, user_uuid: str) -> list[dict[str, Any]]:
+        """List API keys owned by the caller within their org."""
+        ...
+
+    async def list_teams(self, *, org_id: int, user_uuid: str) -> list[dict[str, Any]]:
+        """List teams the caller belongs to within their org."""
+        ...
+
+
+@runtime_checkable
+class HubAdminService(Protocol):
+    """Admin-scoped Hub read and write surface for `/mcp/admin` tools."""
+
+    async def list_users(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_users."""
+        ...
+
+    async def list_organizations(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_organizations."""
+        ...
+
+    async def list_teams(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_teams."""
+        ...
+
+    async def list_providers(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_providers."""
+        ...
+
+    async def list_keys(
+        self,
+        *,
+        org_id: int | None = None,
+        user_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_keys."""
+        ...
+
+    async def list_routing_rules(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_routing_rules."""
+        ...
+
+    async def list_routing_assignments(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_routing_assignments."""
+        ...
+
+    async def list_model_aliases(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_model_aliases."""
+        ...
+
+    async def list_access_policies(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_access_policies."""
+        ...
+
+    async def list_routing_decisions(
+        self, *, org_id: int | None = None, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_routing_decisions."""
+        ...
+
+    async def list_security_policies(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_security_policies."""
+        ...
+
+    async def list_bypass_grants(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_bypass_grants."""
+        ...
+
+    async def list_hook_rules(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_hook_rules."""
+        ...
+
+    async def list_hook_configs(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_hook_configs."""
+        ...
+
+    async def get_hook_metrics(
+        self, *, org_id: int | None = None, window: str | None = None
+    ) -> dict[str, Any]:
+        """Hub admin operation: get_hook_metrics."""
+        ...
+
+    async def list_mcp_endpoints(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_mcp_endpoints."""
+        ...
+
+    async def list_cache_configs(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_cache_configs."""
+        ...
+
+    async def list_fleet_backends(
+        self, *, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_fleet_backends."""
+        ...
+
+    async def list_gpu_inventory(
+        self, *, backend_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_gpu_inventory."""
+        ...
+
+    async def list_vllm_deployments(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_vllm_deployments."""
+        ...
+
+    async def list_llamacpp_deployments(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_llamacpp_deployments."""
+        ...
+
+    async def list_ollama_deployments(
+        self, *, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Hub admin operation: list_ollama_deployments."""
+        ...
+
+    async def get_fleet_savings(
+        self, *, org_id: int | None = None, window: str | None = None
+    ) -> dict[str, Any]:
+        """Hub admin operation: get_fleet_savings."""
+        ...
+
+    async def get_fleet_chargeback(
+        self, *, org_id: int | None = None, window: str | None = None
+    ) -> dict[str, Any]:
+        """Hub admin operation: get_fleet_chargeback."""
+        ...
+
+    async def get_cilium_status(self, *, namespace: str | None = None) -> dict[str, Any]:
+        """Hub admin operation: get_cilium_status."""
+        ...
+
+    async def manage_key(
+        self,
+        *,
+        action: str,
+        key_id: str | None = None,
+        org_id: int | None = None,
+        user_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_key."""
+        ...
+
+    async def manage_user(
+        self,
+        *,
+        action: str,
+        user_id: int | None = None,
+        org_id: int | None = None,
+        username: str | None = None,
+        email: str | None = None,
+        role: str | None = None,
+        enabled: bool | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_user."""
+        ...
+
+    async def manage_organization(
+        self,
+        *,
+        action: str,
+        org_id: int | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        enabled: bool | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_organization."""
+        ...
+
+    async def manage_team(
+        self,
+        *,
+        action: str,
+        team_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        enabled: bool | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_team."""
+        ...
+
+    async def manage_routing_rule(
+        self,
+        *,
+        action: str,
+        rule_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_routing_rule."""
+        ...
+
+    async def manage_model_alias(
+        self,
+        *,
+        action: str,
+        alias_id: int | None = None,
+        org_id: int | None = None,
+        alias: str | None = None,
+        target_model: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_model_alias."""
+        ...
+
+    async def manage_access_policy(
+        self,
+        *,
+        action: str,
+        policy_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_access_policy."""
+        ...
+
+    async def manage_security_policy(
+        self,
+        *,
+        action: str,
+        policy_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_security_policy."""
+        ...
+
+    async def manage_hook_rule(
+        self,
+        *,
+        action: str,
+        rule_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_hook_rule."""
+        ...
+
+    async def manage_cache_config(
+        self,
+        *,
+        action: str,
+        config_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_cache_config."""
+        ...
+
+    async def manage_mcp_endpoint(
+        self,
+        *,
+        action: str,
+        endpoint_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        url: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_mcp_endpoint."""
+        ...
+
+    async def manage_vllm_deployment(
+        self,
+        *,
+        action: str,
+        deployment_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_vllm_deployment."""
+        ...
+
+    async def manage_llamacpp_deployment(
+        self,
+        *,
+        action: str,
+        deployment_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_llamacpp_deployment."""
+        ...
+
+    async def manage_ollama_deployment(
+        self,
+        *,
+        action: str,
+        deployment_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Hub admin operation: manage_ollama_deployment."""
+        ...
+
+    async def reconcile_cilium(
+        self, *, namespace: str | None = None, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Hub admin operation: reconcile_cilium."""
+        ...
+
+    async def apply_manifest(
+        self,
+        *,
+        manifest: dict[str, Any],
+        org_id: int | None = None,
+        actor_id: str | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Hub admin operation: apply_manifest."""
         ...
 
 
@@ -276,6 +665,7 @@ class WaddleAITools:
         memory: MemoryService,
         routing: RoutingService,
         usage: UsageService,
+        hub: HubUserService | None = None,
     ) -> None:
         """Bind this tool set to one resolved caller identity and its collaborators."""
         self._ctx = ctx
@@ -283,6 +673,13 @@ class WaddleAITools:
         self._memory = memory
         self._routing = routing
         self._usage = usage
+        self._hub = hub
+
+    def _require_hub(self) -> HubUserService:
+        """Fail loudly if the self-scoped Hub collaborator is not wired."""
+        if self._hub is None:
+            raise ServiceUnavailableError("HubUserService is not wired")
+        return self._hub
 
     def _require_enabled(self) -> None:
         """Raise ``ToolDisabledError`` unless ``waddleai.mcp_v2`` is on for this org."""
@@ -401,6 +798,50 @@ class WaddleAITools:
             weight=clamped_weight,
         )
 
+    async def list_keys(self) -> list[dict[str, Any]]:
+        """List API keys owned by the caller within their org."""
+        self._require_enabled()
+        return await self._require_hub().list_keys(
+            org_id=self._ctx.org_id, user_uuid=self._ctx.user_uuid
+        )
+
+    async def list_knowledge(self, limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        """List org-scoped knowledge/RAG documents."""
+        self._require_enabled()
+        results = await self._knowledge.list_knowledge(
+            org_id=self._ctx.org_id, limit=limit, offset=offset
+        )
+        return [_tag_provenance(r, source="list_knowledge") for r in results]
+
+    async def get_knowledge(self, doc_id: int) -> dict[str, Any] | None:
+        """Fetch a single org-scoped knowledge/RAG document by id."""
+        self._require_enabled()
+        result = await self._knowledge.get_knowledge(org_id=self._ctx.org_id, doc_id=doc_id)
+        return _tag_provenance_optional(result, source="get_knowledge")
+
+    async def list_teams(self) -> list[dict[str, Any]]:
+        """List teams the caller belongs to within their org."""
+        self._require_enabled()
+        return await self._require_hub().list_teams(
+            org_id=self._ctx.org_id, user_uuid=self._ctx.user_uuid
+        )
+
+    async def get_my_quota(self) -> dict[str, Any]:
+        """Get the caller's own quota status within their org."""
+        self._require_enabled()
+        return await self._usage.get_my_quota(
+            org_id=self._ctx.org_id, user_uuid=self._ctx.user_uuid
+        )
+
+    async def routing_dry_run(
+        self, prompt: str | None = None, tool_type: str | None = None
+    ) -> dict[str, Any]:
+        """Run a side-effect-free routing decision for the caller's org."""
+        self._require_enabled()
+        return await self._routing.routing_dry_run(
+            org_id=self._ctx.org_id, prompt=prompt, tool_type=tool_type
+        )
+
 
 class AdminTools:
     """`/mcp/admin` administrator-scoped tools (§11.5).
@@ -415,12 +856,24 @@ class AdminTools:
     """
 
     def __init__(
-        self, ctx: ToolContext, *, usage: UsageService, config: AdminConfigService
+        self,
+        ctx: ToolContext,
+        *,
+        usage: UsageService,
+        config: AdminConfigService,
+        hub: HubAdminService | None = None,
     ) -> None:
         """Bind this tool set to one resolved admin identity and its collaborators."""
         self._ctx = ctx
         self._usage = usage
         self._config = config
+        self._hub = hub
+
+    def _require_hub(self) -> HubAdminService:
+        """Fail loudly if the admin Hub collaborator is not wired."""
+        if self._hub is None:
+            raise ServiceUnavailableError("HubAdminService is not wired")
+        return self._hub
 
     def _require_enabled(self) -> None:
         """Raise ``ToolDisabledError`` unless ``waddleai.mcp_v2`` is on for this org."""
@@ -494,6 +947,255 @@ class AdminTools:
         result = await self._usage.provider_budget_headroom(org_id=org_id)
         return _mark_sensitive(result)
 
+    async def list_users(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List users (password hashes excluded)."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_users(org_id=org_id, limit=limit, offset=offset)
+
+    async def list_organizations(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """List organizations."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_organizations(limit=limit, offset=offset)
+
+    async def list_teams(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List teams, optionally filtered by org."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_teams(org_id=org_id, limit=limit, offset=offset)
+
+    async def list_providers(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List configured AI providers (credentials redacted)."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_providers(org_id=org_id, limit=limit, offset=offset)
+
+    async def list_keys(
+        self,
+        org_id: int | None = None,
+        user_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List API keys (key hashes excluded)."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_keys(
+            org_id=org_id, user_id=user_id, limit=limit, offset=offset
+        )
+
+    async def list_routing_rules(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List routing rules."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_routing_rules(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_routing_assignments(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List routing model assignments."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_routing_assignments(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_model_aliases(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List model aliases."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_model_aliases(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_access_policies(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List model access policies."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_access_policies(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_routing_decisions(
+        self, org_id: int | None = None, limit: int = 50, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List recent routing decision traces."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_routing_decisions(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_security_policies(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List security policies."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_security_policies(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_bypass_grants(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List security bypass grants."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_bypass_grants(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_hook_rules(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List content-filter/hook rules."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_hook_rules(org_id=org_id, limit=limit, offset=offset)
+
+    async def list_hook_configs(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List hook/content-filter configurations."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_hook_configs(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def get_hook_metrics(
+        self, org_id: int | None = None, window: str | None = None
+    ) -> dict[str, Any]:
+        """Get aggregated hook/content-filter audit metrics."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        result = await self._require_hub().get_hook_metrics(org_id=org_id, window=window)
+        return _mark_sensitive(result)
+
+    async def list_mcp_endpoints(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List registered external MCP endpoints."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_mcp_endpoints(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_cache_configs(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List response cache configurations."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_cache_configs(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_fleet_backends(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+        """List fleet compute backends."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_fleet_backends(limit=limit, offset=offset)
+
+    async def list_gpu_inventory(
+        self, backend_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List GPU inventory across fleet backends."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_gpu_inventory(
+            backend_id=backend_id, limit=limit, offset=offset
+        )
+
+    async def list_vllm_deployments(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List vLLM deployments."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_vllm_deployments(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_llamacpp_deployments(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List llama.cpp deployments."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_llamacpp_deployments(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def list_ollama_deployments(
+        self, org_id: int | None = None, limit: int = 100, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """List Ollama deployments."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().list_ollama_deployments(
+            org_id=org_id, limit=limit, offset=offset
+        )
+
+    async def get_fleet_savings(
+        self, org_id: int | None = None, window: str | None = None
+    ) -> dict[str, Any]:
+        """Get local-fleet cost savings estimate."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        result = await self._require_hub().get_fleet_savings(org_id=org_id, window=window)
+        return _mark_sensitive(result)
+
+    async def get_fleet_chargeback(
+        self, org_id: int | None = None, window: str | None = None
+    ) -> dict[str, Any]:
+        """Get fleet chargeback breakdown."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        result = await self._require_hub().get_fleet_chargeback(org_id=org_id, window=window)
+        return _mark_sensitive(result)
+
+    async def get_cilium_status(self, namespace: str | None = None) -> dict[str, Any]:
+        """Get Cilium network policy status."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        return await self._require_hub().get_cilium_status(namespace=namespace)
+
+    async def get_usage_breakdown(
+        self, org_id: int, group_by: str = "model", window: str | None = None
+    ) -> dict[str, Any]:
+        """Get usage breakdown grouped by model, provider, user, or key."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        result = await self._usage.get_usage_breakdown(
+            org_id=org_id, group_by=group_by, window=window
+        )
+        return _mark_sensitive(result)
+
+    async def get_pooled_quota(self, org_id: int) -> dict[str, Any]:
+        """Get pooled quota status for an organization."""
+        self._require_enabled()
+        self._require_fresh_read_session()
+        result = await self._usage.get_pooled_quota(org_id=org_id)
+        return _mark_sensitive(result)
+
     # --- write tools ----------------------------------------------------
 
     async def add_model(
@@ -539,3 +1241,281 @@ class AdminTools:
         self._require_enabled()
         self._require_fresh_write_session()
         return await self._config.update_provider_config(provider=provider, config=config)
+
+    async def manage_key(
+        self,
+        action: str,
+        key_id: str | None = None,
+        org_id: int | None = None,
+        user_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or revoke an API key."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_key(
+            action=action,
+            key_id=key_id,
+            org_id=org_id,
+            user_id=user_id,
+            name=name,
+            config=config,
+        )
+
+    async def manage_user(
+        self,
+        action: str,
+        user_id: int | None = None,
+        org_id: int | None = None,
+        username: str | None = None,
+        email: str | None = None,
+        role: str | None = None,
+        enabled: bool | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or disable a user."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_user(
+            action=action,
+            user_id=user_id,
+            org_id=org_id,
+            username=username,
+            email=email,
+            role=role,
+            enabled=enabled,
+            config=config,
+        )
+
+    async def manage_organization(
+        self,
+        action: str,
+        org_id: int | None = None,
+        name: str | None = None,
+        description: str | None = None,
+        enabled: bool | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or disable an organization."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_organization(
+            action=action,
+            org_id=org_id,
+            name=name,
+            description=description,
+            enabled=enabled,
+            config=config,
+        )
+
+    async def manage_team(
+        self,
+        action: str,
+        team_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        enabled: bool | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a team."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_team(
+            action=action,
+            team_id=team_id,
+            org_id=org_id,
+            name=name,
+            enabled=enabled,
+            config=config,
+        )
+
+    async def manage_routing_rule(
+        self,
+        action: str,
+        rule_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a routing rule."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_routing_rule(
+            action=action, rule_id=rule_id, org_id=org_id, config=config
+        )
+
+    async def manage_model_alias(
+        self,
+        action: str,
+        alias_id: int | None = None,
+        org_id: int | None = None,
+        alias: str | None = None,
+        target_model: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a model alias."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_model_alias(
+            action=action,
+            alias_id=alias_id,
+            org_id=org_id,
+            alias=alias,
+            target_model=target_model,
+            config=config,
+        )
+
+    async def manage_access_policy(
+        self,
+        action: str,
+        policy_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a model access policy."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_access_policy(
+            action=action, policy_id=policy_id, org_id=org_id, config=config
+        )
+
+    async def manage_security_policy(
+        self,
+        action: str,
+        policy_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a security policy."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_security_policy(
+            action=action, policy_id=policy_id, org_id=org_id, config=config
+        )
+
+    async def manage_hook_rule(
+        self,
+        action: str,
+        rule_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a content-filter/hook rule."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_hook_rule(
+            action=action, rule_id=rule_id, org_id=org_id, config=config
+        )
+
+    async def manage_cache_config(
+        self,
+        action: str,
+        config_id: int | None = None,
+        org_id: int | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a cache configuration."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_cache_config(
+            action=action, config_id=config_id, org_id=org_id, config=config
+        )
+
+    async def manage_mcp_endpoint(
+        self,
+        action: str,
+        endpoint_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        url: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete an external MCP endpoint."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_mcp_endpoint(
+            action=action,
+            endpoint_id=endpoint_id,
+            org_id=org_id,
+            name=name,
+            url=url,
+            config=config,
+        )
+
+    async def manage_vllm_deployment(
+        self,
+        action: str,
+        deployment_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a vLLM deployment."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_vllm_deployment(
+            action=action,
+            deployment_id=deployment_id,
+            org_id=org_id,
+            name=name,
+            config=config,
+        )
+
+    async def manage_llamacpp_deployment(
+        self,
+        action: str,
+        deployment_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete a llama.cpp deployment."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_llamacpp_deployment(
+            action=action,
+            deployment_id=deployment_id,
+            org_id=org_id,
+            name=name,
+            config=config,
+        )
+
+    async def manage_ollama_deployment(
+        self,
+        action: str,
+        deployment_id: int | None = None,
+        org_id: int | None = None,
+        name: str | None = None,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Create, update, or delete an Ollama deployment."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().manage_ollama_deployment(
+            action=action,
+            deployment_id=deployment_id,
+            org_id=org_id,
+            name=name,
+            config=config,
+        )
+
+    async def reconcile_cilium(
+        self, namespace: str | None = None, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Reconcile Cilium network policies."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().reconcile_cilium(namespace=namespace, dry_run=dry_run)
+
+    async def apply_manifest(
+        self, manifest: dict[str, Any], org_id: int | None = None, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """Apply a declarative configuration manifest."""
+        self._require_enabled()
+        self._require_fresh_write_session()
+        return await self._require_hub().apply_manifest(
+            manifest=manifest,
+            org_id=org_id,
+            actor_id=self._ctx.user_uuid,
+            dry_run=dry_run,
+        )

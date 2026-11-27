@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import {
   useDeployments,
@@ -7,6 +7,19 @@ import {
   useDeleteDeployment,
   useVllmRayEnabled,
 } from '../hooks/useVllmFleet';
+import {
+  getDeploymentEvents,
+  deleteModelWeights,
+  listLlamaCppDeployments,
+  getLlamaCppDeployment,
+  patchLlamaCppDeployment,
+  deleteLlamaCppDeployment,
+  deployLlamaCppDeployment,
+  removeLlamaCppDeployment,
+  getLlamaCppHealth,
+  exportLlamaCppK8s,
+  rotateLlamaCppToken,
+} from '../api/vllmFleet';
 import { DEPLOYMENT_STATUS_LABEL, VENDOR_LABEL, unknownLabel } from '../api/vllmFleetLabels';
 import StatusChip from '../components/gpu/StatusChip';
 import StepTimeline from '../components/gpu/StepTimeline';
@@ -23,9 +36,21 @@ const IN_FLIGHT = 'Requests in progress will fail.';
  */
 function TimelineDrawer({ publicId }) {
   const { data, isLoading, error } = useDeployment(publicId);
+  const [events, setEvents] = useState(null);
+  useEffect(() => {
+    let active = true;
+    getDeploymentEvents(publicId)
+      .then((ev) => {
+        if (active && Array.isArray(ev)) setEvents(ev);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [publicId]);
   if (isLoading) return <p>Loading timeline…</p>;
   if (error) return <p role="alert">{error.message}</p>;
-  return <StepTimeline events={data?.events} />;
+  return <StepTimeline events={events ?? data?.events} />;
 }
 
 /**
@@ -43,6 +68,11 @@ export default function GpuFleetDeployments() {
   const [confirm, setConfirm] = useState(null);
   const [drawer, setDrawer] = useState(null);
   const [error, setError] = useState(null);
+  const [statusMessage, setStatusMessage] = useState(null);
+  const [llamacppRows, setLlamacppRows] = useState([]);
+  const [llamacppDetail, setLlamacppDetail] = useState(null);
+  const [llamacppK8s, setLlamacppK8s] = useState(null);
+  const [llamacppReplicas, setLlamacppReplicas] = useState({});
   const filters = {};
   if (status) filters.status = Number(status);
   if (vendor) filters.vendor = Number(vendor);
@@ -50,7 +80,39 @@ export default function GpuFleetDeployments() {
   const { data, isLoading, error: loadError } = useDeployments(filters);
   const patch = usePatchDeployment();
   const del = useDeleteDeployment();
+
+  const loadLlamacpp = () => {
+    listLlamaCppDeployments()
+      .then((list) => setLlamacppRows(Array.isArray(list) ? list : []))
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    if (enabled) {
+      loadLlamacpp();
+    }
+  }, [enabled]);
+
   if (!enabled) return null;
+
+  const handleDeleteWeights = async (modelRef) => {
+    try {
+      await deleteModelWeights(modelRef);
+      setStatusMessage(`Deleted weights for ${modelRef}`);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleLlamaAction = async (fn, successMsg) => {
+    try {
+      const res = await fn();
+      setStatusMessage(typeof successMsg === 'function' ? successMsg(res) : successMsg);
+      loadLlamacpp();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
   const onError = (e) => setError(e.message);
   const send = (publicId, body) => patch.mutate({ publicId, patch: body }, { onError });
@@ -130,6 +192,14 @@ export default function GpuFleetDeployments() {
           </button>
         </div>
       )}
+      {statusMessage && (
+        <div className="alert alert-success" role="status">
+          {statusMessage}
+          <button type="button" onClick={() => setStatusMessage(null)}>
+            &times;
+          </button>
+        </div>
+      )}
       {loadError && <p role="alert">{loadError.message}</p>}
       {isLoading ? (
         <p>Loading deployments…</p>
@@ -187,12 +257,169 @@ export default function GpuFleetDeployments() {
                   <button type="button" className="btn-danger" onClick={() => requestDelete(dep)}>
                     Delete
                   </button>
+                  {dep.model_ref && (
+                    <button
+                      type="button"
+                      className="btn-secondary"
+                      onClick={() => handleDeleteWeights(dep.model_ref)}
+                    >
+                      Delete Weights
+                    </button>
+                  )}
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       )}
+
+      <section className="llamacpp-deployments" style={{ marginTop: '2rem' }}>
+        <h2>llama.cpp Deployments</h2>
+        {llamacppRows.length === 0 ? (
+          <p>No llama.cpp deployments.</p>
+        ) : (
+          <table className="deployments-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Model</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {llamacppRows.map((lc) => (
+                <tr key={lc.id}>
+                  <td>{lc.name}</td>
+                  <td>{lc.model_ref || lc.model_name}</td>
+                  <td>{lc.status}</td>
+                  <td className="row-actions">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () => getLlamaCppDeployment(lc.id).then((d) => setLlamacppDetail(d)),
+                          'Loaded llama.cpp details'
+                        )
+                      }
+                    >
+                      Details
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      aria-label={`llama.cpp replicas ${lc.id}`}
+                      value={llamacppReplicas[lc.id] ?? lc.replicas ?? 1}
+                      onChange={(e) =>
+                        setLlamacppReplicas({ ...llamacppReplicas, [lc.id]: e.target.value })
+                      }
+                    />
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () =>
+                            patchLlamaCppDeployment(lc.id, {
+                              replicas: Number(llamacppReplicas[lc.id] ?? lc.replicas ?? 1),
+                            }),
+                          `Updated llama.cpp #${lc.id}`
+                        )
+                      }
+                    >
+                      Update
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () => deployLlamaCppDeployment(lc.id),
+                          `Deployed llama.cpp #${lc.id}`
+                        )
+                      }
+                    >
+                      Deploy
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () => removeLlamaCppDeployment(lc.id),
+                          `Removed llama.cpp #${lc.id}`
+                        )
+                      }
+                    >
+                      Remove
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () => getLlamaCppHealth(lc.id),
+                          (res) => `Health: ${res?.status || 'ok'}`
+                        )
+                      }
+                    >
+                      Health
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () => exportLlamaCppK8s(lc.id).then((k) => setLlamacppK8s(k)),
+                          'Exported K8s manifest'
+                        )
+                      }
+                    >
+                      Export K8s
+                    </button>
+                    {lc.public_id && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          handleLlamaAction(
+                            () => rotateLlamaCppToken(lc.public_id),
+                            `Rotated token for ${lc.name}`
+                          )
+                        }
+                      >
+                        Rotate Token
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="btn-danger"
+                      onClick={() =>
+                        handleLlamaAction(
+                          () => deleteLlamaCppDeployment(lc.id),
+                          `Deleted llama.cpp #${lc.id}`
+                        )
+                      }
+                    >
+                      Delete llama.cpp
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {llamacppDetail && (
+          <div className="llamacpp-detail">
+            <pre>{JSON.stringify(llamacppDetail, null, 2)}</pre>
+            <button type="button" onClick={() => setLlamacppDetail(null)}>
+              Close Details
+            </button>
+          </div>
+        )}
+        {llamacppK8s && (
+          <div className="llamacpp-k8s">
+            <pre>{typeof llamacppK8s === 'string' ? llamacppK8s : JSON.stringify(llamacppK8s, null, 2)}</pre>
+            <button type="button" onClick={() => setLlamacppK8s(null)}>
+              Close K8s
+            </button>
+          </div>
+        )}
+      </section>
       {drawer && (
         <aside className="timeline-drawer" aria-label="Deployment timeline">
           <button type="button" onClick={() => setDrawer(null)}>

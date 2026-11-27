@@ -61,12 +61,11 @@ describe('Providers page', () => {
     });
   });
 
-  it('shows "Add Provider" and "Sync to AILB" buttons', async () => {
+  it('shows "Add Provider" button', async () => {
     render(<Providers />);
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '+ Add Provider' })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Sync to AILB' })).toBeInTheDocument();
     });
   });
 
@@ -370,40 +369,130 @@ describe('Providers page', () => {
     });
   });
 
-  it('syncs to AILB successfully', async () => {
-    axios.post.mockResolvedValue({ data: {} });
+  it('loads provider types from /api/v1/providers/types', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/providers') return Promise.resolve({ data: { providers: mockProviders } });
+      if (url === '/api/v1/providers/types') {
+        return Promise.resolve({ data: { provider_types: [{ type: 'openai', name: 'OpenAI API' }] } });
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
 
     render(<Providers />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Sync to AILB' })).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Sync to AILB' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Providers synced to AILB successfully')).toBeInTheDocument();
-    });
-
-    expect(axios.post).toHaveBeenCalledWith('/api/v1/ailb/sync');
+    await waitFor(() => expect(screen.getByRole('button', { name: '+ Add Provider' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: '+ Add Provider' }));
+    expect(screen.getByRole('option', { name: 'OpenAI API' })).toBeInTheDocument();
   });
 
-  it('shows error when sync to AILB fails', async () => {
-    axios.post.mockRejectedValue({
-      response: { data: { error: 'AILB unavailable' } },
+  it('displays provider models modal when Models button is clicked', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/providers') return Promise.resolve({ data: { providers: mockProviders } });
+      if (url === '/api/v1/providers/types') return Promise.resolve({ data: { provider_types: [] } });
+      if (url === '/api/v1/providers/1/models') {
+        return Promise.resolve({ data: { provider_id: 1, models: ['gpt-4o', 'gpt-4o-mini'] } });
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
 
     render(<Providers />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Models' }).length).toBeGreaterThan(0));
 
+    fireEvent.click(screen.getAllByRole('button', { name: 'Models' })[0]);
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Sync to AILB' })).toBeInTheDocument();
+      expect(screen.getByText('Models — OpenAI Production')).toBeInTheDocument();
+      expect(screen.getByText('gpt-4o')).toBeInTheDocument();
+      expect(screen.getByText('gpt-4o-mini')).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Sync to AILB' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText('Models — OpenAI Production')).not.toBeInTheDocument();
+  });
 
-    await waitFor(() => {
-      expect(screen.getByText('AILB unavailable')).toBeInTheDocument();
+  it('supports provider credentials CRUD in Credentials modal', async () => {
+    const creds = [
+      { id: 10, provider_id: 1, label: 'primary', api_key_masked: 'sk-1****abcd', weight: 100, enabled: true },
+    ];
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/providers') return Promise.resolve({ data: { providers: mockProviders } });
+      if (url === '/api/v1/providers/types') return Promise.resolve({ data: { provider_types: [] } });
+      if (url === '/api/v1/providers/1/credentials') return Promise.resolve({ data: { data: creds } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
     });
+    axios.post.mockResolvedValue({ data: { status: 'success' } });
+    axios.patch.mockResolvedValue({ data: { status: 'success' } });
+    axios.delete.mockResolvedValue({ data: { status: 'success' } });
+
+    render(<Providers />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Credentials' }).length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Credentials' })[0]);
+    await waitFor(() => {
+      expect(screen.getByText('Credentials — OpenAI Production')).toBeInTheDocument();
+      expect(screen.getByText('primary')).toBeInTheDocument();
+    });
+
+    fireEvent.change(document.getElementById('cred-label'), { target: { value: 'backup' } });
+    fireEvent.change(document.getElementById('cred-api-key'), { target: { value: 'sk-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Credential' }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/providers/1/credentials', {
+        label: 'backup',
+        api_key: 'sk-secret',
+        weight: 100,
+        enabled: true,
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await waitFor(() => {
+      expect(axios.patch).toHaveBeenCalledWith('/api/v1/providers/1/credentials/10', { enabled: false });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith('/api/v1/providers/1/credentials/10');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText('Credentials — OpenAI Production')).not.toBeInTheDocument();
+  });
+
+  it('handles empty models/credentials and surfaces credential CRUD errors', async () => {
+    const creds = [
+      { id: 11, provider_id: 1, label: 'sec', api_key_masked: '****', weight: 50, enabled: false },
+    ];
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/providers') return Promise.resolve({ data: { providers: mockProviders } });
+      if (url === '/api/v1/providers/types') return Promise.reject(new Error('no types'));
+      if (url === '/api/v1/providers/1/models') return Promise.resolve({ data: { models: [] } });
+      if (url === '/api/v1/providers/1/credentials') return Promise.resolve({ data: { data: creds } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    axios.post.mockRejectedValue(new Error('add err'));
+    axios.patch.mockRejectedValue(new Error('patch err'));
+    axios.delete.mockRejectedValue(new Error('del err'));
+
+    render(<Providers />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: 'Models' }).length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Models' })[0]);
+    await waitFor(() => expect(screen.getByText('No models available for this provider.')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Credentials' })[0]);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument());
+
+    fireEvent.change(document.getElementById('cred-weight'), { target: { value: '200' } });
+    fireEvent.change(document.getElementById('cred-label'), { target: { value: 'x' } });
+    fireEvent.change(document.getElementById('cred-api-key'), { target: { value: 'k' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Credential' }));
+    await waitFor(() => expect(screen.getByText('Failed to add credential')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(screen.getByText('Failed to update credential')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete credential')).toBeInTheDocument());
   });
 
   it('renders Active/Inactive badges on providers', async () => {
@@ -559,21 +648,7 @@ describe('Providers page', () => {
     });
   });
 
-  it('shows generic error when sync to AILB fails without response error field', async () => {
-    axios.post.mockRejectedValue(new Error('boom'));
 
-    render(<Providers />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Sync to AILB' })).toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Sync to AILB' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('Failed to sync to AILB')).toBeInTheDocument();
-    });
-  });
 
   it('opens edit form with default endpoint and priority when provider has neither set', async () => {
     axios.get.mockResolvedValue({

@@ -61,6 +61,11 @@ def _flag_on(monkeypatch):
     monkeypatch.setenv("WADDLEAI_FLAG_MCP_V2", "1")
 
 
+# Tools that exist on both /mcp (self-scoped, no subject params) and
+# /mcp/admin (org/user-scoped, explicit subject params).
+SHARED_SCOPED_TOOL_NAMES: frozenset[str] = frozenset({"list_keys", "list_teams"})
+
+
 @pytest.mark.asyncio
 class TestUserServerToolList:
     """Tool-list contents for the `/mcp` user server."""
@@ -71,9 +76,9 @@ class TestUserServerToolList:
         assert names == USER_TOOL_NAMES
 
     async def test_user_server_never_exposes_a_single_admin_tool(self):
-        """§11.6: a non-admin key at /mcp sees no admin tool -- not merely a denial on call."""
+        """§11.6: a non-admin key at /mcp sees no admin-only tool -- not merely a denial on call."""
         names = await _list_tool_names(build_user_server(_user_tools()))
-        assert names.isdisjoint(ADMIN_TOOL_NAMES)
+        assert names.isdisjoint(ADMIN_TOOL_NAMES - SHARED_SCOPED_TOOL_NAMES)
 
 
 @pytest.mark.asyncio
@@ -88,7 +93,7 @@ class TestAdminServerToolList:
     async def test_admin_server_never_exposes_a_user_only_tool(self):
         """The admin server never advertises a user-only tool."""
         names = await _list_tool_names(build_admin_server(_admin_tools()))
-        assert names.isdisjoint(USER_TOOL_NAMES)
+        assert names.isdisjoint(USER_TOOL_NAMES - SHARED_SCOPED_TOOL_NAMES)
 
 
 @pytest.mark.asyncio
@@ -213,5 +218,7 @@ def test_admin_write_tool_names_are_a_subset_of_admin_tool_names():
 
 
 def test_user_and_admin_tool_names_are_fully_disjoint():
-    """USER_TOOL_NAMES and ADMIN_TOOL_NAMES share no tool name."""
-    assert USER_TOOL_NAMES.isdisjoint(ADMIN_TOOL_NAMES)
+    """USER_TOOL_NAMES and ADMIN_TOOL_NAMES share only the explicitly self/admin-scoped names."""
+    assert (USER_TOOL_NAMES - SHARED_SCOPED_TOOL_NAMES).isdisjoint(
+        ADMIN_TOOL_NAMES - SHARED_SCOPED_TOOL_NAMES
+    )
