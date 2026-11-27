@@ -1,6 +1,7 @@
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import CacheAndManifests from '../pages/CacheAndManifests';
+import { getCacheConfig } from '../api/adminApi';
 
 vi.mock('../pages/CacheAndManifests.css', () => ({}));
 vi.mock('axios');
@@ -86,8 +87,9 @@ describe('CacheAndManifests page', () => {
     });
 
     fireEvent.click(screen.getAllByText('Edit')[0]);
-    const ttlInputs = screen.getAllByLabelText('TTL (seconds)');
-    fireEvent.change(ttlInputs[1], { target: { value: '1200' } });
+    fireEvent.change(screen.getAllByLabelText('TTL (seconds)')[1], { target: { value: '1200' } });
+    fireEvent.change(screen.getAllByLabelText('Max Entry (KB)')[1], { target: { value: '1024' } });
+    fireEvent.change(screen.getAllByLabelText('Semantic Threshold')[1], { target: { value: '0.92' } });
     fireEvent.click(screen.getByText('Cancel'));
     expect(screen.queryByText('Edit Cache Config #1')).toBeNull();
 
@@ -97,6 +99,26 @@ describe('CacheAndManifests page', () => {
 
     fireEvent.click(screen.getAllByText('Delete')[0]);
     await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/cache-configs/1'));
+
+    window.confirm = vi.fn(() => false);
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    expect(axios.delete).toHaveBeenCalledTimes(1);
+
+    // Global scope create + create/update/delete error paths
+    fireEvent.change(screen.getByLabelText('Scope Type'), { target: { value: 'global' } });
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Create cache error' } } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create Cache Config' }));
+    await waitFor(() => expect(screen.getByText('Create cache error')).toBeInTheDocument());
+
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Update cache error' } } });
+    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(screen.getByText('Update cache error')).toBeInTheDocument());
+
+    window.confirm = vi.fn(() => true);
+    axios.delete.mockRejectedValueOnce({ response: { data: { error: 'Delete cache error' } } });
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    await waitFor(() => expect(screen.getByText('Delete cache error')).toBeInTheDocument());
   });
 
   it('previews and applies a DAC manifest and handles errors', async () => {
@@ -109,6 +131,10 @@ describe('CacheAndManifests page', () => {
     });
     fireEvent.click(screen.getByText('Preview Plan (Dry Run)'));
     await waitFor(() => expect(screen.getByText('Plan Preview: plan-123')).toBeInTheDocument());
+
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Apply failed' } } });
+    fireEvent.click(screen.getByText('Confirm Apply'));
+    await waitFor(() => expect(screen.getByText('Apply failed')).toBeInTheDocument());
 
     fireEvent.click(screen.getByText('Confirm Apply'));
     await waitFor(() => {
@@ -125,9 +151,17 @@ describe('CacheAndManifests page', () => {
     await waitFor(() => expect(screen.getByText('Invalid manifest')).toBeInTheDocument());
   });
 
-  it('renders empty state when no cache configs exist', async () => {
+  it('handles cache config errors, empty state, and getCacheConfig helper', async () => {
+    axios.get.mockRejectedValueOnce(new Error('Network down'));
+    render(<CacheAndManifests />);
+    await waitFor(() => expect(screen.getByText('Network down')).toBeInTheDocument());
+
     axios.get.mockResolvedValueOnce({ data: { status: 'success', data: [] } });
     render(<CacheAndManifests />);
     await waitFor(() => expect(screen.getByText('No cache configs found')).toBeInTheDocument());
+
+    axios.get.mockResolvedValueOnce({ data: { status: 'success', data: { id: 9, scope_type: 'global' } } });
+    const single = await getCacheConfig(9);
+    expect(single.id).toBe(9);
   });
 });

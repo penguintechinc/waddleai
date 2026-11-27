@@ -66,7 +66,7 @@ describe('Users page', () => {
     });
   });
 
-  it('creates a new user with all fields', async () => {
+  it('creates a new user with all fields and handles create error', async () => {
     render(<Users />);
     await waitFor(() => expect(screen.getByText('Create User')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Create User'));
@@ -93,6 +93,15 @@ describe('Users page', () => {
         })
       );
     });
+
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'User exists' } } });
+    fireEvent.click(screen.getByText('Create User'));
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'alice' } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'alice@example.com' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(screen.getByText('User exists')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Cancel'));
   });
 
   it('views user details, edits, cancels, disables, enables, exports and erases', async () => {
@@ -106,11 +115,17 @@ describe('Users page', () => {
     fireEvent.click(screen.getAllByText('Edit')[0]);
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'alice2@example.com' } });
     fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'admin' } });
+    fireEvent.change(screen.getByLabelText('Daily Token Quota'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText('Monthly Token Quota'), { target: { value: '50000' } });
+    fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'claude-3' } });
     fireEvent.change(screen.getByLabelText('New Password (optional)'), { target: { value: 'newpass123' } });
     fireEvent.click(screen.getByText('Cancel'));
     expect(screen.queryByText('Edit User: alice')).toBeNull();
 
     fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.change(screen.getByLabelText('Daily Token Quota'), { target: { value: '5000' } });
+    fireEvent.change(screen.getByLabelText('Monthly Token Quota'), { target: { value: '50000' } });
+    fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: 'claude-3' } });
     fireEvent.change(screen.getByLabelText('New Password (optional)'), { target: { value: 'newpass123' } });
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => {
@@ -135,6 +150,9 @@ describe('Users page', () => {
     render(<Users />);
     await waitFor(() => expect(screen.getByText('Change Password')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Change Password'));
+    fireEvent.click(screen.getByText('Close'));
+
+    fireEvent.click(screen.getByText('Change Password'));
     fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'oldpass12' } });
     fireEvent.change(screen.getByLabelText('New Password (min 8 chars)'), { target: { value: 'newpass12' } });
     fireEvent.click(screen.getByText('Update Password'));
@@ -150,6 +168,22 @@ describe('Users page', () => {
     fireEvent.click(screen.getByText('Enable'));
     await waitFor(() => expect(screen.getByText('Cannot enable')).toBeInTheDocument());
 
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Wrong password' } } });
+    fireEvent.click(screen.getByText('Change Password'));
+    fireEvent.change(screen.getByLabelText('Current Password'), { target: { value: 'badpass12' } });
+    fireEvent.change(screen.getByLabelText('New Password (min 8 chars)'), { target: { value: 'newpass12' } });
+    fireEvent.click(screen.getByText('Update Password'));
+    await waitFor(() => expect(screen.getByText('Wrong password')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Close'));
+
+    axios.delete.mockRejectedValueOnce({ response: { data: { error: 'Cannot disable' } } });
+    fireEvent.click(screen.getByText('Disable'));
+    await waitFor(() => expect(screen.getByText('Cannot disable')).toBeInTheDocument());
+
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Cannot erase' } } });
+    fireEvent.click(screen.getAllByText('DSAR Erase')[0]);
+    await waitFor(() => expect(screen.getByText('Cannot erase')).toBeInTheDocument());
+
     window.confirm = vi.fn(() => false);
     fireEvent.click(screen.getByText('Disable'));
     fireEvent.click(screen.getAllByText('DSAR Erase')[0]);
@@ -161,7 +195,7 @@ describe('Users page', () => {
     await waitFor(() => expect(screen.getByText('No users found')).toBeInTheDocument());
   });
 
-  it('handles user details with nullable fields and update/password errors', async () => {
+  it('handles user details with nullable fields and update/export errors', async () => {
     axios.get.mockImplementation((url) => {
       if (url === '/api/v1/users') return Promise.resolve({ data: { users: mockUsers } });
       if (url === '/api/v1/users/2') {
@@ -169,7 +203,7 @@ describe('Users page', () => {
           data: { id: 2, username: 'bob', email: 'bob@example.com', role: 'user', organization: null, token_quota_daily: null, token_quota_monthly: null, default_model: null, login_count: null },
         });
       }
-      return Promise.reject(new Error('unexpected'));
+      return Promise.reject({ response: { data: { error: 'Export denied' } } });
     });
     axios.put.mockRejectedValueOnce({ response: { data: { error: 'Email taken' } } });
     render(<Users />);
@@ -178,8 +212,31 @@ describe('Users page', () => {
     await waitFor(() => expect(screen.getByText('User Details: bob')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Close'));
 
+    fireEvent.click(screen.getAllByText('DSAR Export')[0]);
+    await waitFor(() => expect(screen.getByText('Export denied')).toBeInTheDocument());
+
     fireEvent.click(screen.getAllByText('Edit')[1]);
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(screen.getByText('Email taken')).toBeInTheDocument());
+
+    axios.post.mockRejectedValueOnce({});
+    fireEvent.click(screen.getByText('Enable'));
+    await waitFor(() => expect(screen.getByText('Request failed')).toBeInTheDocument());
+
+    // Close edit form before opening create form
+    fireEvent.click(screen.getByText('Cancel'));
+    fireEvent.click(screen.getByText('Create User'));
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'dave' } });
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'dave@example.com' } });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'secret123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/users', expect.objectContaining({ username: 'dave' })));
+
+    fireEvent.click(screen.getAllByText('Edit')[1]);
+    fireEvent.change(screen.getByLabelText('Daily Token Quota'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Monthly Token Quota'), { target: { value: '' } });
+    fireEvent.change(screen.getByLabelText('Default Model'), { target: { value: '' } });
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/users/2', expect.objectContaining({ email: 'bob@example.com' })));
   });
 });

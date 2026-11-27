@@ -17,6 +17,8 @@ describe('Quotas page', () => {
               { type: 'organization', id: 1, name: 'default', token_quota_daily: 1000, token_quota_monthly: 10000 },
               { type: 'user', id: 2, name: 'alice', token_quota_daily: 500, token_quota_monthly: 5000 },
               { type: 'key', id: 3, name: 'prod-key', budget_limit_daily: 10, budget_limit_monthly: 100, tpm_limit: 1000, rpm_limit: 60 },
+              { type: 'key', id: 4, name: 'unbounded-key', budget_limit_daily: null, budget_limit_monthly: null, tpm_limit: null, rpm_limit: null },
+              { type: 'user', id: 5, name: 'bob', token_quota_daily: null, token_quota_monthly: null },
             ],
           },
         });
@@ -30,7 +32,14 @@ describe('Quotas page', () => {
         });
       }
       if (url === '/api/v1/pooled-quota/overrides') {
-        return Promise.resolve({ data: { overrides: [{ id: 7, user_id: 2, model: 'gpt-4o', provider: 'openai', cap_credits: 200 }] } });
+        return Promise.resolve({
+          data: {
+            overrides: [
+              { id: 7, user_id: 2, model: 'gpt-4o', provider: 'openai', cap_credits: 200 },
+              { id: 8, user_id: null, model: null, provider: null, cap_credits: 100 },
+            ],
+          },
+        });
       }
       if (url === '/api/v1/pooled-quota/conversion-rates') {
         return Promise.resolve({
@@ -48,7 +57,10 @@ describe('Quotas page', () => {
             shared_buffer_credits: 200,
             reserved_credits: 300,
             unallocated_credits: 500,
-            reservations: [{ user_id: 2, guaranteed_credits: 300, daily_subcap: 50 }],
+            reservations: [
+              { user_id: 2, guaranteed_credits: 300, daily_subcap: 50 },
+              { user_id: 3, guaranteed_credits: 100, daily_subcap: null },
+            ],
           },
         });
       }
@@ -59,7 +71,7 @@ describe('Quotas page', () => {
     axios.delete.mockResolvedValue({ data: { message: 'ok' } });
   });
 
-  it('edits entity quotas, changes inputs, cancels, and inspects status', async () => {
+  it('edits entity quotas, changes inputs, cancels, inspects status, and handles errors', async () => {
     render(<Quotas />);
     await waitFor(() => expect(screen.getByText('prod-key')).toBeInTheDocument());
 
@@ -85,12 +97,21 @@ describe('Quotas page', () => {
     fireEvent.click(screen.getByText('Save'));
     await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/quotas/key/3', expect.any(Object)));
 
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Quota save failed' } } });
+    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(screen.getByText('Save'));
+    await waitFor(() => expect(screen.getByText('Quota save failed')).toBeInTheDocument());
+
     fireEvent.click(screen.getAllByText('Status')[2]);
     await waitFor(() => expect(screen.getByText('Quota Status: prod-key (key)')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Close'));
+
+    axios.get.mockRejectedValueOnce({ response: { data: { error: 'Status failed' } } });
+    fireEvent.click(screen.getAllByText('Status')[0]);
+    await waitFor(() => expect(screen.getByText('Status failed')).toBeInTheDocument());
   });
 
-  it('manages pooled quota org pool, team pool, overrides, rates, and rebuild', async () => {
+  it('manages pooled quota org pool, team pool, overrides, rates, rebuild, and error paths', async () => {
     render(<Quotas />);
     await waitFor(() => expect(screen.getByText('Pooled Quota & Rates')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Pooled Quota & Rates'));
@@ -102,6 +123,10 @@ describe('Quotas page', () => {
     fireEvent.click(screen.getByText('Save Org Pool'));
     await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/pooled-quota/org-pool', expect.any(Object)));
 
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Org pool error' } } });
+    fireEvent.click(screen.getByText('Save Org Pool'));
+    await waitFor(() => expect(screen.getByText('Org pool error')).toBeInTheDocument());
+
     fireEvent.click(screen.getByText('Rebuild Counters'));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/pooled-quota/rebuild', {}));
 
@@ -110,6 +135,12 @@ describe('Quotas page', () => {
     fireEvent.click(screen.getByText('Set Team Pool'));
     await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/pooled-quota/teams/10/pool', { pool_credits: 1000 }));
 
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Team pool error' } } });
+    fireEvent.change(screen.getByPlaceholderText('Team ID'), { target: { value: '10' } });
+    fireEvent.change(screen.getByPlaceholderText('Pool Credits'), { target: { value: '1000' } });
+    fireEvent.click(screen.getByText('Set Team Pool'));
+    await waitFor(() => expect(screen.getByText('Team pool error')).toBeInTheDocument());
+
     fireEvent.change(screen.getByPlaceholderText('User ID (optional)'), { target: { value: '2' } });
     fireEvent.change(screen.getByPlaceholderText('Model (optional)'), { target: { value: 'gpt-4o' } });
     fireEvent.change(screen.getByPlaceholderText('Provider (optional)'), { target: { value: 'openai' } });
@@ -117,8 +148,17 @@ describe('Quotas page', () => {
     fireEvent.click(screen.getByText('Add Override'));
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/pooled-quota/overrides', expect.objectContaining({ cap_credits: 500 })));
 
-    fireEvent.click(screen.getByText('Delete'));
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Override error' } } });
+    fireEvent.change(screen.getByPlaceholderText('Cap Credits'), { target: { value: '500' } });
+    fireEvent.click(screen.getByText('Add Override'));
+    await waitFor(() => expect(screen.getByText('Override error')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Delete')[0]);
     await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/pooled-quota/overrides/7'));
+
+    axios.delete.mockRejectedValueOnce({ response: { data: { error: 'Delete ov error' } } });
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    await waitFor(() => expect(screen.getByText('Delete ov error')).toBeInTheDocument());
 
     fireEvent.change(screen.getByLabelText('Provider'), { target: { value: 'openai' } });
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'gpt-4o' } });
@@ -127,6 +167,10 @@ describe('Quotas page', () => {
     fireEvent.change(screen.getByLabelText('Base Cost / Token'), { target: { value: '0.002' } });
     fireEvent.click(screen.getByText('Save Rate'));
     await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/pooled-quota/conversion-rates', expect.objectContaining({ provider: 'openai', model: 'gpt-4o' })));
+
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Rate error' } } });
+    fireEvent.click(screen.getByText('Save Rate'));
+    await waitFor(() => expect(screen.getByText('Rate error')).toBeInTheDocument());
   });
 
   it('manages team buffer, reservations, and errors', async () => {
@@ -142,6 +186,10 @@ describe('Quotas page', () => {
     fireEvent.click(screen.getByText('Update Buffer'));
     await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/teams/10/pooled-quota/buffer', { shared_buffer_credits: 250 }));
 
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Buffer error' } } });
+    fireEvent.click(screen.getByText('Update Buffer'));
+    await waitFor(() => expect(screen.getByText('Buffer error')).toBeInTheDocument());
+
     fireEvent.change(screen.getByPlaceholderText('User ID'), { target: { value: '5' } });
     fireEvent.change(screen.getByPlaceholderText('Guaranteed Credits'), { target: { value: '150' } });
     fireEvent.change(screen.getByPlaceholderText('Daily Subcap (optional)'), { target: { value: '50' } });
@@ -153,11 +201,17 @@ describe('Quotas page', () => {
       });
     });
 
-    fireEvent.click(screen.getByText('Remove'));
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Reservation error' } } });
+    fireEvent.change(screen.getByPlaceholderText('User ID'), { target: { value: '5' } });
+    fireEvent.change(screen.getByPlaceholderText('Guaranteed Credits'), { target: { value: '150' } });
+    fireEvent.click(screen.getByText('Save Reservation'));
+    await waitFor(() => expect(screen.getByText('Reservation error')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByText('Remove')[0]);
     await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/teams/10/pooled-quota/reservations/2'));
 
     axios.delete.mockRejectedValueOnce({ response: { data: { error: 'Not found' } } });
-    fireEvent.click(screen.getByText('Remove'));
+    fireEvent.click(screen.getAllByText('Remove')[0]);
     await waitFor(() => expect(screen.getByText('Not found')).toBeInTheDocument());
   });
 
@@ -174,6 +228,8 @@ describe('Quotas page', () => {
   it('handles pooled quota tab errors cleanly', async () => {
     axios.get.mockImplementation((url) => {
       if (url === '/api/v1/quotas') return Promise.resolve({ data: { quotas: [] } });
+      if (url === '/api/v1/pooled-quota/org-pool') return Promise.resolve({ data: { org_id: 1, enabled: false, cycle_anchor_date: null, pool_credits: null, allocated_to_teams: 0, current_cycle: null } });
+      if (url === '/api/v1/pooled-quota/usage') return Promise.resolve({ data: { org_id: 1, cycle: null } });
       return Promise.reject(new Error('disabled'));
     });
     axios.post.mockRejectedValueOnce({ response: { data: { error: 'No active cycle' } } });
@@ -183,5 +239,23 @@ describe('Quotas page', () => {
     await waitFor(() => expect(screen.getByText('Rebuild Counters')).toBeInTheDocument());
     fireEvent.click(screen.getByText('Rebuild Counters'));
     await waitFor(() => expect(screen.getByText('No active cycle')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByText('Team Reservations'));
+    // Empty submit does nothing (covers if (!teamIdInput) return)
+    fireEvent.submit(screen.getByPlaceholderText('Team ID').closest('form'));
+    fireEvent.change(screen.getByPlaceholderText('Team ID'), { target: { value: '99' } });
+    fireEvent.click(screen.getByText('Load Team Quota'));
+    await waitFor(() => expect(screen.getByText('disabled')).toBeInTheDocument());
+  });
+
+  it('edits key and user quotas with null limits', async () => {
+    render(<Quotas />);
+    await waitFor(() => expect(screen.getByText('unbounded-key')).toBeInTheDocument());
+    fireEvent.click(screen.getAllByText('Edit')[3]);
+    expect(screen.getByText('Edit key Quota: unbounded-key')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Cancel'));
+    fireEvent.click(screen.getAllByText('Edit')[4]);
+    expect(screen.getByText('Edit user Quota: bob')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Cancel'));
   });
 });

@@ -100,13 +100,13 @@ describe('SecurityPolicies page', () => {
       );
     });
 
-    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(screen.getAllByText('Edit')[1]);
     const blockInputs = screen.getAllByLabelText('Block Action');
     const failInputs = screen.getAllByLabelText('Fail Mode');
     fireEvent.change(blockInputs[1], { target: { value: 'block' } });
     fireEvent.change(failInputs[1], { target: { value: 'closed' } });
     fireEvent.click(screen.getByText('Cancel'));
-    expect(screen.queryByText('Edit Policy #1')).toBeNull();
+    expect(screen.queryByText('Edit Policy #2')).toBeNull();
 
     fireEvent.click(screen.getAllByText('Edit')[0]);
     fireEvent.click(screen.getByText('Update'));
@@ -118,10 +118,11 @@ describe('SecurityPolicies page', () => {
     fireEvent.change(screen.getByPlaceholderText('Org ID'), { target: { value: '1' } });
     fireEvent.change(screen.getByPlaceholderText('Model'), { target: { value: 'gpt-4o' } });
     fireEvent.change(screen.getByPlaceholderText('Tool'), { target: { value: 'bash' } });
+    fireEvent.change(screen.getAllByDisplayValue('both')[1], { target: { value: 'output' } });
     fireEvent.click(screen.getByText('Resolve'));
     await waitFor(() => {
       expect(axios.get).toHaveBeenCalledWith('/api/v1/security-policies/resolve', {
-        params: { org: '1', model: 'gpt-4o', tool: 'bash', direction: 'both' },
+        params: { org: '1', model: 'gpt-4o', tool: 'bash', direction: 'output' },
       });
     });
   });
@@ -130,11 +131,13 @@ describe('SecurityPolicies page', () => {
     render(<SecurityPolicies />);
     await waitFor(() => expect(screen.getByText('Create Grant')).toBeInTheDocument());
 
+    fireEvent.change(screen.getByDisplayValue('user'), { target: { value: 'vkey' } });
+    fireEvent.change(screen.getByDisplayValue('shadow'), { target: { value: 'skip' } });
     fireEvent.change(screen.getByPlaceholderText('Subject Ref (ID)'), { target: { value: '3' } });
     fireEvent.change(screen.getByPlaceholderText('Expires At (ISO-8601)'), { target: { value: '2026-12-31T00:00:00' } });
     fireEvent.click(screen.getByText('Create Grant'));
     await waitFor(() => {
-      expect(axios.post).toHaveBeenCalledWith('/api/v1/security-policies/bypass-grants', expect.objectContaining({ subject_ref: '3' }));
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/security-policies/bypass-grants', expect.objectContaining({ subject_type: 'vkey', subject_ref: '3', mode: 'skip' }));
     });
 
     fireEvent.click(screen.getByText('Revoke'));
@@ -147,13 +150,45 @@ describe('SecurityPolicies page', () => {
     await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/system/signing-key/rotate'));
     expect(screen.getByText('kid-2')).toBeInTheDocument();
 
+    // Error paths
     axios.post.mockRejectedValueOnce({ response: { data: { error: 'Policy error' } } });
     fireEvent.click(screen.getByText('Save Policy'));
     await waitFor(() => expect(screen.getByText('Policy error')).toBeInTheDocument());
 
+    axios.put.mockRejectedValueOnce({ response: { data: { error: 'Update error' } } });
+    fireEvent.click(screen.getAllByText('Edit')[0]);
+    fireEvent.click(screen.getByText('Update'));
+    await waitFor(() => expect(screen.getByText('Update error')).toBeInTheDocument());
+
+    axios.delete.mockRejectedValueOnce({ response: { data: { error: 'Delete error' } } });
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    await waitFor(() => expect(screen.getByText('Delete error')).toBeInTheDocument());
+
+    axios.get.mockRejectedValueOnce({ response: { data: { error: 'Resolve error' } } });
+    fireEvent.click(screen.getByText('Resolve'));
+    await waitFor(() => expect(screen.getByText('Resolve error')).toBeInTheDocument());
+
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Grant error' } } });
+    fireEvent.change(screen.getByPlaceholderText('Subject Ref (ID)'), { target: { value: '3' } });
+    fireEvent.change(screen.getByPlaceholderText('Expires At (ISO-8601)'), { target: { value: '2026-12-31T00:00:00' } });
+    fireEvent.click(screen.getByText('Create Grant'));
+    await waitFor(() => expect(screen.getByText('Grant error')).toBeInTheDocument());
+
+    axios.delete.mockRejectedValueOnce({ response: { data: { error: 'Revoke error' } } });
+    fireEvent.click(screen.getByText('Revoke'));
+    await waitFor(() => expect(screen.getByText('Revoke error')).toBeInTheDocument());
+
     axios.post.mockRejectedValueOnce({ response: { data: { error: 'Cilium error' } } });
     fireEvent.click(screen.getByText('Reconcile Cilium'));
     await waitFor(() => expect(screen.getByText('Cilium error')).toBeInTheDocument());
+
+    axios.post.mockRejectedValueOnce({ response: { data: { error: 'Rotate error' } } });
+    fireEvent.click(screen.getByText('Rotate Signing Key'));
+    await waitFor(() => expect(screen.getByText('Rotate error')).toBeInTheDocument());
+
+    window.confirm = vi.fn(() => false);
+    fireEvent.click(screen.getAllByText('Delete')[0]);
+    fireEvent.click(screen.getByText('Rotate Signing Key'));
   });
 
   it('renders empty states when no policies or grants exist', async () => {
