@@ -169,7 +169,7 @@ class DbKnowledgeService(_DbHelperMixin):
             clauses.append("c.branch_ref = :branch")
             params["branch"] = branch
         sql = (
-            "SELECT c.id, c.repo_id, r.name AS repo, c.path, c.symbol, c.kind, "  # noqa: S608
+            "SELECT c.id, c.repo_id, r.name AS repo, c.path, c.symbol, c.kind, "  # nosec B608  # noqa: S608
             "c.start_line, c.end_line, c.content, c.branch_ref, c.trust_tier "
             "FROM code_chunks c JOIN code_repos r ON c.repo_id = r.id "
             f"WHERE {' AND '.join(clauses)} ORDER BY c.id DESC LIMIT 20"
@@ -186,7 +186,7 @@ class DbKnowledgeService(_DbHelperMixin):
             clauses.append("r.name = :repo")
             params["repo"] = repo
         sql = (
-            "SELECT c.id, c.repo_id, r.name AS repo, c.path, c.symbol, c.kind, "  # noqa: S608
+            "SELECT c.id, c.repo_id, r.name AS repo, c.path, c.symbol, c.kind, "  # nosec B608  # noqa: S608
             "c.start_line, c.end_line, c.content, c.branch_ref, c.trust_tier "
             "FROM code_chunks c JOIN code_repos r ON c.repo_id = r.id "
             f"WHERE {' AND '.join(clauses)} ORDER BY c.id DESC LIMIT 1"
@@ -201,7 +201,7 @@ class DbKnowledgeService(_DbHelperMixin):
             clauses.append("ecosystem = :ecosystem")
             params["ecosystem"] = ecosystem
         sql = (
-            "SELECT id, ecosystem, package, version, url, content_md, license, "  # noqa: S608
+            "SELECT id, ecosystem, package, version, url, content_md, license, "  # nosec B608  # noqa: S608
             "attribution_required, fetched_at, ttl "
             f"FROM docs_cache_pages WHERE {' AND '.join(clauses)} ORDER BY fetched_at DESC LIMIT 20"
         )
@@ -217,7 +217,7 @@ class DbKnowledgeService(_DbHelperMixin):
             clauses.append("version = :version")
             params["version"] = version
         sql = (
-            "SELECT id, ecosystem, package, version, url, content_md, license, "  # noqa: S608
+            "SELECT id, ecosystem, package, version, url, content_md, license, "  # nosec B608  # noqa: S608
             "attribution_required, fetched_at, ttl "
             f"FROM docs_cache_pages WHERE {' AND '.join(clauses)} ORDER BY fetched_at DESC LIMIT 1"
         )
@@ -331,8 +331,8 @@ class DbMemoryService(_DbHelperMixin):
             clauses.append("session_id = :session_id")
             params["session_id"] = session_id
         sql = (
-            "SELECT id, session_id, content, scope_type, scope_ref, trust_tier, created_at "  # noqa: S608
-            ""  # noqa: S608
+            "SELECT id, session_id, content, scope_type, scope_ref, trust_tier, created_at "  # nosec B608  # noqa: S608
+            ""  # nosec B608  # noqa: S608
             f"FROM memory_embeddings WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT 20"
         )
         return await self._query_all(sql, params)
@@ -442,7 +442,7 @@ class DbUsageService(_DbHelperMixin):
             clauses.append("date >= :cutoff")
             params["cutoff"] = cutoff.date()
         sql = (
-            "SELECT COALESCE(SUM(waddleai_tokens), 0) AS waddleai_tokens, "  # noqa: S608
+            "SELECT COALESCE(SUM(waddleai_tokens), 0) AS waddleai_tokens, "  # nosec B608  # noqa: S608
             "COALESCE(SUM(llm_tokens), 0) AS llm_tokens, "
             "COALESCE(SUM(tokens_input_total), 0) AS tokens_input, "
             "COALESCE(SUM(tokens_output_total), 0) AS tokens_output, "
@@ -493,7 +493,7 @@ class DbUsageService(_DbHelperMixin):
             clauses.append("date >= :cutoff")
             params["cutoff"] = cutoff.date()
         sql = (
-            "SELECT user_id, api_key_id, "  # noqa: S608
+            "SELECT user_id, api_key_id, "  # nosec B608  # noqa: S608
             "COALESCE(SUM(waddleai_tokens), 0) AS waddleai_tokens, "
             "COALESCE(SUM(cost_usd_total), 0.0) AS cost_usd_total "
             f"FROM token_usage WHERE {' AND '.join(clauses)} "
@@ -560,7 +560,7 @@ class DbUsageService(_DbHelperMixin):
             clauses.append("timestamp >= :cutoff")
             params["cutoff"] = cutoff
         sql = (
-            f"SELECT {group_by} AS group_key, COUNT(*) AS request_count, "  # noqa: S608
+            f"SELECT {group_by} AS group_key, COUNT(*) AS request_count, "  # nosec B608  # noqa: S608
             "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
             "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
             "COALESCE(SUM(total_tokens), 0) AS total_tokens "
@@ -703,8 +703,8 @@ class DbAdminConfigService(_DbHelperMixin):
         if not updates:
             raise ValueError("At least one of monthly_limit or daily_limit must be provided")
         count = await self._execute(
-            f"UPDATE organizations SET {', '.join(updates)} WHERE id = :org_id",  # noqa: S608
-            params,  # noqa: S608
+            f"UPDATE organizations SET {', '.join(updates)} WHERE id = :org_id",  # nosec B608  # noqa: S608
+            params,  # nosec B608  # noqa: S608
         )
         return {
             "status": "updated" if count else "not_found",
@@ -732,8 +732,8 @@ class DbAdminConfigService(_DbHelperMixin):
         if not updates:
             raise ValueError("No updatable provider config fields provided")
         count = await self._execute(
-            f"UPDATE ai_providers SET {', '.join(updates)} WHERE name = :provider",  # noqa: S608
-            params,  # noqa: S608
+            f"UPDATE ai_providers SET {', '.join(updates)} WHERE name = :provider",  # nosec B608  # noqa: S608
+            params,  # nosec B608  # noqa: S608
         )
         return {"status": "updated" if count else "not_found", "provider": provider}
 
@@ -750,7 +750,7 @@ class DbHubUserService(_DbHelperMixin):
             clauses.append("user_id = :uid")
             params["uid"] = uid
         sql = (
-            "SELECT id, key_id, user_id, organization_id, name, token_quota_monthly, "  # noqa: S608
+            "SELECT id, key_id, user_id, organization_id, name, token_quota_monthly, "  # nosec B608  # noqa: S608
             "token_quota_daily, rate_limit_rpm, default_model, enabled, expires_at, "
             "last_used, created_at, team_id "
             f"FROM api_keys WHERE {' AND '.join(clauses)} ORDER BY id DESC LIMIT 100"
@@ -794,7 +794,7 @@ class DbHubAdminService(_DbHelperMixin):
         if org_col and org_id is not None:
             params["org_id"] = org_id
         sql = (
-            f"SELECT {columns} FROM {table} {where}ORDER BY {order_by} LIMIT :limit OFFSET :offset"  # noqa: S608
+            f"SELECT {columns} FROM {table} {where}ORDER BY {order_by} LIMIT :limit OFFSET :offset"  # nosec B608  # noqa: S608
         )
         return await self._query_all(sql, params)
 
@@ -874,7 +874,7 @@ class DbHubAdminService(_DbHelperMixin):
                 params["uid"] = uid
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
         sql = (
-            "SELECT id, key_id, user_id, organization_id, name, token_quota_monthly, "  # noqa: S608
+            "SELECT id, key_id, user_id, organization_id, name, token_quota_monthly, "  # nosec B608  # noqa: S608
             "token_quota_daily, rate_limit_rpm, default_model, enabled, expires_at, last_used, "
             "created_at, team_id "
             f"FROM api_keys {where}ORDER BY id DESC LIMIT :limit OFFSET :offset"
@@ -1020,7 +1020,7 @@ class DbHubAdminService(_DbHelperMixin):
             params["cutoff"] = cutoff
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         sql = (
-            "SELECT action_taken, COUNT(*) AS count "  # noqa: S608
+            "SELECT action_taken, COUNT(*) AS count "  # nosec B608  # noqa: S608
             f"FROM content_filter_audit_log {where} GROUP BY action_taken"
         )
         rows = await self._query_all(sql, params)
@@ -1134,8 +1134,8 @@ class DbHubAdminService(_DbHelperMixin):
             clauses.append("date >= :cutoff")
             params["cutoff"] = cutoff.date()
         sql = (
-            "SELECT local_deployment_kind, COALESCE(SUM(tokens_saved), 0) AS tokens_saved, "  # noqa: S608
-            ""  # noqa: S608
+            "SELECT local_deployment_kind, COALESCE(SUM(tokens_saved), 0) AS tokens_saved, "  # nosec B608  # noqa: S608
+            ""  # nosec B608  # noqa: S608
             "COALESCE(SUM(cost_usd_total), 0.0) AS local_cost_usd "
             f"FROM token_usage WHERE {' AND '.join(clauses)} GROUP BY local_deployment_kind"
         )
@@ -1156,7 +1156,7 @@ class DbHubAdminService(_DbHelperMixin):
             clauses.append("date >= :cutoff")
             params["cutoff"] = cutoff.date()
         sql = (
-            "SELECT organization_id, local_deployment_kind, local_deployment_id, "  # noqa: S608
+            "SELECT organization_id, local_deployment_kind, local_deployment_id, "  # nosec B608  # noqa: S608
             "COALESCE(SUM(llm_tokens), 0) AS llm_tokens, "
             "COALESCE(SUM(cost_usd_total), 0.0) AS cost_usd_total "
             f"FROM token_usage WHERE {' AND '.join(clauses)} "
@@ -1239,8 +1239,8 @@ class DbHubAdminService(_DbHelperMixin):
             if not updates:
                 raise ValueError("No updatable fields provided for manage_key")
             count = await self._execute(
-                f"UPDATE api_keys SET {', '.join(updates)} WHERE key_id = :key_id",  # noqa: S608
-                params,  # noqa: S608
+                f"UPDATE api_keys SET {', '.join(updates)} WHERE key_id = :key_id",  # nosec B608  # noqa: S608
+                params,  # nosec B608  # noqa: S608
             )
             return {"status": "updated", "key_id": key_id, "affected": count}
         raise ValueError(f"Unsupported action for manage_key: {action!r}")
@@ -1300,8 +1300,8 @@ class DbHubAdminService(_DbHelperMixin):
             if not updates:
                 raise ValueError("No updatable fields provided for manage_user")
             count = await self._execute(
-                f"UPDATE users SET {', '.join(updates)} WHERE id = :uid",  # noqa: S608
-                params,  # noqa: S608
+                f"UPDATE users SET {', '.join(updates)} WHERE id = :uid",  # nosec B608  # noqa: S608
+                params,  # nosec B608  # noqa: S608
             )
             return {"status": "updated", "user_id": user_id, "affected": count}
         raise ValueError(f"Unsupported action for manage_user: {action!r}")
@@ -1357,8 +1357,8 @@ class DbHubAdminService(_DbHelperMixin):
             if not updates:
                 raise ValueError("No updatable fields provided for manage_organization")
             count = await self._execute(
-                f"UPDATE organizations SET {', '.join(updates)} WHERE id = :org_id",  # noqa: S608
-                params,  # noqa: S608
+                f"UPDATE organizations SET {', '.join(updates)} WHERE id = :org_id",  # nosec B608  # noqa: S608
+                params,  # nosec B608  # noqa: S608
             )
             return {"status": "updated", "org_id": org_id, "affected": count}
         raise ValueError(f"Unsupported action for manage_organization: {action!r}")
@@ -1406,8 +1406,8 @@ class DbHubAdminService(_DbHelperMixin):
             if not updates:
                 raise ValueError("No updatable fields provided for manage_team")
             count = await self._execute(
-                f"UPDATE teams SET {', '.join(updates)} WHERE id = :tid",  # noqa: S608
-                params,  # noqa: S608
+                f"UPDATE teams SET {', '.join(updates)} WHERE id = :tid",  # nosec B608  # noqa: S608
+                params,  # nosec B608  # noqa: S608
             )
             return {"status": "updated", "team_id": team_id, "affected": count}
         raise ValueError(f"Unsupported action for manage_team: {action!r}")
@@ -1772,8 +1772,8 @@ class DbHubAdminService(_DbHelperMixin):
             raise ValueError(f"deployment_id is required for {table} {action}")
         if action == "delete":
             count = await self._execute(
-                f"DELETE FROM {table} WHERE id = :did",  # noqa: S608
-                {"did": deployment_id},  # noqa: S608
+                f"DELETE FROM {table} WHERE id = :did",  # nosec B608  # noqa: S608
+                {"did": deployment_id},  # nosec B608  # noqa: S608
             )
             return {"status": "deleted", "deployment_id": deployment_id, "affected": count}
         if action in ("update", "start", "stop", "restart"):
@@ -1785,7 +1785,7 @@ class DbHubAdminService(_DbHelperMixin):
             elif action == "restart":
                 new_status = "restarting"
             count = await self._execute(
-                f"UPDATE {table} SET status = COALESCE(:status, status), "  # noqa: S608
+                f"UPDATE {table} SET status = COALESCE(:status, status), "  # nosec B608  # noqa: S608
                 "name = COALESCE(:name, name) WHERE id = :did",
                 {"did": deployment_id, "status": new_status, "name": name},
             )
