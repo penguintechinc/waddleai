@@ -340,6 +340,11 @@ jobs:
       with:
         python-version: '3.13'
 
+    - name: Set up Node.js
+      uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+      with:
+        node-version: '24'
+
     - name: Install pip-audit
       run: |
         set -euo pipefail
@@ -372,7 +377,12 @@ jobs:
     # script, non-zero exit fails this job, which build-platform/release both
     # gate on via `needs:` below.
     - name: Run dependency & secrets security scan (pip-audit, npm audit, gitleaks)
-      run: bash scripts/dependency-security-scan.sh
+      run: |
+        set -euo pipefail
+        export XDG_CACHE_HOME="$RUNNER_TEMP/.cache"
+        mkdir -p "$XDG_CACHE_HOME"
+        chmod 700 "$XDG_CACHE_HOME"
+        bash scripts/dependency-security-scan.sh
 
   # Python lint and typing ran only in the local pre-commit hook and `make
   # lint`, never in CI. mypy-baseline.txt drifted to 212 unrecorded errors
