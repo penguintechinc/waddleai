@@ -61,6 +61,30 @@ spec:
               - {name: serve, containerPort: {{ $v.serve.port }}}
             env:
               {{- include "waddleai.vllmRay.authEnv" . | nindent 14 }}
+            livenessProbe:
+              httpGet:
+                path: /api/gcs_healthz
+                port: dashboard
+              initialDelaySeconds: 30
+              periodSeconds: 15
+              timeoutSeconds: 5
+              failureThreshold: 5
+            readinessProbe:
+              httpGet:
+                path: /api/gcs_healthz
+                port: dashboard
+              initialDelaySeconds: 10
+              periodSeconds: 10
+              timeoutSeconds: 5
+              failureThreshold: 3
+            startupProbe:
+              httpGet:
+                path: /api/gcs_healthz
+                port: dashboard
+              initialDelaySeconds: 5
+              periodSeconds: 5
+              timeoutSeconds: 5
+              failureThreshold: 30
             resources:
               {{- toYaml $v.head.resources | nindent 14 }}
             volumeMounts:
@@ -118,6 +142,27 @@ spec:
                 {{- end }}
                 - {name: HF_HOME, value: /models}
                 {{- include "waddleai.vllmRay.authEnv" $ | nindent 16 }}
+              livenessProbe:
+                exec:
+                  command: ["/home/ray/anaconda3/bin/ray", "health-check"]
+                initialDelaySeconds: 30
+                periodSeconds: 30
+                timeoutSeconds: 10
+                failureThreshold: 5
+              readinessProbe:
+                exec:
+                  command: ["/home/ray/anaconda3/bin/ray", "health-check"]
+                initialDelaySeconds: 15
+                periodSeconds: 15
+                timeoutSeconds: 10
+                failureThreshold: 3
+              startupProbe:
+                exec:
+                  command: ["/home/ray/anaconda3/bin/ray", "health-check"]
+                initialDelaySeconds: 10
+                periodSeconds: 10
+                timeoutSeconds: 10
+                failureThreshold: 30
               resources:
                 limits:
                   {{ $g.resourceName | quote }}: {{ int $g.gpusPerWorker }}

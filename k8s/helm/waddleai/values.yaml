@@ -23,7 +23,7 @@ management:
   replicaCount: 1
   image:
     repository: waddleai/management
-    tag: latest
+    tag: "1.0.0"
     # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
@@ -176,7 +176,7 @@ proxy:
   replicaCount: 1
   image:
     repository: waddleai/proxy
-    tag: latest
+    tag: "1.0.0"
     # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
@@ -324,7 +324,7 @@ classification:
   replicaCount: 2
   image:
     repository: waddleai/classification
-    tag: latest
+    tag: "1.0.0"
     # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
@@ -520,7 +520,7 @@ webui:
   replicaCount: 1
   image:
     repository: waddleai/webui
-    tag: latest
+    tag: "1.0.0"
     # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta
     pullPolicy: IfNotPresent
 
@@ -771,7 +771,7 @@ securityContext:
   capabilities:
     drop:
       - ALL
-  readOnlyRootFilesystem: false
+  readOnlyRootFilesystem: true
   runAsNonRoot: true
   runAsUser: 1000
   seccompProfile:
@@ -1101,7 +1101,8 @@ ollama:
   # digest: ""  # required in prod per house SHA256-pinning rule; tag OK alpha/beta (PenguinTech-owned image)
   image:
     repository: ghcr.io/penguintechinc/waddleai/ollama
-    tag: "hardened"
+    tag: "ci-hardened-a9e5332eb44d9e72442498a442572715dedc308a-43011159960"
+    digest: "sha256:e35daf8e5543a8054669731e30c4c4fc6b3ae0b7900a5122224bd8af90d9af9e"
     pullPolicy: IfNotPresent
 
   # NOT configurable — see templates/ollama-service.yaml. Field kept for
@@ -1214,7 +1215,8 @@ ollamaEmbeddings:
   # OK alpha/beta, PenguinTech-owned image).
   image:
     repository: ghcr.io/penguintechinc/waddleai/ollama
-    tag: "hardened"
+    tag: "ci-hardened-a9e5332eb44d9e72442498a442572715dedc308a-43011159960"
+    digest: "sha256:e35daf8e5543a8054669731e30c4c4fc6b3ae0b7900a5122224bd8af90d9af9e"
     pullPolicy: IfNotPresent
 
   # NOT configurable at runtime -- see templates/ollama-embeddings-service.yaml,
@@ -1525,15 +1527,16 @@ tetragon:
       # validated.
       ollama:
         enabled: true
-        mode: observe
+        mode: enforce
         allowedExecs:
           - /bin/ollama
+          - /usr/bin/ollama
           - /bin/sh
       # llama.cpp server — third-party vendor image; same caveat as ollama
       # (curl-based model-download initContainer shares the pod).
       llamacpp:
         enabled: true
-        mode: observe
+        mode: enforce
         allowedExecs:
           - /llama-server
           - /bin/sh
@@ -1579,31 +1582,24 @@ admissionPolicies:
   enabled: true
   forceRender: false
   failurePolicy: Fail
-  validationActions: [Warn]
+  validationActions: [Deny]
   validatingAdmissionPolicy:
     enabled: true
     enforceNonRoot: true              # already compliant: podSecurityContext.runAsNonRoot=true chart-wide
-    enforceReadOnlyRootFs: false      # webui/management/postgres/valkey/ollama set false today; enable once hardened
-    enforceDropAllCaps: true          # flags postgres/valkey (no container securityContext yet) under Warn
+    enforceReadOnlyRootFs: true       # all chart containers set readOnlyRootFilesystem: true
+    enforceDropAllCaps: true
     enforceNoPrivilegeEscalation: true
     enforceDigestPinnedImages: false  # alpha/beta intentionally use mutable tags (house pinning rule); enable in a prod values file
   kyverno:
     enabled: false   # optional alternative engine; only renders if opted in AND its CRDs are present
 
 # Pod Security Admission namespace labels (spec §12.2 "restricted" baseline).
-# `audit`/`warn` default to `restricted` everywhere (non-blocking, surfaces
-# every violation via the API audit log / kubectl warnings). `enforce`
-# defaults to `baseline` here (this chart's own containers — proxy,
-# management, webui, postgres, valkey, plus the wait-for-postgres/valkey
-# initContainers — are now `seccompProfile: RuntimeDefault` +
-# drop-ALL-capabilities compliant, but `restricted` is only actually
-# reachable in environments free of third-party subchart / hostPath gaps).
-# values-alpha.yaml overrides to `restricted` (no ollama hostPath, no
-# gpu-operator/node-feature-discovery there). See values-beta.yaml for why
-# beta stays lower.
+# `audit`/`warn`/`enforce` default to `restricted` for the chart's own
+# workloads. Environments that mount hostPath (e.g. values-beta.yaml's ollama
+# hostPath) override `enforce` as documented there.
 podSecurityAdmission:
   enabled: true
-  enforce: baseline
+  enforce: restricted
   audit: restricted
   warn: restricted
 

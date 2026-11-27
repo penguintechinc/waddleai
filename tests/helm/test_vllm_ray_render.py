@@ -197,3 +197,17 @@ def test_worker_group_permutations_render_exact_groups(keys):
         limits = g["template"]["spec"]["containers"][0]["resources"]["limits"]
         assert GROUP_SPECS[k][2] in limits
         assert all_gpu_keys & set(limits) == {GROUP_SPECS[k][2]}
+
+
+def test_head_and_worker_define_health_probes():
+    """Ray head and worker containers define liveness, readiness, and startup probes."""
+    rc = _rc(render(BASE))
+    head = rc["spec"]["headGroupSpec"]["template"]["spec"]["containers"][0]
+    for probe in ("livenessProbe", "readinessProbe", "startupProbe"):
+        assert probe in head, f"ray-head missing {probe}"
+        assert head[probe]["httpGet"]["path"] == "/api/gcs_healthz"
+        assert head[probe]["httpGet"]["port"] == "dashboard"
+    worker = rc["spec"]["workerGroupSpecs"][0]["template"]["spec"]["containers"][0]
+    for probe in ("livenessProbe", "readinessProbe", "startupProbe"):
+        assert probe in worker, f"ray-worker missing {probe}"
+        assert worker[probe]["exec"]["command"] == ["/home/ray/anaconda3/bin/ray", "health-check"]
