@@ -1,0 +1,18 @@
+.security-policies-page {
+  color: #e2e8f0;
+}
+
+.tier-toggles {
+  display: flex;
+  gap: 1.5rem;
+  margin-top: 1rem;
+  flex-wrap: wrap;
+}
+
+.tier-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #cbd5e1;
+}

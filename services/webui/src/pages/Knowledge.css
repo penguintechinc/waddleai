@@ -1,0 +1,17 @@
+.knowledge-page {
+  color: #e2e8f0;
+}
+
+.file-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: #cbd5e1;
+}
+
+.preview-cell {
+  max-width: 420px;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
