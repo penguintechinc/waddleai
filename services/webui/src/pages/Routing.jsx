@@ -16,12 +16,34 @@ import './Routing.css';
 // shared.routing.RoutingEngine + the routing-classifier model_assignments
 // row + the dry-run endpoint are real. All persistence/validation is
 // server-side.
+function errMsg(err, fallback) {
+  return err?.response?.data?.error || fallback;
+}
+
 function Routing() {
   const { user } = useAuth();
   const organizationId = user?.organization_id;
   const isAdmin = user?.role === 'admin';
 
   const [instructions, setInstructions] = useState('');
+  const [activeTab, setActiveTab] = useState('policy');
+  const [rules, setRules] = useState([]);
+  const [ruleForm, setRuleForm] = useState({ name: '', priority: 100, match: '{}', action: '{}', enabled: true });
+  const [aliases, setAliases] = useState([]);
+  const [aliasForm, setAliasForm] = useState({ source_model: '', target_model: '', target_provider: '', enabled: true });
+  const [accessPolicies, setAccessPolicies] = useState([]);
+  const [policyForm, setPolicyForm] = useState({
+    scope_type: 'org',
+    scope_ref: '',
+    model_pattern: '',
+    action: 'deny',
+    fallback_model: '',
+    reason: '',
+    enabled: true,
+  });
+  const [decisions, setDecisions] = useState([]);
+  const [traceId, setTraceId] = useState('');
+  const [traceDetail, setTraceDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
@@ -89,7 +111,7 @@ function Routing() {
       setInstructions(data.classifier_prompt || '');
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to fetch routing policy');
+      setError(errMsg(err, 'Failed to fetch routing policy'));
     } finally {
       setLoading(false);
     }
@@ -115,7 +137,7 @@ function Routing() {
         setRoutingModelId(entry.id ?? null);
       }
     } catch (err) {
-      const message = err.response?.data?.error || 'Failed to fetch routing LLM model';
+      const message = errMsg(err, 'Failed to fetch routing LLM model');
       setError((prev) => prev ?? message);
     } finally {
       setRoutingModelLoading(false);
@@ -140,7 +162,7 @@ function Routing() {
       setError(null);
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to save routing configuration');
+      setError(errMsg(err, 'Failed to save routing configuration'));
     } finally {
       setSaving(false);
     }
@@ -166,7 +188,7 @@ function Routing() {
       setSuccess('Routing LLM model saved successfully');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to save routing LLM model');
+      setError(errMsg(err, 'Failed to save routing LLM model'));
     } finally {
       setRoutingModelSaving(false);
     }
@@ -184,10 +206,178 @@ function Routing() {
       const response = await axios.post('/api/v1/routing/dry-run/', payload);
       setTestResult(response.data.data);
     } catch (err) {
-      setTestError(err.response?.data?.error || 'Failed to run routing test');
+      setTestError(errMsg(err, 'Failed to run routing test'));
       setTestResult(null);
     } finally {
       setTestLoading(false);
+    }
+  };
+
+  const handleDeletePolicy = async () => {
+    try {
+      await axios.delete(`/api/v1/routing/policies/${organizationId}`);
+      setInstructions('');
+      setSuccess('Routing policy deleted successfully');
+      setError(null);
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to delete routing policy'));
+    }
+  };
+
+  const handleSeedAssignments = async () => {
+    try {
+      await axios.post('/api/v1/routing/assignments/seed');
+      setSuccess('Default routing assignments seeded');
+      setError(null);
+      fetchRoutingModel();
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to seed routing assignments'));
+    }
+  };
+
+  const fetchTabData = async (tab) => {
+    try {
+      if (tab === 'rules') {
+        const res = await axios.get('/api/v1/routing/rules/');
+        setRules(res.data?.data || []);
+      } else if (tab === 'aliases') {
+        const res = await axios.get('/api/v1/routing/aliases/');
+        setAliases(res.data?.data || []);
+      } else if (tab === 'access') {
+        const res = await axios.get('/api/v1/routing/access-policies/');
+        setAccessPolicies(res.data?.data || []);
+      } else if (tab === 'decisions') {
+        const res = await axios.get('/api/v1/routing/decisions/');
+        setDecisions(res.data?.data || []);
+      }
+    } catch (err) {
+      setError(errMsg(err, `Failed to load ${tab}`));
+    }
+  };
+
+  const handleTabSelect = (tab) => {
+    setActiveTab(tab);
+    if (tab !== 'policy') {
+      fetchTabData(tab);
+    }
+  };
+
+  const handleCreateRule = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        name: ruleForm.name,
+        priority: Number(ruleForm.priority) || 100,
+        match: JSON.parse(ruleForm.match || '{}'),
+        action: JSON.parse(ruleForm.action || '{}'),
+        enabled: ruleForm.enabled,
+      };
+      await axios.post('/api/v1/routing/rules/', payload);
+      setRuleForm({ name: '', priority: 100, match: '{}', action: '{}', enabled: true });
+      setSuccess('Routing rule created');
+      fetchTabData('rules');
+    } catch (err) {
+      setError(errMsg(err, err.message || 'Failed to create routing rule'));
+    }
+  };
+
+  const handleToggleRule = async (rule) => {
+    try {
+      await axios.put(`/api/v1/routing/rules/${rule.id}`, { enabled: !rule.enabled });
+      fetchTabData('rules');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to update routing rule'));
+    }
+  };
+
+  const handleDeleteRule = async (id) => {
+    try {
+      await axios.delete(`/api/v1/routing/rules/${id}`);
+      fetchTabData('rules');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to delete routing rule'));
+    }
+  };
+
+  const handleCreateAlias = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post('/api/v1/routing/aliases/', aliasForm);
+      setAliasForm({ source_model: '', target_model: '', target_provider: '', enabled: true });
+      setSuccess('Model alias created');
+      fetchTabData('aliases');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to create model alias'));
+    }
+  };
+
+  const handleToggleAlias = async (alias) => {
+    try {
+      await axios.put(`/api/v1/routing/aliases/${alias.id}`, { enabled: !alias.enabled });
+      fetchTabData('aliases');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to update model alias'));
+    }
+  };
+
+  const handleDeleteAlias = async (id) => {
+    try {
+      await axios.delete(`/api/v1/routing/aliases/${id}`);
+      fetchTabData('aliases');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to delete model alias'));
+    }
+  };
+
+  const handleCreateAccessPolicy = async (e) => {
+    e.preventDefault();
+    try {
+      await axios.post('/api/v1/routing/access-policies/', policyForm);
+      setPolicyForm({
+        scope_type: 'org',
+        scope_ref: '',
+        model_pattern: '',
+        action: 'deny',
+        fallback_model: '',
+        reason: '',
+        enabled: true,
+      });
+      setSuccess('Access policy created');
+      fetchTabData('access');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to create access policy'));
+    }
+  };
+
+  const handleToggleAccessPolicy = async (policy) => {
+    try {
+      await axios.put(`/api/v1/routing/access-policies/${policy.id}`, { enabled: !policy.enabled });
+      fetchTabData('access');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to update access policy'));
+    }
+  };
+
+  const handleDeleteAccessPolicy = async (id) => {
+    try {
+      await axios.delete(`/api/v1/routing/access-policies/${id}`);
+      fetchTabData('access');
+    } catch (err) {
+      setError(errMsg(err, 'Failed to delete access policy'));
+    }
+  };
+
+  const handleLookupTrace = async (e) => {
+    e.preventDefault();
+    if (!traceId.trim()) return;
+    try {
+      const res = await axios.get(`/api/v1/routing/decisions/${encodeURIComponent(traceId.trim())}`);
+      setTraceDetail(res.data?.data || res.data);
+    } catch (err) {
+      setError(errMsg(err, 'Trace not found'));
+      setTraceDetail(null);
     }
   };
 
@@ -199,6 +389,26 @@ function Routing() {
     <div className="routing">
       <div className="page-header">
         <h1>Routing Configuration</h1>
+      </div>
+
+      <div className="tabs" role="tablist">
+        {[
+          { id: 'policy', label: 'Policy & Classifier' },
+          { id: 'rules', label: 'Routing Rules' },
+          { id: 'aliases', label: 'Model Aliases' },
+          { id: 'access', label: 'Access Policies' },
+          { id: 'decisions', label: 'Decisions' },
+        ].map((tab) => (
+          <button
+            key={tab.id}
+            role="tab"
+            aria-selected={activeTab === tab.id}
+            className={`tab-btn ${activeTab === tab.id ? 'active' : ''}`}
+            onClick={() => handleTabSelect(tab.id)}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {error && (
@@ -215,7 +425,9 @@ function Routing() {
         </div>
       )}
 
-      <div className="routing-card">
+      {activeTab === 'policy' && (
+        <>
+          <div className="routing-card">
         <h3>Routing LLM Model</h3>
         <p>
           The model used by the stage-2 routing classifier (spec §7.2) to determine tool type
@@ -248,6 +460,9 @@ function Routing() {
                 <button type="submit" className="btn-primary" disabled={routingModelSaving}>
                   {routingModelSaving ? 'Saving...' : 'Save Routing LLM Model'}
                 </button>
+                <button type="button" className="btn-secondary" onClick={handleSeedAssignments}>
+                  Seed Default Assignments
+                </button>
               </div>
             )}
           </form>
@@ -276,6 +491,11 @@ function Routing() {
             <button type="button" className="btn-secondary" onClick={fetchPolicy}>
               Reload Current
             </button>
+            {isAdmin && (
+              <button type="button" className="btn-danger" onClick={handleDeletePolicy}>
+                Delete Policy
+              </button>
+            )}
           </div>
         </form>
       </div>
@@ -358,6 +578,180 @@ function Routing() {
               )}
             </div>
           )}
+        </div>
+      )}
+        </>
+      )}
+
+      {activeTab === 'rules' && (
+        <div className="routing-card">
+          <h3>Routing Rules</h3>
+          <form onSubmit={handleCreateRule} className="routing-subform">
+            <input
+              type="text"
+              aria-label="Rule Name"
+              placeholder="Rule name"
+              value={ruleForm.name}
+              onChange={(e) => setRuleForm({ ...ruleForm, name: e.target.value })}
+              required
+            />
+            <input
+              type="number"
+              aria-label="Rule Priority"
+              value={ruleForm.priority}
+              onChange={(e) => setRuleForm({ ...ruleForm, priority: e.target.value })}
+            />
+            <input
+              type="text"
+              aria-label="Rule Match JSON"
+              value={ruleForm.match}
+              onChange={(e) => setRuleForm({ ...ruleForm, match: e.target.value })}
+            />
+            <input
+              type="text"
+              aria-label="Rule Action JSON"
+              value={ruleForm.action}
+              onChange={(e) => setRuleForm({ ...ruleForm, action: e.target.value })}
+            />
+            <button type="submit" className="btn-primary">Add Rule</button>
+          </form>
+          <ul>
+            {rules.map((r) => (
+              <li key={r.id}>
+                <span>{r.name} (priority {r.priority}) — {r.enabled ? 'Enabled' : 'Disabled'}</span>
+                <button className="btn-small btn-secondary" onClick={() => handleToggleRule(r)}>
+                  {r.enabled ? 'Disable' : 'Enable'}
+                </button>
+                <button className="btn-small btn-danger" onClick={() => handleDeleteRule(r.id)}>
+                  Delete Rule
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {activeTab === 'aliases' && (
+        <div className="routing-card">
+          <h3>Model Aliases</h3>
+          <form onSubmit={handleCreateAlias} className="routing-subform">
+            <input
+              type="text"
+              aria-label="Source Model"
+              placeholder="Source model"
+              value={aliasForm.source_model}
+              onChange={(e) => setAliasForm({ ...aliasForm, source_model: e.target.value })}
+              required
+            />
+            <input
+              type="text"
+              aria-label="Target Model"
+              placeholder="Target model"
+              value={aliasForm.target_model}
+              onChange={(e) => setAliasForm({ ...aliasForm, target_model: e.target.value })}
+              required
+            />
+            <input
+              type="text"
+              aria-label="Target Provider"
+              placeholder="Provider (optional)"
+              value={aliasForm.target_provider}
+              onChange={(e) => setAliasForm({ ...aliasForm, target_provider: e.target.value })}
+            />
+            <button type="submit" className="btn-primary">Add Alias</button>
+          </form>
+          <ul>
+            {aliases.map((a) => (
+              <li key={a.id}>
+                <span>{a.source_model} → {a.target_model}</span>
+                <button className="btn-small btn-secondary" onClick={() => handleToggleAlias(a)}>
+                  {a.enabled ? 'Disable' : 'Enable'}
+                </button>
+                <button className="btn-small btn-danger" onClick={() => handleDeleteAlias(a.id)}>
+                  Delete Alias
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {activeTab === 'access' && (
+        <div className="routing-card">
+          <h3>Model Access Policies</h3>
+          <form onSubmit={handleCreateAccessPolicy} className="routing-subform">
+            <select
+              aria-label="Scope Type"
+              value={policyForm.scope_type}
+              onChange={(e) => setPolicyForm({ ...policyForm, scope_type: e.target.value })}
+            >
+              <option value="org">org</option>
+              <option value="team">team</option>
+              <option value="user">user</option>
+            </select>
+            <input
+              type="text"
+              aria-label="Scope Ref"
+              placeholder="Scope ref"
+              value={policyForm.scope_ref}
+              onChange={(e) => setPolicyForm({ ...policyForm, scope_ref: e.target.value })}
+            />
+            <input
+              type="text"
+              aria-label="Model Pattern"
+              placeholder="Model pattern (e.g. gpt-4*)"
+              value={policyForm.model_pattern}
+              onChange={(e) => setPolicyForm({ ...policyForm, model_pattern: e.target.value })}
+              required
+            />
+            <select
+              aria-label="Policy Action"
+              value={policyForm.action}
+              onChange={(e) => setPolicyForm({ ...policyForm, action: e.target.value })}
+            >
+              <option value="deny">deny</option>
+              <option value="allow">allow</option>
+              <option value="fallback">fallback</option>
+            </select>
+            <button type="submit" className="btn-primary">Add Access Policy</button>
+          </form>
+          <ul>
+            {accessPolicies.map((p) => (
+              <li key={p.id}>
+                <span>{p.scope_type}:{p.scope_ref || '*'} — {p.model_pattern} ({p.action})</span>
+                <button className="btn-small btn-secondary" onClick={() => handleToggleAccessPolicy(p)}>
+                  {p.enabled ? 'Disable' : 'Enable'}
+                </button>
+                <button className="btn-small btn-danger" onClick={() => handleDeleteAccessPolicy(p.id)}>
+                  Delete Access Policy
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {activeTab === 'decisions' && (
+        <div className="routing-card">
+          <h3>Routing Decisions</h3>
+          <form onSubmit={handleLookupTrace} className="routing-subform">
+            <input
+              type="text"
+              aria-label="Request ID"
+              placeholder="Lookup request_id"
+              value={traceId}
+              onChange={(e) => setTraceId(e.target.value)}
+            />
+            <button type="submit" className="btn-primary">Lookup Trace</button>
+          </form>
+          {traceDetail && <pre>{JSON.stringify(traceDetail, null, 2)}</pre>}
+          <ul>
+            {decisions.map((d, idx) => (
+              <li key={d.request_id || idx}>
+                {d.request_id} — {d.selected_model || d.model} ({d.tool_type})
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </div>

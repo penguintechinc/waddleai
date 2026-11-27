@@ -2,13 +2,31 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import './Providers.css';
 
+const FALLBACK_PROVIDER_TYPES = [
+  { type: 'openai', name: 'OpenAI' },
+  { type: 'anthropic', name: 'Anthropic' },
+  { type: 'ollama', name: 'Ollama' },
+  { type: 'azure_openai', name: 'Azure OpenAI' },
+  { type: 'gemini', name: 'Google Gemini' },
+  { type: 'cohere', name: 'Cohere' },
+  { type: 'custom', name: 'Custom' },
+];
+
+function errMsg(err, fallback) {
+  return err?.response?.data?.error || fallback;
+}
+
 function Providers() {
   const [providers, setProviders] = useState([]);
+  const [providerTypes, setProviderTypes] = useState(FALLBACK_PROVIDER_TYPES);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(null);
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [editingProvider, setEditingProvider] = useState(null);
+  const [modelsModal, setModelsModal] = useState(null);
+  const [credsModal, setCredsModal] = useState(null);
+  const [credForm, setCredForm] = useState({ label: '', api_key: '', weight: 100, enabled: true });
   const [formData, setFormData] = useState({
     name: '',
     provider_type: 'openai',
@@ -25,11 +43,18 @@ function Providers() {
   const fetchProviders = async () => {
     try {
       setLoading(true);
-      const response = await axios.get('/api/v1/providers');
-      setProviders(response.data.providers || []);
+      const [providersRes, typesRes] = await Promise.all([
+        axios.get('/api/v1/providers'),
+        axios.get('/api/v1/providers/types').catch(() => ({ data: { provider_types: [] } })),
+      ]);
+      setProviders(providersRes.data.providers || []);
+      const fetchedTypes = typesRes.data?.provider_types;
+      if (Array.isArray(fetchedTypes) && fetchedTypes.length > 0) {
+        setProviderTypes(fetchedTypes);
+      }
       setError(null);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to fetch providers');
+      setError(errMsg(err, 'Failed to fetch providers'));
     } finally {
       setLoading(false);
     }
@@ -45,7 +70,7 @@ function Providers() {
       fetchProviders();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to create provider');
+      setError(errMsg(err, 'Failed to create provider'));
     }
   };
 
@@ -59,7 +84,7 @@ function Providers() {
       fetchProviders();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to update provider');
+      setError(errMsg(err, 'Failed to update provider'));
     }
   };
 
@@ -73,7 +98,7 @@ function Providers() {
       fetchProviders();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to delete provider');
+      setError(errMsg(err, 'Failed to delete provider'));
     }
   };
 
@@ -90,17 +115,77 @@ function Providers() {
         setError(null);
       }, 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Connection test failed');
+      setError(errMsg(err, 'Connection test failed'));
     }
   };
 
-  const handleSyncToAILB = async () => {
+  const handleViewModels = async (provider) => {
     try {
-      await axios.post('/api/v1/ailb/sync');
-      setSuccess('Providers synced to AILB successfully');
+      const response = await axios.get(`/api/v1/providers/${provider.id}/models`);
+      setModelsModal({
+        provider,
+        models: response.data?.models || [],
+      });
+    } catch (err) {
+      setError(errMsg(err, 'Failed to fetch provider models'));
+    }
+  };
+
+  const openCredentialsModal = async (provider) => {
+    try {
+      const response = await axios.get(`/api/v1/providers/${provider.id}/credentials`);
+      setCredsModal({
+        provider,
+        credentials: response.data?.data || [],
+      });
+      setCredForm({ label: '', api_key: '', weight: 100, enabled: true });
+    } catch (err) {
+      setError(errMsg(err, 'Failed to fetch provider credentials'));
+    }
+  };
+
+  const handleCreateCredential = async (e) => {
+    e.preventDefault();
+    if (!credsModal) return;
+    try {
+      await axios.post(`/api/v1/providers/${credsModal.provider.id}/credentials`, {
+        label: credForm.label,
+        api_key: credForm.api_key,
+        weight: Number(credForm.weight) || 100,
+        enabled: credForm.enabled,
+      });
+      setSuccess('Credential added successfully');
+      await openCredentialsModal(credsModal.provider);
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
-      setError(err.response?.data?.error || 'Failed to sync to AILB');
+      setError(errMsg(err, 'Failed to add credential'));
+    }
+  };
+
+  const handleToggleCredential = async (cred) => {
+    if (!credsModal) return;
+    try {
+      await axios.patch(
+        `/api/v1/providers/${credsModal.provider.id}/credentials/${cred.id}`,
+        { enabled: !cred.enabled }
+      );
+      setSuccess('Credential updated successfully');
+      await openCredentialsModal(credsModal.provider);
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to update credential'));
+    }
+  };
+
+  const handleDeleteCredential = async (credId) => {
+    if (!credsModal) return;
+    try {
+      await axios.delete(`/api/v1/providers/${credsModal.provider.id}/credentials/${credId}`);
+      setSuccess('Credential deleted successfully');
+      await openCredentialsModal(credsModal.provider);
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(errMsg(err, 'Failed to delete credential'));
     }
   };
 
@@ -149,9 +234,6 @@ function Providers() {
       <div className="page-header">
         <h1>AI Providers</h1>
         <div style={{ display: 'flex', gap: '1rem' }}>
-          <button className="btn-primary" onClick={handleSyncToAILB}>
-            Sync to AILB
-          </button>
           <button className="btn-primary" onClick={() => setShowCreateForm(true)}>
             + Add Provider
           </button>
@@ -196,13 +278,11 @@ function Providers() {
                   onChange={(e) => setFormData({ ...formData, provider_type: e.target.value })}
                   required
                 >
-                  <option value="openai">OpenAI</option>
-                  <option value="anthropic">Anthropic</option>
-                  <option value="ollama">Ollama</option>
-                  <option value="azure">Azure OpenAI</option>
-                  <option value="google">Google AI</option>
-                  <option value="cohere">Cohere</option>
-                  <option value="custom">Custom</option>
+                  {providerTypes.map((pt) => (
+                    <option key={pt.type} value={pt.type}>
+                      {pt.name}
+                    </option>
+                  ))}
                 </select>
               </div>
 
@@ -329,6 +409,18 @@ function Providers() {
                   </button>
                   <button
                     className="btn-small btn-secondary"
+                    onClick={() => handleViewModels(provider)}
+                  >
+                    Models
+                  </button>
+                  <button
+                    className="btn-small btn-secondary"
+                    onClick={() => openCredentialsModal(provider)}
+                  >
+                    Credentials
+                  </button>
+                  <button
+                    className="btn-small btn-secondary"
                     onClick={() => openEditForm(provider)}
                   >
                     Edit
@@ -343,6 +435,108 @@ function Providers() {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {modelsModal && (
+        <div className="modal">
+          <div className="modal-content">
+            <h2>Models — {modelsModal.provider.name}</h2>
+            {modelsModal.models.length === 0 ? (
+              <p>No models available for this provider.</p>
+            ) : (
+              <ul>
+                {modelsModal.models.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+            )}
+            <div className="form-actions">
+              <button type="button" className="btn-secondary" onClick={() => setModelsModal(null)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {credsModal && (
+        <div className="modal">
+          <div className="modal-content">
+            <h2>Credentials — {credsModal.provider.name}</h2>
+            {credsModal.credentials.length === 0 ? (
+              <p>No credentials configured.</p>
+            ) : (
+              <ul className="credentials-list">
+                {credsModal.credentials.map((cred) => (
+                  <li key={cred.id} className="credential-item">
+                    <span>
+                      <strong>{cred.label}</strong> ({cred.api_key_masked}) — weight {cred.weight} —{' '}
+                      {cred.enabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        className="btn-small btn-secondary"
+                        onClick={() => handleToggleCredential(cred)}
+                      >
+                        {cred.enabled ? 'Disable' : 'Enable'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-small btn-danger"
+                        onClick={() => handleDeleteCredential(cred.id)}
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <form onSubmit={handleCreateCredential} style={{ marginTop: '1rem' }}>
+              <h3>Add Credential</h3>
+              <div className="form-group">
+                <label htmlFor="cred-label">Label</label>
+                <input
+                  id="cred-label"
+                  type="text"
+                  value={credForm.label}
+                  onChange={(e) => setCredForm({ ...credForm, label: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="cred-api-key">API Key</label>
+                <input
+                  id="cred-api-key"
+                  type="password"
+                  value={credForm.api_key}
+                  onChange={(e) => setCredForm({ ...credForm, api_key: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="cred-weight">Weight</label>
+                <input
+                  id="cred-weight"
+                  type="number"
+                  min="1"
+                  value={credForm.weight}
+                  onChange={(e) => setCredForm({ ...credForm, weight: e.target.value })}
+                />
+              </div>
+              <div className="form-actions">
+                <button type="submit" className="btn-primary">
+                  Add Credential
+                </button>
+                <button type="button" className="btn-secondary" onClick={() => setCredsModal(null)}>
+                  Close
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

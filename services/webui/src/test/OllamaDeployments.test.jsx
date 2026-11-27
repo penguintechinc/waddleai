@@ -469,4 +469,154 @@ describe('OllamaDeployments', () => {
       expect(screen.getByText('unknown')).toBeInTheDocument();
     });
   });
+
+  it('supports editing, lifecycle actions, health, logs, and exports', async () => {
+    const dep = {
+      id: 1,
+      name: 'node-1',
+      endpoint_url: 'http://node-1:11434',
+      deployment_type: 'kubernetes',
+      status: 'running',
+      health_status: 'healthy',
+      gpu_config: { gpu_count: 1 },
+      models: [{ id: 10, model_name: 'llama3.2', model_tag: 'latest' }],
+    };
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/ollama/deployments') return Promise.resolve({ data: { deployments: [dep] } });
+      if (url === '/api/v1/ollama/deployments/1/health') return Promise.resolve({ data: { status: 'healthy' } });
+      if (url === '/api/v1/ollama/deployments/1/logs') return Promise.resolve({ data: { logs: 'line1\nline2' } });
+      if (url === '/api/v1/ollama/deployments/1/k8s-manifest') return Promise.resolve({ data: 'apiVersion: v1' });
+      if (url === '/api/v1/ollama/deployments/1/metallb-service') return Promise.resolve({ data: 'kind: Service' });
+      if (url === '/api/v1/ollama/deployments/1/metallb-model-services') return Promise.resolve({ data: 'kind: ServiceList' });
+      if (url === '/api/v1/ollama/export/metallb-all') return Promise.resolve({ data: 'all-metallb' });
+      if (url === '/api/v1/ollama/models/10/route-status') return Promise.resolve({ data: { status: 'routed' } });
+      return Promise.reject(new Error(`Unexpected GET ${url}`));
+    });
+    axios.put.mockResolvedValue({ data: { status: 'updated' } });
+    axios.post.mockResolvedValue({ data: { status: 'ok' } });
+    axios.delete.mockResolvedValue({ data: { status: 'removed' } });
+
+    render(<OllamaDeployments />);
+    await waitFor(() => expect(screen.getByText('node-1')).toBeInTheDocument());
+
+    // Edit
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    fireEvent.change(document.getElementById('edit-ollama-name'), { target: { value: 'node-1-updated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Deployment' }));
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith('/api/v1/ollama/deployments/1', expect.objectContaining({ name: 'node-1-updated' }));
+    });
+
+    // Lifecycle
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/deployments/1/start'));
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/deployments/1/stop'));
+    fireEvent.click(screen.getByRole('button', { name: 'Restart' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/deployments/1/restart'));
+
+    // Health & Logs
+    fireEvent.click(screen.getByRole('button', { name: 'Health' }));
+    await waitFor(() => expect(screen.getByText('Health: healthy')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+    await waitFor(() => expect(screen.getByText('Deployment #1 Logs')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    // Exports
+    fireEvent.click(screen.getByRole('button', { name: 'K8s Manifest' }));
+    await waitFor(() => expect(screen.getByText('apiVersion: v1')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'MetalLB Service' }));
+    await waitFor(() => expect(screen.getByText('kind: Service')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'MetalLB Models' }));
+    await waitFor(() => expect(screen.getByText('kind: ServiceList')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Export All MetalLB' }));
+    await waitFor(() => expect(screen.getByText('all-metallb')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    // Model routes & remove
+    fireEvent.click(screen.getByRole('button', { name: 'Sync Models' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/deployments/1/sync-models'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Route Status' }));
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/v1/ollama/models/10/route-status'));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sync' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/models/10/sync', undefined));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reassign' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/models/10/reassign', { deployment_id: 1 }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/ollama/deployments/1/models/llama3.2'));
+
+    // Assign & Bulk Assign
+    fireEvent.change(screen.getByLabelText('Assign Deployment ID'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Assign Model Name'), { target: { value: 'mistral' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Assign Model' }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/models/assign', {
+        deployment_id: 1,
+        model_name: 'mistral',
+        model_tag: 'latest',
+      });
+    });
+
+    fireEvent.change(screen.getByLabelText('Assign Deployment ID'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Bulk Models'), { target: { value: 'qwen2, phi3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Bulk Assign' }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/ollama/models/bulk-assign', {
+        deployment_id: 1,
+        models: ['qwen2', 'phi3'],
+      });
+    });
+  });
+
+  it('surfaces errors for edit, lifecycle, health, logs, exports, and model actions', async () => {
+    const dep = {
+      id: 1,
+      name: 'node-1',
+      endpoint_url: 'http://node-1:11434',
+      deployment_type: 'docker',
+      status: 'running',
+      health_status: 'healthy',
+      gpu_config: { gpu_count: 1 },
+      models: [{ id: 10, model_name: 'llama3.2', model_tag: 'latest' }],
+    };
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/ollama/deployments') return Promise.resolve({ data: { deployments: [dep] } });
+      return Promise.reject(new Error('get err'));
+    });
+    axios.put.mockRejectedValue(new Error('put err'));
+    axios.post.mockRejectedValue(new Error('post err'));
+    axios.delete.mockRejectedValue(new Error('del err'));
+
+    render(<OllamaDeployments />);
+    await waitFor(() => expect(screen.getByText('node-1')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start' }));
+    await waitFor(() => expect(screen.getByText('Failed to start deployment')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Health' }));
+    await waitFor(() => expect(screen.getByText('Failed to check health')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Logs' }));
+    await waitFor(() => expect(screen.getByText('Failed to fetch logs')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(screen.getByText('Failed to remove model')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'K8s Manifest' }));
+    await waitFor(() => expect(screen.getByText('Failed to export K8s Manifest')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Sync Models' }));
+    await waitFor(() => expect(screen.getByText('Failed to sync models')).toBeInTheDocument());
+  });
 });

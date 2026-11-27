@@ -26,14 +26,22 @@ const mockEmbeddingConfig = {
   dimensions: 768,
   configured: true,
 };
+const mockScopingConfig = {
+  organization_id: 1,
+  enabled: true,
+  relevance_cutoff: 0.7,
+  top_k: 3,
+  configured: true,
+};
 
 describe('Memory page', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     axios.get.mockImplementation((path) => {
-      if (path === '/api/v1/ailb/memory-config') return Promise.resolve({ data: mockMemoryConfig });
-      if (path === '/api/v1/ailb/rag-config') return Promise.resolve({ data: mockRagConfig });
-      if (path === '/api/v1/ailb/embedding-config') return Promise.resolve({ data: mockEmbeddingConfig });
+      if (path === '/api/v1/memory-config') return Promise.resolve({ data: mockMemoryConfig });
+      if (path === '/api/v1/rag-config') return Promise.resolve({ data: mockRagConfig });
+      if (path === '/api/v1/embedding-config') return Promise.resolve({ data: mockEmbeddingConfig });
+      if (path === '/api/v1/memory-scoping') return Promise.resolve({ data: mockScopingConfig });
       return Promise.reject(new Error(`unexpected path ${path}`));
     });
   });
@@ -58,9 +66,11 @@ describe('Memory page', () => {
     });
     expect(screen.getByText('RAG Document Retrieval')).toBeInTheDocument();
     expect(screen.getByText('Embedding Backend')).toBeInTheDocument();
-    expect(axios.get).toHaveBeenCalledWith('/api/v1/ailb/memory-config', { params: { organization_id: 1 } });
-    expect(axios.get).toHaveBeenCalledWith('/api/v1/ailb/rag-config', { params: { organization_id: 1 } });
-    expect(axios.get).toHaveBeenCalledWith('/api/v1/ailb/embedding-config', { params: { organization_id: 1 } });
+    expect(screen.getByText('Memory Scoping (§9.4)')).toBeInTheDocument();
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/memory-config', { params: { organization_id: 1 } });
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/rag-config', { params: { organization_id: 1 } });
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/embedding-config', { params: { organization_id: 1 } });
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/memory-scoping', { params: { organization_id: 1 } });
   });
 
   it('refetches all configs when organization id changes', async () => {
@@ -73,7 +83,7 @@ describe('Memory page', () => {
     fireEvent.change(screen.getByLabelText('Organization ID'), { target: { value: '2' } });
 
     await waitFor(() => {
-      expect(axios.get).toHaveBeenCalledWith('/api/v1/ailb/memory-config', { params: { organization_id: 2 } });
+      expect(axios.get).toHaveBeenCalledWith('/api/v1/memory-config', { params: { organization_id: 2 } });
     });
   });
 
@@ -117,7 +127,7 @@ describe('Memory page', () => {
       expect(screen.getByText('Memory configuration saved successfully')).toBeInTheDocument();
     });
 
-    expect(axios.post).toHaveBeenCalledWith('/api/v1/ailb/memory-config', {
+    expect(axios.post).toHaveBeenCalledWith('/api/v1/memory-config', {
       organization_id: 1,
       enabled: true,
       max_messages: 20,
@@ -307,5 +317,104 @@ describe('Memory page', () => {
 
     expect(screen.queryByText('Memory configuration saved successfully')).not.toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  it('saves memory scoping configuration', async () => {
+    axios.post.mockResolvedValue({ data: { status: 'updated', organization_id: 1, top_k: 3 } });
+    render(<Memory />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Save Scoping Configuration' })).toBeInTheDocument();
+    });
+
+    fireEvent.change(document.getElementById('scoping-relevance-cutoff'), { target: { value: '0.85' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Scoping Configuration' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/memory-scoping', {
+        organization_id: 1,
+        enabled: true,
+        relevance_cutoff: 0.85,
+      });
+    });
+  });
+
+  it('promotes, corrects, and disputes a memory item', async () => {
+    axios.post
+      .mockResolvedValueOnce({ data: { status: 'promoted', id: 42, scope_type: 'repo', scope_ref: 'org/repo' } })
+      .mockResolvedValueOnce({ data: { status: 'corrected', old_id: 42, new_id: 43, version: 2 } })
+      .mockResolvedValueOnce({ data: { status: 'disputed', id: 42 } });
+
+    render(<Memory />);
+    await waitFor(() => {
+      expect(document.getElementById('memory-item-id')).toBeInTheDocument();
+    });
+
+    fireEvent.change(document.getElementById('memory-item-id'), { target: { value: '42' } });
+    fireEvent.change(document.getElementById('promote-scope-ref'), { target: { value: 'org/repo' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Promote Memory' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/memory/42/promote', {
+        target_scope: 'repo',
+        scope_ref: 'org/repo',
+      });
+    });
+
+    fireEvent.change(document.getElementById('correction-content'), { target: { value: 'Updated fact' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Correct Memory' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/memory/42/correct', {
+        content: 'Updated fact',
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dispute Memory' }));
+
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/memory/42/dispute', {});
+    });
+  });
+
+  it('validates memory item id and correction content before calling actions', async () => {
+    render(<Memory />);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Promote Memory' })).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Promote Memory' }));
+    expect(screen.getByText('Memory Item ID is required')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dispute Memory' }));
+    expect(screen.getByText('Memory Item ID is required')).toBeInTheDocument();
+
+    fireEvent.change(document.getElementById('memory-item-id'), { target: { value: '10' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Correct Memory' }));
+    expect(screen.getByText('Correction content is required')).toBeInTheDocument();
+  });
+
+  it('handles scoping checkbox toggle, org promotion without scope_ref, and action errors', async () => {
+    axios.post.mockRejectedValue(new Error('action failed'));
+    render(<Memory />);
+    await waitFor(() => expect(document.getElementById('scoping-relevance-cutoff')).toBeInTheDocument());
+
+    const checkboxes = screen.getAllByRole('checkbox');
+    fireEvent.click(checkboxes[2]);
+    expect(checkboxes[2]).not.toBeChecked();
+
+    fireEvent.change(document.getElementById('memory-item-id'), { target: { value: '5' } });
+    fireEvent.change(document.getElementById('promote-target-scope'), { target: { value: 'org' } });
+    expect(document.getElementById('promote-scope-ref')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Promote Memory' }));
+    await waitFor(() => expect(screen.getByText('Failed to promote memory item')).toBeInTheDocument());
+
+    fireEvent.change(document.getElementById('correction-content'), { target: { value: 'fix' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Correct Memory' }));
+    await waitFor(() => expect(screen.getByText('Failed to correct memory item')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Dispute Memory' }));
+    await waitFor(() => expect(screen.getByText('Failed to dispute memory item')).toBeInTheDocument());
   });
 });

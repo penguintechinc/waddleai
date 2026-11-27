@@ -549,4 +549,172 @@ describe('Routing page - admin: Test Routing Decision', () => {
     fireEvent.click(errorAlert.querySelector('button'));
     expect(screen.queryByText('Feature not enabled')).not.toBeInTheDocument();
   });
+
+  it('deletes routing policy and seeds default assignments', async () => {
+    axios.delete.mockResolvedValue({ data: { status: 'deleted' } });
+    axios.post.mockResolvedValue({ data: { seeded: 3 } });
+
+    render(<Routing />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete Policy' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Policy' }));
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith('/api/v1/routing/policies/1');
+      expect(screen.getByText('Routing policy deleted successfully')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Seed Default Assignments' }));
+    await waitFor(() => {
+      expect(axios.post).toHaveBeenCalledWith('/api/v1/routing/assignments/seed');
+      expect(screen.getByText('Default routing assignments seeded')).toBeInTheDocument();
+    });
+  });
+
+  it('manages routing rules, model aliases, access policies, and decisions tabs', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/routing/policies/1') return Promise.resolve({ data: { data: { classifier_prompt: 'p' } } });
+      if (url === '/api/v1/routing/assignments/') return Promise.resolve({ data: { data: [] } });
+      if (url === '/api/v1/routing/rules/') return Promise.resolve({ data: { data: [{ id: 1, name: 'rule-1', priority: 10, enabled: true }] } });
+      if (url === '/api/v1/routing/aliases/') return Promise.resolve({ data: { data: [{ id: 2, source_model: 'fast', target_model: 'gpt-4o-mini', enabled: true }] } });
+      if (url === '/api/v1/routing/access-policies/') return Promise.resolve({ data: { data: [{ id: 3, scope_type: 'org', scope_ref: '42', model_pattern: 'gpt-4*', action: 'deny', enabled: true }] } });
+      if (url === '/api/v1/routing/decisions/') return Promise.resolve({ data: { data: [{ request_id: 'req-123', selected_model: 'gpt-4o', tool_type: 'code' }] } });
+      if (url === '/api/v1/routing/decisions/req-123') return Promise.resolve({ data: { data: { request_id: 'req-123', selected_model: 'gpt-4o' } } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    axios.post.mockResolvedValue({ data: { status: 'created' } });
+    axios.put.mockResolvedValue({ data: { status: 'updated' } });
+    axios.delete.mockResolvedValue({ data: { status: 'deleted' } });
+
+    render(<Routing />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Routing Rules' })).toBeInTheDocument());
+
+    // Rules tab
+    fireEvent.click(screen.getByRole('tab', { name: 'Routing Rules' }));
+    await waitFor(() => expect(screen.getByText(/rule-1/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Rule Name'), { target: { value: 'rule-2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Rule' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/routing/rules/', expect.objectContaining({ name: 'rule-2' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/routing/rules/1', { enabled: false }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Rule' }));
+    await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/routing/rules/1'));
+
+    // Aliases tab
+    fireEvent.click(screen.getByRole('tab', { name: 'Model Aliases' }));
+    await waitFor(() => expect(screen.getByText(/fast → gpt-4o-mini/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Source Model'), { target: { value: 'smart' } });
+    fireEvent.change(screen.getByLabelText('Target Model'), { target: { value: 'gpt-4o' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Alias' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/routing/aliases/', expect.objectContaining({ source_model: 'smart', target_model: 'gpt-4o' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/routing/aliases/2', { enabled: false }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Alias' }));
+    await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/routing/aliases/2'));
+
+    // Access Policies tab
+    fireEvent.click(screen.getByRole('tab', { name: 'Access Policies' }));
+    await waitFor(() => expect(screen.getByText(/gpt-4\*/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Model Pattern'), { target: { value: 'claude-*' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Access Policy' }));
+    await waitFor(() => expect(axios.post).toHaveBeenCalledWith('/api/v1/routing/access-policies/', expect.objectContaining({ model_pattern: 'claude-*' })));
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    await waitFor(() => expect(axios.put).toHaveBeenCalledWith('/api/v1/routing/access-policies/3', { enabled: false }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Access Policy' }));
+    await waitFor(() => expect(axios.delete).toHaveBeenCalledWith('/api/v1/routing/access-policies/3'));
+
+    // Decisions tab
+    fireEvent.click(screen.getByRole('tab', { name: 'Decisions' }));
+    await waitFor(() => expect(screen.getByText(/req-123 — gpt-4o/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Lookup Trace' }));
+    fireEvent.change(screen.getByLabelText('Request ID'), { target: { value: 'req-123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Lookup Trace' }));
+    await waitFor(() => expect(axios.get).toHaveBeenCalledWith('/api/v1/routing/decisions/req-123'));
+    expect(screen.getByText(/"selected_model": "gpt-4o"/)).toBeInTheDocument();
+  });
+
+  it('surfaces errors for delete policy, seed assignments, and tab mutations', async () => {
+    axios.delete.mockRejectedValue(new Error('del err'));
+    axios.post.mockRejectedValue(new Error('post err'));
+    axios.put.mockRejectedValue(new Error('put err'));
+
+    render(<Routing />);
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Delete Policy' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Policy' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete routing policy')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Seed Default Assignments' }));
+    await waitFor(() => expect(screen.getByText('Failed to seed routing assignments')).toBeInTheDocument());
+
+    axios.get.mockRejectedValue(new Error('tab fetch err'));
+    fireEvent.click(screen.getByRole('tab', { name: 'Routing Rules' }));
+    await waitFor(() => expect(screen.getByText('Failed to load rules')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Rule Name'), { target: { value: 'bad-rule' } });
+    fireEvent.change(screen.getByLabelText('Rule Priority'), { target: { value: '50' } });
+    fireEvent.change(screen.getByLabelText('Rule Action JSON'), { target: { value: '{"model":"x"}' } });
+    fireEvent.change(screen.getByLabelText('Rule Match JSON'), { target: { value: '{bad-json' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Rule' }));
+    await waitFor(() => expect(screen.getByText(/Expected property name|JSON/i)).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Model Aliases' }));
+    await waitFor(() => expect(screen.getByText('Failed to load aliases')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Source Model'), { target: { value: 'a' } });
+    fireEvent.change(screen.getByLabelText('Target Model'), { target: { value: 'b' } });
+    fireEvent.change(screen.getByLabelText('Target Provider'), { target: { value: 'openai' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Alias' }));
+    await waitFor(() => expect(screen.getByText('Failed to create model alias')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Access Policies' }));
+    await waitFor(() => expect(screen.getByText('Failed to load access')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Scope Type'), { target: { value: 'team' } });
+    fireEvent.change(screen.getByLabelText('Scope Ref'), { target: { value: 'team-1' } });
+    fireEvent.change(screen.getByLabelText('Policy Action'), { target: { value: 'allow' } });
+    fireEvent.change(screen.getByLabelText('Model Pattern'), { target: { value: '*' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Access Policy' }));
+    await waitFor(() => expect(screen.getByText('Failed to create access policy')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Decisions' }));
+    await waitFor(() => expect(screen.getByText('Failed to load decisions')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Request ID'), { target: { value: 'missing' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Lookup Trace' }));
+    await waitFor(() => expect(screen.getByText('Trace not found')).toBeInTheDocument());
+  });
+
+  it('surfaces toggle and delete errors on rules, aliases, and access policies', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/routing/policies/1') return Promise.resolve({ data: { data: { classifier_prompt: 'p' } } });
+      if (url === '/api/v1/routing/assignments/') return Promise.resolve({ data: { data: [] } });
+      if (url === '/api/v1/routing/rules/') return Promise.resolve({ data: { data: [{ id: 1, name: 'r1', priority: 1, enabled: false }] } });
+      if (url === '/api/v1/routing/aliases/') return Promise.resolve({ data: { data: [{ id: 2, source_model: 'a', target_model: 'b', enabled: false }] } });
+      if (url === '/api/v1/routing/access-policies/') return Promise.resolve({ data: { data: [{ id: 3, scope_type: 'org', model_pattern: '*', action: 'deny', enabled: false }] } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+    axios.put.mockRejectedValue(new Error('put err'));
+    axios.delete.mockRejectedValue(new Error('del err'));
+
+    render(<Routing />);
+    await waitFor(() => expect(screen.getByRole('tab', { name: 'Routing Rules' })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Routing Rules' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(screen.getByText('Failed to update routing rule')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Rule' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete routing rule')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Model Aliases' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(screen.getByText('Failed to update model alias')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Alias' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete model alias')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Access Policies' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Enable' })).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Enable' }));
+    await waitFor(() => expect(screen.getByText('Failed to update access policy')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Delete Access Policy' }));
+    await waitFor(() => expect(screen.getByText('Failed to delete access policy')).toBeInTheDocument());
+  });
 });

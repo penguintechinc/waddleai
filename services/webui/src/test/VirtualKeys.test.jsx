@@ -674,4 +674,119 @@ describe('VirtualKeys', () => {
       expect(screen.getByText('Failed to copy to clipboard')).toBeInTheDocument();
     });
   });
+
+  it('edits a virtual key via PUT /api/v1/keys/<id>', async () => {
+    axios.get.mockResolvedValue({ data: { keys: mockKeys } });
+    axios.put.mockResolvedValue({ data: { message: 'Updated' } });
+
+    render(<VirtualKeys />);
+    await waitFor(() => expect(screen.getAllByTitle('Edit key').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByTitle('Edit key')[0]);
+    expect(screen.getByText('Edit Virtual Key')).toBeInTheDocument();
+
+    fireEvent.change(document.getElementById('edit-key-name'), { target: { value: 'Updated Key' } });
+    fireEvent.change(document.getElementById('edit-key-models'), { target: { value: 'gpt-4' } });
+    fireEvent.change(document.getElementById('edit-key-providers'), { target: { value: 'openai' } });
+    fireEvent.change(document.getElementById('edit-key-rpm'), { target: { value: '120' } });
+    fireEvent.change(document.getElementById('edit-key-tpm'), { target: { value: '20000' } });
+    fireEvent.change(document.getElementById('edit-key-budget'), { target: { value: '250' } });
+    const editCheckboxes = document.querySelectorAll('.modal input[type="checkbox"]');
+    if (editCheckboxes.length > 0) fireEvent.click(editCheckboxes[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+
+    await waitFor(() => {
+      expect(axios.put).toHaveBeenCalledWith(
+        '/api/v1/keys/1',
+        expect.objectContaining({ name: 'Updated Key' })
+      );
+      expect(screen.getByText('Key updated successfully')).toBeInTheDocument();
+    });
+  });
+
+  it('opens key detail and usage modal via GET /api/v1/keys/<id> and /usage', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/keys') return Promise.resolve({ data: { keys: mockKeys } });
+      if (url === '/api/v1/keys/1') return Promise.resolve({ data: { id: 1, name: 'Production Key' } });
+      if (url === '/api/v1/keys/1/usage') {
+        return Promise.resolve({ data: { total_requests: 42, total_tokens: 1200, total_cost_usd: 0.1234 } });
+      }
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    render(<VirtualKeys />);
+    await waitFor(() => expect(screen.getAllByTitle('View usage & details').length).toBeGreaterThan(0));
+
+    fireEvent.click(screen.getAllByTitle('View usage & details')[0]);
+    await waitFor(() => {
+      expect(screen.getByText(/Key Details & Usage — Production Key/)).toBeInTheDocument();
+      expect(screen.getByText(/Total Requests: 42/)).toBeInTheDocument();
+      expect(screen.getByText(/Total Tokens: 1200/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByText(/Key Details & Usage/)).not.toBeInTheDocument();
+  });
+
+  it('revokes a proxy key via DELETE /api/v1/proxy-keys/<key_id>', async () => {
+    axios.get.mockResolvedValue({ data: { keys: mockKeys } });
+    axios.delete.mockResolvedValue({ data: { message: 'API key revoked successfully' } });
+
+    render(<VirtualKeys />);
+    await waitFor(() => expect(screen.getByLabelText('Proxy Key ID')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Proxy Key ID'), { target: { value: 'wdl_abc123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke Proxy Key' }));
+
+    await waitFor(() => {
+      expect(axios.delete).toHaveBeenCalledWith('/api/v1/proxy-keys/wdl_abc123');
+      expect(screen.getByText('Proxy key wdl_abc123 revoked successfully')).toBeInTheDocument();
+    });
+  });
+
+  it('validates empty proxy key id and surfaces edit/detail/proxy errors', async () => {
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/keys') return Promise.resolve({ data: { keys: mockKeys } });
+      return Promise.reject(new Error('Detail failed'));
+    });
+    axios.put.mockRejectedValue(new Error('Update failed'));
+    axios.delete.mockRejectedValue(new Error('Proxy revoke failed'));
+
+    render(<VirtualKeys />);
+    await waitFor(() => expect(screen.getByLabelText('Proxy Key ID')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke Proxy Key' }));
+    expect(screen.getByText('Proxy Key ID is required')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Proxy Key ID'), { target: { value: 'wdl_bad' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke Proxy Key' }));
+    await waitFor(() => expect(screen.getByText('Failed to revoke proxy key')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('View usage & details')[0]);
+    await waitFor(() => expect(screen.getByText('Failed to load key details')).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByTitle('Edit key')[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Save Changes' }));
+    await waitFor(() => expect(screen.getByText('Failed to update virtual key')).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  });
+
+  it('handles sparse detail/usage payload and alternate key fields in edit modal', async () => {
+    const altKeys = [{ id: 2, name: 'Alt', key_prefix: 'wdl_alt', is_active: true, rpm_limit: 10, tpm_limit: 100, budget_limit_monthly: 5, enabled: false }];
+    axios.get.mockImplementation((url) => {
+      if (url === '/api/v1/keys') return Promise.resolve({ data: { keys: altKeys } });
+      if (url === '/api/v1/keys/2') return Promise.resolve({ data: { key: { name: 'Nested Key' } } });
+      if (url === '/api/v1/keys/2/usage') return Promise.resolve({ data: { requests: 3, tokens: 50, cost_usd: 0.01 } });
+      return Promise.reject(new Error(`Unexpected URL: ${url}`));
+    });
+
+    render(<VirtualKeys />);
+    await waitFor(() => expect(screen.getAllByTitle('View usage & details').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getAllByTitle('View usage & details')[0]);
+    await waitFor(() => expect(screen.getByText(/Nested Key/)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+    fireEvent.click(screen.getAllByTitle('Edit key')[0]);
+    expect(document.getElementById('edit-key-rpm')).toHaveValue(10);
+  });
 });

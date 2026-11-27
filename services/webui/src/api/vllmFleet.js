@@ -128,17 +128,89 @@ export function rotateSecret(name) {
   return request(axios.post(`${BASE}/secrets/${encodeURIComponent(name)}/rotate`));
 }
 
+async function bareRequest(promise, unwrap) {
+  try {
+    const res = await promise;
+    return unwrap ? unwrap(res) : (res?.data?.data ?? res?.data);
+  } catch (err) {
+    throw new Error(err?.response?.data?.error || 'Request failed');
+  }
+}
+
 /**
  * Create a llama.cpp deployment (the wizard sends `topology: 2` for multi-node).
  * This route returns the bare body, not the envelope, so it is not unwrapped.
  * @param {object} body - POST /api/v1/llamacpp/deployments body
  * @returns {Promise<{deployment_id:number, public_id:string, explanation?:string}>}
  */
-export async function createLlamaCppDeployment(body) {
-  try {
-    const res = await axios.post('/api/v1/llamacpp/deployments', body);
-    return res?.data?.data ?? res?.data;
-  } catch (err) {
-    throw new Error(err?.response?.data?.error || 'Request failed');
-  }
+export function createLlamaCppDeployment(body) {
+  return bareRequest(axios.post('/api/v1/llamacpp/deployments', body));
+}
+
+/** Create a fleet backend. */
+export function createBackend(body) {
+  return request(axios.post(`${BASE}/backends`, body));
+}
+
+/** Delete a fleet backend. */
+export function deleteBackend(backendId) {
+  return request(axios.delete(`${BASE}/backends/${backendId}`));
+}
+
+/** Fetch vLLM deployment events. */
+export function getDeploymentEvents(publicId) {
+  return request(axios.get(`${BASE}/vllm/deployments/${publicId}/events`));
+}
+
+/** Delete cached model weights from the fleet. */
+export function deleteModelWeights(modelRef) {
+  return request(axios.delete(`${BASE}/models/${modelRef}/weights`));
+}
+
+/** List llama.cpp deployments. */
+export function listLlamaCppDeployments(params) {
+  return bareRequest(
+    axios.get('/api/v1/llamacpp/deployments', { params }),
+    (res) => res?.data?.deployments ?? res?.data?.data ?? []
+  );
+}
+
+/** Get one llama.cpp deployment. */
+export function getLlamaCppDeployment(id) {
+  return bareRequest(axios.get(`/api/v1/llamacpp/deployments/${id}`));
+}
+
+/** Patch a llama.cpp deployment. */
+export function patchLlamaCppDeployment(id, body) {
+  return bareRequest(axios.patch(`/api/v1/llamacpp/deployments/${id}`, body));
+}
+
+/** Delete a llama.cpp deployment. */
+export function deleteLlamaCppDeployment(id) {
+  return bareRequest(axios.delete(`/api/v1/llamacpp/deployments/${id}`));
+}
+
+/** Deploy a llama.cpp deployment. */
+export function deployLlamaCppDeployment(id) {
+  return bareRequest(axios.post(`/api/v1/llamacpp/deployments/${id}/deploy`));
+}
+
+/** Remove a deployed llama.cpp workload. */
+export function removeLlamaCppDeployment(id) {
+  return bareRequest(axios.post(`/api/v1/llamacpp/deployments/${id}/remove`));
+}
+
+/** Check health of a llama.cpp deployment. */
+export function getLlamaCppHealth(id) {
+  return bareRequest(axios.get(`/api/v1/llamacpp/deployments/${id}/health`));
+}
+
+/** Export Kubernetes manifest for a llama.cpp deployment. */
+export function exportLlamaCppK8s(id) {
+  return bareRequest(axios.get(`/api/v1/llamacpp/deployments/${id}/export/k8s`));
+}
+
+/** Rotate bearer token for a llama.cpp deployment. */
+export function rotateLlamaCppToken(publicId) {
+  return request(axios.post(`${BASE}/llamacpp/deployments/${publicId}/rotate-token`));
 }

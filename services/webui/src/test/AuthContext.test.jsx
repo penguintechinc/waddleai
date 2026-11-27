@@ -425,4 +425,212 @@ describe('AuthContext', () => {
     expect(getItemSpy).not.toHaveBeenCalledWith('token');
     expect(setItemSpy).not.toHaveBeenCalledWith('token', expect.anything());
   });
+
+  describe('refreshToken', () => {
+    it('posts to /api/v1/auth/refresh and returns expires_in on success', async () => {
+      const mockUser = { id: 1, username: 'admin' };
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ user: mockUser }) });
+
+      let result;
+      function RefreshConsumer() {
+        const { refreshToken } = useAuth();
+        return (
+          <button data-testid="refresh-btn" onClick={async () => { result = await refreshToken(); }}>
+            Refresh
+          </button>
+        );
+      }
+
+      renderWithProviders(<RefreshConsumer />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ expires_in: 3600 }) });
+      await act(async () => {
+        screen.getByTestId('refresh-btn').click();
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/v1/auth/refresh', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        credentials: 'include',
+      });
+      expect(result).toEqual({ success: true, expires_in: 3600 });
+    });
+
+    it('clears user and marks UNAUTHENTICATED on 401/403', async () => {
+      const mockUser = { id: 1, username: 'admin' };
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ user: mockUser }) });
+
+      let result;
+      function RefreshConsumer() {
+        const { authStatus, refreshToken } = useAuth();
+        return (
+          <div>
+            <div data-testid="status">{authStatus}</div>
+            <button data-testid="refresh-btn" onClick={async () => { result = await refreshToken(); }}>
+              Refresh
+            </button>
+          </div>
+        );
+      }
+
+      renderWithProviders(<RefreshConsumer />);
+      await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent(AUTH_STATUS.AUTHENTICATED));
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: 'Expired' }) });
+      await act(async () => {
+        screen.getByTestId('refresh-btn').click();
+      });
+
+      expect(screen.getByTestId('status')).toHaveTextContent(AUTH_STATUS.UNAUTHENTICATED);
+      expect(result).toEqual({ success: false, error: 'Expired' });
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => { throw new Error('bad'); } });
+      await act(async () => {
+        screen.getByTestId('refresh-btn').click();
+      });
+      expect(result).toEqual({ success: false, error: 'Session expired' });
+    });
+
+    it('marks UNREACHABLE on 5xx and returns network error on throw', async () => {
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ user: { id: 1 } }) });
+
+      let result;
+      function RefreshConsumer() {
+        const { authStatus, refreshToken } = useAuth();
+        return (
+          <div>
+            <div data-testid="status">{authStatus}</div>
+            <button data-testid="refresh-btn" onClick={async () => { result = await refreshToken(); }}>
+              Refresh
+            </button>
+          </div>
+        );
+      }
+
+      renderWithProviders(<RefreshConsumer />);
+      await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent(AUTH_STATUS.AUTHENTICATED));
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+      await act(async () => {
+        screen.getByTestId('refresh-btn').click();
+      });
+      expect(result).toEqual({ success: false, error: 'Failed to refresh session' });
+
+      global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+      await act(async () => {
+        screen.getByTestId('refresh-btn').click();
+      });
+      expect(result).toEqual({ success: false, error: 'Network error' });
+    });
+  });
+
+  describe('fetchMe', () => {
+    it('fetches /api/v1/auth/me and updates user on success', async () => {
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+
+      let result;
+      function MeConsumer() {
+        const { user, fetchMe } = useAuth();
+        return (
+          <div>
+            <div data-testid="user">{user ? user.email : 'none'}</div>
+            <button data-testid="me-btn" onClick={async () => { result = await fetchMe(); }}>
+              Me
+            </button>
+          </div>
+        );
+      }
+
+      renderWithProviders(<MeConsumer />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+      const meData = { id: 1, username: 'admin', email: 'admin@example.com', role: 'admin' };
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => meData });
+      await act(async () => {
+        screen.getByTestId('me-btn').click();
+      });
+
+      expect(global.fetch).toHaveBeenCalledWith('/api/v1/auth/me', { credentials: 'include' });
+      expect(screen.getByTestId('user')).toHaveTextContent('admin@example.com');
+      expect(result).toEqual({ success: true, user: meData });
+    });
+
+    it('handles 401, 500, and network errors', async () => {
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ user: { id: 1 } }) });
+
+      let result;
+      function MeConsumer() {
+        const { fetchMe } = useAuth();
+        return (
+          <button data-testid="me-btn" onClick={async () => { result = await fetchMe(); }}>
+            Me
+          </button>
+        );
+      }
+
+      renderWithProviders(<MeConsumer />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: 'No auth' }) });
+      await act(async () => { screen.getByTestId('me-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'No auth' });
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 403, json: async () => { throw new Error('bad'); } });
+      await act(async () => { screen.getByTestId('me-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'Unauthorized' });
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 500 });
+      await act(async () => { screen.getByTestId('me-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'Failed to fetch user profile' });
+
+      global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+      await act(async () => { screen.getByTestId('me-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'Network error' });
+    });
+  });
+
+  describe('changePassword', () => {
+    it('posts to /api/v1/auth/change-password and handles success/error', async () => {
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ user: { id: 1 } }) });
+
+      let result;
+      function PasswordConsumer() {
+        const { changePassword } = useAuth();
+        return (
+          <button data-testid="pw-btn" onClick={async () => { result = await changePassword('oldpass1', 'newpass123'); }}>
+            Change
+          </button>
+        );
+      }
+
+      renderWithProviders(<PasswordConsumer />);
+      await waitFor(() => expect(global.fetch).toHaveBeenCalledTimes(1));
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ message: 'Password changed successfully' }) });
+      await act(async () => { screen.getByTestId('pw-btn').click(); });
+      expect(global.fetch).toHaveBeenCalledWith('/api/v1/auth/change-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        credentials: 'include',
+        body: JSON.stringify({ current_password: 'oldpass1', new_password: 'newpass123' }),
+      });
+      expect(result).toEqual({ success: true, message: 'Password changed successfully' });
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: 'Current password is incorrect' }) });
+      await act(async () => { screen.getByTestId('pw-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'Current password is incorrect' });
+
+      global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 400, json: async () => { throw new Error('bad'); } });
+      await act(async () => { screen.getByTestId('pw-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'Failed to change password' });
+
+      global.fetch = vi.fn().mockRejectedValue(new Error('offline'));
+      await act(async () => { screen.getByTestId('pw-btn').click(); });
+      expect(result).toEqual({ success: false, error: 'Network error' });
+    });
+  });
 });

@@ -44,6 +44,14 @@ function Integrations() {
   const [authConfig, setAuthConfig] = useState(defaultAuthConfig('none'));
 
   const [linkingEndpointId, setLinkingEndpointId] = useState(null);
+  const [managedForm, setManagedForm] = useState({
+    name: '',
+    image: '',
+    namespace: 'default',
+    transport: 'streamable_http',
+  });
+  const [managedServers, setManagedServers] = useState([]);
+  const [deleteManagedId, setDeleteManagedId] = useState('');
 
   const fetchEndpoints = useCallback(async () => {
     try {
@@ -143,6 +151,41 @@ function Integrations() {
     });
     setAuthConfig(defaultAuthConfig(endpoint.auth_type));
     setReconfigureAuth(false);
+  };
+
+  const handleProvisionManagedMcp = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await axios.post('/api/v1/integrations/managed-mcp', managedForm);
+      const created = res.data?.data;
+      if (created) {
+        setManagedServers((prev) => [...prev, { ...managedForm, ...created }]);
+      }
+      setSuccess(`Managed MCP server ${managedForm.name} provisioned`);
+      setManagedForm({ name: '', image: '', namespace: 'default', transport: 'streamable_http' });
+      fetchEndpoints();
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to provision managed MCP server');
+    }
+  };
+
+  const handleDeleteManagedMcp = async (serverId) => {
+    const id = Number(serverId);
+    if (!id) {
+      setError('Managed MCP Server ID is required');
+      return;
+    }
+    try {
+      await axios.delete(`/api/v1/integrations/managed-mcp/${id}`);
+      setManagedServers((prev) => prev.filter((s) => s.id !== id));
+      setDeleteManagedId('');
+      setSuccess(`Managed MCP server #${id} deleted`);
+      fetchEndpoints();
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Failed to delete managed MCP server');
+    }
   };
 
   const handleLinkAccount = async (endpointId) => {
@@ -293,6 +336,96 @@ function Integrations() {
           onSubmit={editingEndpoint ? handleUpdateEndpoint : handleCreateEndpoint}
           onCancel={closeModal}
         />
+      )}
+
+      {isAdmin && (
+        <section className="managed-mcp-section" style={{ marginTop: '2rem' }}>
+          <h2>Managed MCP Servers</h2>
+          <form onSubmit={handleProvisionManagedMcp} className="managed-mcp-form">
+            <div className="form-row">
+              <div className="form-group">
+                <label htmlFor="managed-mcp-name">Server Name</label>
+                <input
+                  id="managed-mcp-name"
+                  type="text"
+                  value={managedForm.name}
+                  onChange={(e) => setManagedForm({ ...managedForm, name: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="managed-mcp-image">Container Image</label>
+                <input
+                  id="managed-mcp-image"
+                  type="text"
+                  value={managedForm.image}
+                  onChange={(e) => setManagedForm({ ...managedForm, image: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="managed-mcp-namespace">K8s Namespace</label>
+                <input
+                  id="managed-mcp-namespace"
+                  type="text"
+                  value={managedForm.namespace}
+                  onChange={(e) => setManagedForm({ ...managedForm, namespace: e.target.value })}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label htmlFor="managed-mcp-transport">Transport</label>
+                <select
+                  id="managed-mcp-transport"
+                  value={managedForm.transport}
+                  onChange={(e) => setManagedForm({ ...managedForm, transport: e.target.value })}
+                >
+                  <option value="streamable_http">streamable_http</option>
+                  <option value="sse">sse</option>
+                </select>
+              </div>
+            </div>
+            <button type="submit" className="btn-primary">
+              Provision Managed MCP
+            </button>
+          </form>
+
+          {managedServers.length > 0 && (
+            <ul className="managed-servers-list">
+              {managedServers.map((srv) => (
+                <li key={srv.id}>
+                  <span>
+                    #{srv.id} {srv.name} ({srv.url})
+                  </span>
+                  <button
+                    type="button"
+                    className="btn-small btn-danger"
+                    onClick={() => handleDeleteManagedMcp(srv.id)}
+                  >
+                    Tear Down
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', alignItems: 'center' }}>
+            <input
+              type="number"
+              aria-label="Managed MCP Server ID"
+              placeholder="Server ID to tear down"
+              value={deleteManagedId}
+              onChange={(e) => setDeleteManagedId(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn-danger"
+              onClick={() => handleDeleteManagedMcp(deleteManagedId)}
+            >
+              Delete Managed MCP
+            </button>
+          </div>
+        </section>
       )}
 
       <OpenCodeConfigCard />

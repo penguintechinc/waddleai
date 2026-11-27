@@ -116,4 +116,50 @@ describe('vllmFleet api client', () => {
     axios.post.mockRejectedValueOnce(new Error('net'));
     await expect(api.createLlamaCppDeployment({})).rejects.toThrow('Request failed');
   });
+
+  it('calls backend create/delete, vllm events, delete weights, and llamacpp lifecycle', async () => {
+    axios.post.mockResolvedValue({ data: { data: { ok: true } } });
+    axios.get.mockResolvedValue({ data: { data: { ok: true } } });
+    axios.patch.mockResolvedValue({ data: { data: { ok: true } } });
+    axios.delete.mockResolvedValue({ data: { data: { ok: true } } });
+
+    await api.createBackend({ name: 'b1' });
+    expect(axios.post).toHaveBeenCalledWith('/api/v1/fleet/backends', { name: 'b1' });
+
+    await api.deleteBackend(3);
+    expect(axios.delete).toHaveBeenCalledWith('/api/v1/fleet/backends/3');
+
+    await api.getDeploymentEvents('pub-1');
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/fleet/vllm/deployments/pub-1/events');
+
+    await api.deleteModelWeights('org/model');
+    expect(axios.delete).toHaveBeenCalledWith('/api/v1/fleet/models/org/model/weights');
+
+    await api.listLlamaCppDeployments({ page: 1 });
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/llamacpp/deployments', { params: { page: 1 } });
+
+    await api.getLlamaCppDeployment(9);
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9');
+
+    await api.patchLlamaCppDeployment(9, { replicas: 2 });
+    expect(axios.patch).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9', { replicas: 2 });
+
+    await api.deleteLlamaCppDeployment(9);
+    expect(axios.delete).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9');
+
+    await api.deployLlamaCppDeployment(9);
+    expect(axios.post).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9/deploy');
+
+    await api.removeLlamaCppDeployment(9);
+    expect(axios.post).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9/remove');
+
+    await api.getLlamaCppHealth(9);
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9/health');
+
+    await api.exportLlamaCppK8s(9);
+    expect(axios.get).toHaveBeenCalledWith('/api/v1/llamacpp/deployments/9/export/k8s');
+
+    await api.rotateLlamaCppToken('pub-lc');
+    expect(axios.post).toHaveBeenCalledWith('/api/v1/fleet/llamacpp/deployments/pub-lc/rotate-token');
+  });
 });
