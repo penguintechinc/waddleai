@@ -45,30 +45,115 @@ pub enum Command {
     },
     /// Clear the stored session.
     Logout,
+    /// Inspect or update the current authenticated session/account.
+    Auth {
+        #[command(subcommand)]
+        action: AuthCommand,
+    },
     /// Start the per-user account-linking flow for a registered external
     /// MCP endpoint (opens a browser to complete OAuth2 against it).
     Link {
         /// The mcp_endpoints.id of the endpoint to link.
         endpoint_id: String,
     },
-    /// List your virtual keys.
-    Keys,
-    /// Show token usage for the current key/org.
+    /// Virtual key management (defaults to listing your keys).
+    Keys {
+        #[command(subcommand)]
+        action: Option<crate::keys::KeysCommand>,
+    },
+    /// Token usage, cost, and cache statistics (defaults to summary).
     Usage {
         #[arg(long, default_value_t = 30)]
         days: u32,
+        #[command(subcommand)]
+        action: Option<crate::usage::UsageCommand>,
     },
     /// List models available to your key.
     Models,
     /// Knowledge base operations.
     Knowledge {
         #[command(subcommand)]
-        action: KnowledgeCommand,
+        action: crate::knowledge::KnowledgeCommand,
+    },
+    /// External MCP endpoints, managed MCP servers, and OpenCode config.
+    Integrations {
+        #[command(subcommand)]
+        action: crate::integrations::IntegrationsCommand,
     },
     /// Inference fleet operations.
     Fleet {
         #[command(subcommand)]
         action: FleetCommand,
+    },
+    /// LLM provider and credential management.
+    Providers {
+        #[command(subcommand)]
+        action: crate::providers::ProvidersCommand,
+    },
+    /// User management and GDPR/DSAR export/erase.
+    Users {
+        #[command(subcommand)]
+        action: crate::users::UsersCommand,
+    },
+    /// Organization management.
+    Orgs {
+        #[command(subcommand)]
+        action: crate::orgs::OrgsCommand,
+    },
+    /// Team and membership management.
+    Teams {
+        #[command(subcommand)]
+        action: crate::teams::TeamsCommand,
+    },
+    /// User, org, and key quota management.
+    Quotas {
+        #[command(subcommand)]
+        action: crate::quotas::QuotasCommand,
+    },
+    /// Pooled credit quota management.
+    PooledQuota {
+        #[command(subcommand)]
+        action: crate::quotas::PooledQuotaCommand,
+    },
+    /// Smart routing policies, assignments, rules, aliases, access policies, and decisions.
+    Routing {
+        #[command(subcommand)]
+        action: crate::routing::RoutingCommand,
+    },
+    /// Security policies and bypass grants.
+    SecurityPolicies {
+        #[command(subcommand)]
+        action: crate::security_policies::SecurityPoliciesCommand,
+    },
+    /// Hook rules, denylist, configs, metrics, and policy.
+    Hooks {
+        #[command(subcommand)]
+        action: crate::hooks::HooksCommand,
+    },
+    /// Memory, RAG, embedding, and scoping configuration.
+    Memory {
+        #[command(subcommand)]
+        action: crate::memory::MemoryCommand,
+    },
+    /// Prompt/response cache configurations.
+    CacheConfigs {
+        #[command(subcommand)]
+        action: crate::cache_configs::CacheConfigsCommand,
+    },
+    /// Ollama deployments, lifecycle, exports, and model assignments.
+    Ollama {
+        #[command(subcommand)]
+        action: crate::ollama::OllamaCommand,
+    },
+    /// Cilium network policy status and reconciliation.
+    Cilium {
+        #[command(subcommand)]
+        action: crate::cilium::CiliumCommand,
+    },
+    /// System-level signing key rotation and proxy key revocation.
+    System {
+        #[command(subcommand)]
+        action: crate::system::SystemCommand,
     },
     /// Render a safe, default-disabled MCP configuration for a coding harness.
     Harness {
@@ -86,18 +171,62 @@ pub enum Command {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum KnowledgeCommand {
-    /// Upload a PDF or Markdown document for ingestion.
-    Upload {
-        /// Path to a .pdf or .md file.
-        path: PathBuf,
+pub enum AuthCommand {
+    /// Get current authenticated user profile (/api/v1/auth/me).
+    Me,
+    /// Verify the current bearer token (/api/v1/auth/verify).
+    Verify,
+    /// Change the current user's password (/api/v1/auth/change-password).
+    ChangePassword {
+        #[arg(long)]
+        current_password: Option<String>,
+        #[arg(long)]
+        new_password: Option<String>,
     },
 }
 
 #[derive(Debug, Subcommand)]
 pub enum FleetCommand {
-    /// Show inference fleet backend status.
-    Status,
+    /// Show inference fleet backend status (or health for --backend-id).
+    Status {
+        #[arg(long)]
+        backend_id: Option<i64>,
+    },
+    /// Manage registered inference fleet backends.
+    Backends {
+        #[command(subcommand)]
+        action: crate::fleet::BackendsCommand,
+    },
+    /// Fleet savings report.
+    Savings {
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Fleet virtual-price chargeback report.
+    Chargeback {
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long)]
+        team_id: Option<i64>,
+        #[arg(long)]
+        deployment_id: Option<i64>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Fleet price suggestion.
+    PriceSuggestion {
+        #[arg(long)]
+        comparison_model: Option<String>,
+        #[arg(long)]
+        kind: Option<String>,
+    },
+    /// Fleet model weight operations.
+    Models {
+        #[command(subcommand)]
+        action: crate::fleet::FleetModelsCommand,
+    },
     /// GPU Fleet: vLLM on Ray inventory, fit check and deployments.
     Vllm {
         #[command(subcommand)]
@@ -143,6 +272,11 @@ async fn resolve_token(api_url: &str, store: &dyn TokenStore) -> Result<String> 
     crate::auth::ensure_valid_token(api_url, store).await
 }
 
+async fn authed_client(api_url: &str, store: &dyn TokenStore) -> Result<ApiClient> {
+    let token = resolve_token(api_url, store).await?;
+    ApiClient::new(api_url, Some(token))
+}
+
 /// Dispatches a parsed [`Cli`] to the matching command implementation.
 /// `store` and `opener` are injected (not constructed here) so tests can
 /// substitute an in-memory fake token store and a recording (never a real)
@@ -157,36 +291,158 @@ pub async fn run(cli: Cli, store: &dyn TokenStore, opener: &dyn BrowserOpener) -
             cmd_login(&api_url, basic, username, store, opener).await
         }
         Command::Logout => crate::auth::logout(&api_url, store).await,
+        Command::Auth { action } => cmd_auth(&api_url, action, store).await,
         Command::Link { endpoint_id } => cmd_link(&api_url, &endpoint_id, store, opener).await,
-        Command::Keys => cmd_keys(&api_url, store).await,
-        Command::Usage { days } => cmd_usage(&api_url, days, store).await,
-        Command::Models => cmd_models(&api_url, store).await,
-        Command::Knowledge {
-            action: KnowledgeCommand::Upload { path },
-        } => cmd_knowledge_upload(&api_url, &path, store).await,
-        Command::Fleet { action } => match action {
-            FleetCommand::Status => cmd_fleet_status(&api_url, store).await,
-            FleetCommand::Vllm { action } => {
-                let token = resolve_token(&api_url, store).await?;
-                let client = ApiClient::new(&api_url, Some(token))?;
-                crate::vllm::run(&client, action).await
-            }
-            FleetCommand::Llamacpp { action } => {
-                let token = resolve_token(&api_url, store).await?;
-                let client = ApiClient::new(&api_url, Some(token))?;
-                crate::llamacpp::run(&client, action).await
-            }
-            FleetCommand::Secrets { action } => {
-                let token = resolve_token(&api_url, store).await?;
-                let client = ApiClient::new(&api_url, Some(token))?;
-                crate::secrets::run(&client, action).await
+        Command::Keys { action } => match action {
+            None => cmd_keys(&api_url, store).await,
+            Some(action) => crate::keys::run(&authed_client(&api_url, store).await?, action).await,
+        },
+        Command::Usage { days, action } => match action {
+            None => cmd_usage(&api_url, days, store).await,
+            Some(action) => {
+                crate::usage::run(&authed_client(&api_url, store).await?, action).await
             }
         },
+        Command::Models => cmd_models(&api_url, store).await,
+        Command::Knowledge { action } => {
+            crate::knowledge::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Integrations { action } => {
+            crate::integrations::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Fleet { action } => match action {
+            FleetCommand::Status { backend_id } => {
+                cmd_fleet_status(&api_url, backend_id, store).await
+            }
+            FleetCommand::Backends { action } => {
+                crate::fleet::run_backends(&authed_client(&api_url, store).await?, action).await
+            }
+            FleetCommand::Savings { since, kind } => {
+                let out = crate::fleet::execute_savings(
+                    &authed_client(&api_url, store).await?,
+                    since,
+                    kind,
+                )
+                .await?;
+                println!("{out}");
+                Ok(())
+            }
+            FleetCommand::Chargeback {
+                since,
+                team_id,
+                deployment_id,
+                kind,
+            } => {
+                let out = crate::fleet::execute_chargeback(
+                    &authed_client(&api_url, store).await?,
+                    since,
+                    team_id,
+                    deployment_id,
+                    kind,
+                )
+                .await?;
+                println!("{out}");
+                Ok(())
+            }
+            FleetCommand::PriceSuggestion {
+                comparison_model,
+                kind,
+            } => {
+                let out = crate::fleet::execute_price_suggestion(
+                    &authed_client(&api_url, store).await?,
+                    comparison_model,
+                    kind,
+                )
+                .await?;
+                println!("{out}");
+                Ok(())
+            }
+            FleetCommand::Models { action } => {
+                let out =
+                    crate::fleet::execute_models(&authed_client(&api_url, store).await?, action)
+                        .await?;
+                println!("{out}");
+                Ok(())
+            }
+            FleetCommand::Vllm { action } => {
+                crate::vllm::run(&authed_client(&api_url, store).await?, action).await
+            }
+            FleetCommand::Llamacpp { action } => {
+                crate::llamacpp::run(&authed_client(&api_url, store).await?, action).await
+            }
+            FleetCommand::Secrets { action } => {
+                crate::secrets::run(&authed_client(&api_url, store).await?, action).await
+            }
+        },
+        Command::Providers { action } => {
+            crate::providers::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Users { action } => {
+            crate::users::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Orgs { action } => {
+            crate::orgs::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Teams { action } => {
+            crate::teams::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Quotas { action } => {
+            crate::quotas::run_quotas(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::PooledQuota { action } => {
+            crate::quotas::run_pooled(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Routing { action } => {
+            crate::routing::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::SecurityPolicies { action } => {
+            crate::security_policies::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Hooks { action } => {
+            crate::hooks::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Memory { action } => {
+            crate::memory::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::CacheConfigs { action } => {
+            crate::cache_configs::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Ollama { action } => {
+            crate::ollama::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::Cilium { action } => {
+            crate::cilium::run(&authed_client(&api_url, store).await?, action).await
+        }
+        Command::System { action } => {
+            crate::system::run(&authed_client(&api_url, store).await?, action).await
+        }
         Command::Harness {
             action: HarnessCommand::Sync { output },
         } => cmd_harness_sync(&api_url, output.as_deref()),
         Command::Apply { file, confirm } => {
             cmd_apply(&api_url, &file, confirm.as_deref(), store).await
+        }
+    }
+}
+
+async fn cmd_auth(api_url: &str, action: AuthCommand, store: &dyn TokenStore) -> Result<()> {
+    let client = authed_client(api_url, store).await?;
+    match action {
+        AuthCommand::Me => print_json(&client.auth_me().await?),
+        AuthCommand::Verify => print_json(&client.auth_verify().await?),
+        AuthCommand::ChangePassword {
+            current_password,
+            new_password,
+        } => {
+            let current = match current_password {
+                Some(p) => p,
+                None => rpassword::prompt_password("Current password: ")?,
+            };
+            let new = match new_password {
+                Some(p) => p,
+                None => rpassword::prompt_password("New password: ")?,
+            };
+            print_json(&client.change_password(&current, &new).await?)
         }
     }
 }
@@ -272,27 +528,16 @@ async fn cmd_models(api_url: &str, store: &dyn TokenStore) -> Result<()> {
     print_json(&models.data)
 }
 
-async fn cmd_knowledge_upload(
+async fn cmd_fleet_status(
     api_url: &str,
-    path: &std::path::Path,
+    backend_id: Option<i64>,
     store: &dyn TokenStore,
 ) -> Result<()> {
-    if !path.exists() {
-        return Err(CliError::InvalidInput(format!(
-            "no such file: {}",
-            path.display()
-        )));
-    }
-    let token = resolve_token(api_url, store).await?;
-    let client = ApiClient::new(api_url, Some(token))?;
-    let result = client.upload_knowledge(path).await?;
-    print_json(&result)
-}
-
-async fn cmd_fleet_status(api_url: &str, store: &dyn TokenStore) -> Result<()> {
-    let token = resolve_token(api_url, store).await?;
-    let client = ApiClient::new(api_url, Some(token))?;
-    let status = client.fleet_status().await?;
+    let client = authed_client(api_url, store).await?;
+    let status = match backend_id {
+        Some(id) => client.fleet_backend_health(id).await?,
+        None => client.fleet_status().await?,
+    };
     print_json(&status)
 }
 
@@ -414,7 +659,7 @@ mod tests {
 
         let store = logged_in_store(&server.uri());
         run(
-            cli_for(&server.uri(), Command::Keys),
+            cli_for(&server.uri(), Command::Keys { action: None }),
             &store,
             &RecordingBrowserOpener::default(),
         )
@@ -435,7 +680,13 @@ mod tests {
 
         let store = logged_in_store(&server.uri());
         run(
-            cli_for(&server.uri(), Command::Usage { days: 14 }),
+            cli_for(
+                &server.uri(),
+                Command::Usage {
+                    days: 14,
+                    action: None,
+                },
+            ),
             &store,
             &RecordingBrowserOpener::default(),
         )
@@ -466,16 +717,17 @@ mod tests {
     async fn run_fleet_status_prints_status() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/api/v1/fleet/status"))
+            .and(path("/api/v1/fleet/backends"))
             .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"backends": []})),
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": "success", "data": []})),
             )
             .mount(&server)
             .await;
 
         let store = logged_in_store(&server.uri());
         let cmd = Command::Fleet {
-            action: FleetCommand::Status,
+            action: FleetCommand::Status { backend_id: None },
         };
         run(
             cli_for(&server.uri(), cmd),
@@ -677,9 +929,9 @@ mod tests {
 
     #[tokio::test]
     async fn run_knowledge_upload_missing_file_errors_without_a_network_call() {
-        let store = InMemoryTokenStore::default();
+        let store = logged_in_store("https://host.example");
         let cmd = Command::Knowledge {
-            action: KnowledgeCommand::Upload {
+            action: crate::knowledge::KnowledgeCommand::Upload {
                 path: PathBuf::from("/no/such/file.md"),
             },
         };
@@ -710,7 +962,7 @@ mod tests {
 
         let store = logged_in_store(&server.uri());
         let cmd = Command::Knowledge {
-            action: KnowledgeCommand::Upload {
+            action: crate::knowledge::KnowledgeCommand::Upload {
                 path: file_path.clone(),
             },
         };
@@ -754,13 +1006,80 @@ mod tests {
         std::env::remove_var("WADDLEAI_API_KEY");
         let store = InMemoryTokenStore::default();
         let err = run(
-            cli_for("https://host.example", Command::Keys),
+            cli_for("https://host.example", Command::Keys { action: None }),
             &store,
             &RecordingBrowserOpener::default(),
         )
         .await
         .expect_err("should fail");
         assert!(matches!(err, CliError::NotLoggedIn));
+    }
+
+    #[tokio::test]
+    async fn run_auth_me_verify_and_change_password() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/auth/me"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": 1})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/auth/verify"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"user": {"id": 1}})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/auth/change-password"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"message": "Password changed"})),
+            )
+            .mount(&server)
+            .await;
+
+        let store = logged_in_store(&server.uri());
+        let opener = RecordingBrowserOpener::default();
+        run(
+            cli_for(
+                &server.uri(),
+                Command::Auth {
+                    action: AuthCommand::Me,
+                },
+            ),
+            &store,
+            &opener,
+        )
+        .await
+        .expect("auth me");
+        run(
+            cli_for(
+                &server.uri(),
+                Command::Auth {
+                    action: AuthCommand::Verify,
+                },
+            ),
+            &store,
+            &opener,
+        )
+        .await
+        .expect("auth verify");
+        run(
+            cli_for(
+                &server.uri(),
+                Command::Auth {
+                    action: AuthCommand::ChangePassword {
+                        current_password: Some("old-pass-1".into()),
+                        new_password: Some("new-pass-2".into()),
+                    },
+                },
+            ),
+            &store,
+            &opener,
+        )
+        .await
+        .expect("auth change-password");
     }
 
     #[test]

@@ -77,6 +77,38 @@ pub enum LlamaCppCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Get a llama.cpp deployment by numeric ID.
+    Get { deployment_id: i64 },
+    /// Update a llama.cpp deployment.
+    Update {
+        deployment_id: i64,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        n_ctx: Option<u32>,
+        #[arg(long)]
+        n_gpu_layers: Option<i32>,
+        #[arg(long)]
+        gpu_count: Option<u32>,
+        #[arg(long)]
+        comparison_model: Option<String>,
+    },
+    /// Delete a llama.cpp deployment.
+    Delete {
+        deployment_id: i64,
+        #[arg(long)]
+        force: bool,
+    },
+    /// Deploy an existing llama.cpp deployment to Kubernetes.
+    DeployInstance { deployment_id: i64 },
+    /// Remove a llama.cpp deployment from Kubernetes.
+    Remove { deployment_id: i64 },
+    /// Check health of a llama.cpp deployment.
+    Health { deployment_id: i64 },
+    /// Export Kubernetes manifest YAML for a llama.cpp deployment.
+    ExportK8s { deployment_id: i64 },
+    /// Rotate a llama.cpp deployment's bearer token (by public UUID).
+    RotateToken { public_id: String },
 }
 
 /// Runs a llama.cpp command and prints its output.
@@ -132,6 +164,99 @@ pub async fn execute(api: &ApiClient, action: LlamaCppCommand) -> Result<String>
             deploy(api, &Value::Object(body), json).await
         }
         LlamaCppCommand::List { topology, json } => list(api, topology, json).await,
+        LlamaCppCommand::Get { deployment_id } => {
+            let val: Value = api
+                .get_json(&format!("/api/v1/llamacpp/deployments/{deployment_id}"))
+                .await?;
+            pretty(&val)
+        }
+        LlamaCppCommand::Update {
+            deployment_id,
+            name,
+            n_ctx,
+            n_gpu_layers,
+            gpu_count,
+            comparison_model,
+        } => {
+            let mut body = Map::new();
+            if let Some(v) = name {
+                body.insert("name".into(), json!(v));
+            }
+            if let Some(v) = n_ctx {
+                body.insert("n_ctx".into(), json!(v));
+            }
+            if let Some(v) = n_gpu_layers {
+                body.insert("n_gpu_layers".into(), json!(v));
+            }
+            if let Some(v) = gpu_count {
+                body.insert("gpu_count".into(), json!(v));
+            }
+            if let Some(v) = comparison_model {
+                body.insert("comparison_model".into(), json!(v));
+            }
+            let val: Value = api
+                .patch_json(
+                    &format!("/api/v1/llamacpp/deployments/{deployment_id}"),
+                    &Value::Object(body),
+                )
+                .await?;
+            pretty(&val)
+        }
+        LlamaCppCommand::Delete {
+            deployment_id,
+            force,
+        } => {
+            let q = if force {
+                vec![("force", "true".to_string())]
+            } else {
+                Vec::new()
+            };
+            let val: Value = api
+                .delete_json_query(&format!("/api/v1/llamacpp/deployments/{deployment_id}"), &q)
+                .await?;
+            pretty(&val)
+        }
+        LlamaCppCommand::DeployInstance { deployment_id } => {
+            let val: Value = api
+                .post_json_empty(&format!(
+                    "/api/v1/llamacpp/deployments/{deployment_id}/deploy"
+                ))
+                .await?;
+            pretty(&val)
+        }
+        LlamaCppCommand::Remove { deployment_id } => {
+            let val: Value = api
+                .post_json_empty(&format!(
+                    "/api/v1/llamacpp/deployments/{deployment_id}/remove"
+                ))
+                .await?;
+            pretty(&val)
+        }
+        LlamaCppCommand::Health { deployment_id } => {
+            let val: Value = api
+                .get_json(&format!(
+                    "/api/v1/llamacpp/deployments/{deployment_id}/health"
+                ))
+                .await?;
+            pretty(&val)
+        }
+        LlamaCppCommand::ExportK8s { deployment_id } => {
+            api.get_text(&format!(
+                "/api/v1/llamacpp/deployments/{deployment_id}/export/k8s"
+            ))
+            .await
+        }
+        LlamaCppCommand::RotateToken { public_id } => {
+            let parsed = uuid::Uuid::parse_str(public_id.trim()).map_err(|_| {
+                CliError::InvalidInput(format!("invalid deployment UUID '{public_id}'"))
+            })?;
+            let val: Value = api
+                .post_json_empty(&format!(
+                    "/api/v1/fleet/llamacpp/deployments/{parsed}/rotate-token"
+                ))
+                .await?;
+            pretty(&val)
+        }
     }
 }
 
@@ -421,5 +546,107 @@ mod tests {
     fn topology_codes() {
         assert_eq!(Topology::Single.code(), 1);
         assert_eq!(Topology::Rpc.code(), 2);
+    }
+
+    #[tokio::test]
+    async fn llamacpp_lifecycle_and_export_endpoints() {
+        let server = MockServer::start().await;
+        let uuid_str = "0b0f1f3e-8d57-4c43-9a0a-6a1c5f0d2e11";
+        Mock::given(method("GET"))
+            .and(path("/api/v1/llamacpp/deployments/9"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 9})))
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/llamacpp/deployments/9"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": 9})))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/llamacpp/deployments/9"))
+            .and(query_param("force", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"deleted": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/llamacpp/deployments/9/deploy"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"deployed": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/llamacpp/deployments/9/remove"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"removed": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/llamacpp/deployments/9/health"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "healthy"})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/llamacpp/deployments/9/export/k8s"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("apiVersion: apps/v1\n"))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/api/v1/fleet/llamacpp/deployments/{uuid_str}/rotate-token"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"api_key_fingerprint": "fp"})),
+            )
+            .mount(&server)
+            .await;
+
+        let c = client(&server);
+        assert!(execute(&c, LlamaCppCommand::Get { deployment_id: 9 })
+            .await
+            .is_ok());
+        assert!(execute(
+            &c,
+            LlamaCppCommand::Update {
+                deployment_id: 9,
+                name: Some("updated".into()),
+                n_ctx: None,
+                n_gpu_layers: None,
+                gpu_count: None,
+                comparison_model: None,
+            }
+        )
+        .await
+        .is_ok());
+        assert!(execute(
+            &c,
+            LlamaCppCommand::DeployInstance { deployment_id: 9 }
+        )
+        .await
+        .is_ok());
+        assert!(execute(&c, LlamaCppCommand::Remove { deployment_id: 9 })
+            .await
+            .is_ok());
+        assert!(execute(&c, LlamaCppCommand::Health { deployment_id: 9 })
+            .await
+            .is_ok());
+        let yaml = execute(&c, LlamaCppCommand::ExportK8s { deployment_id: 9 })
+            .await
+            .expect("export k8s");
+        assert!(yaml.contains("apiVersion: apps/v1"));
+        assert!(execute(
+            &c,
+            LlamaCppCommand::RotateToken {
+                public_id: uuid_str.into()
+            }
+        )
+        .await
+        .is_ok());
+        assert!(execute(
+            &c,
+            LlamaCppCommand::Delete {
+                deployment_id: 9,
+                force: true
+            }
+        )
+        .await
+        .is_ok());
     }
 }

@@ -109,6 +109,22 @@ pub enum VllmCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Search/list available vLLM models.
+    Models {
+        #[arg(long)]
+        q: Option<String>,
+        #[arg(long)]
+        limit: Option<u32>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show vLLM feature flags.
+    Flags,
+    /// Show events for a vLLM deployment.
+    Events {
+        /// The deployment's public id (UUID).
+        public_id: String,
+    },
 }
 
 /// Runs a vLLM fleet command and prints its output.
@@ -199,6 +215,28 @@ pub async fn execute(api: &ApiClient, action: VllmCommand, is_tty: bool) -> Resu
             let resp = api.vllm_rotate_token(&id).await?;
             let fp = field(&payload(&resp), "api_key_fingerprint");
             Ok(format!("Rotated token for {id}; new fingerprint {fp}."))
+        }
+        VllmCommand::Models { q, limit, json: _ } => {
+            let mut query = Vec::new();
+            if let Some(q) = q {
+                query.push(("q", q));
+            }
+            if let Some(limit) = limit {
+                query.push(("limit", limit.to_string()));
+            }
+            let resp: Value = api.get_json_query("/api/v1/fleet/vllm/models", &query).await?;
+            pretty(&resp)
+        }
+        VllmCommand::Flags => {
+            let resp: Value = api.get_json("/api/v1/fleet/vllm/flags").await?;
+            pretty(&resp)
+        }
+        VllmCommand::Events { public_id } => {
+            let id = valid_id(&public_id)?;
+            let resp: Value = api
+                .get_json(&format!("/api/v1/fleet/vllm/deployments/{id}/events"))
+                .await?;
+            pretty(&resp)
         }
     }
 }
@@ -1013,5 +1051,49 @@ mod tests {
         assert_eq!(table, "A          B\nlong-cell  x");
         assert!(confirm(true, false, "q", "do").is_ok());
         assert!(confirm(false, false, "q", "do").is_err());
+    }
+
+    #[tokio::test]
+    async fn vllm_models_flags_and_events() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/fleet/vllm/models"))
+            .and(query_param("q", "llama"))
+            .respond_with(envelope(json!([])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/fleet/vllm/flags"))
+            .respond_with(envelope(json!({"vllm_ray": true})))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/api/v1/fleet/vllm/deployments/{ID}/events")))
+            .respond_with(envelope(json!([])))
+            .mount(&server)
+            .await;
+
+        let c = client(&server);
+        assert!(execute(
+            &c,
+            VllmCommand::Models {
+                q: Some("llama".into()),
+                limit: None,
+                json: true
+            },
+            false
+        )
+        .await
+        .is_ok());
+        assert!(execute(&c, VllmCommand::Flags, false).await.is_ok());
+        assert!(execute(
+            &c,
+            VllmCommand::Events {
+                public_id: ID.into()
+            },
+            false
+        )
+        .await
+        .is_ok());
     }
 }
