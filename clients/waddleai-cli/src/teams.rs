@@ -84,7 +84,9 @@ pub async fn execute(api: &ApiClient, action: TeamsCommand) -> Result<String> {
             pretty(&val)
         }
         TeamsCommand::Create { name } => {
-            let val: Value = api.post_json("/api/v1/teams", &json!({ "name": name })).await?;
+            let val: Value = api
+                .post_json("/api/v1/teams", &json!({ "name": name }))
+                .await?;
             pretty(&val)
         }
         TeamsCommand::Update {
@@ -105,9 +107,7 @@ pub async fn execute(api: &ApiClient, action: TeamsCommand) -> Result<String> {
             pretty(&val)
         }
         TeamsCommand::Delete { team_id } => {
-            let val: Value = api
-                .delete_json(&format!("/api/v1/teams/{team_id}"))
-                .await?;
+            let val: Value = api.delete_json(&format!("/api/v1/teams/{team_id}")).await?;
             pretty(&val)
         }
         TeamsCommand::Members { action } => match action {

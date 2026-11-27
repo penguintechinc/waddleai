@@ -182,7 +182,9 @@ mod tests {
             .and(path("/api/v1/usage/export"))
             .and(query_param("format", "csv"))
             .and(query_param("days", "30"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("date,tokens\n2026-01-01,10\n"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("date,tokens\n2026-01-01,10\n"),
+            )
             .mount(&server)
             .await;
         Mock::given(method("GET"))

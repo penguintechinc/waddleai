@@ -209,9 +209,15 @@ mod tests {
         )
         .await
         .is_ok());
-        assert!(execute(&c, OrgsCommand::Usage { org_id: 2, days: 30 })
-            .await
-            .is_ok());
+        assert!(execute(
+            &c,
+            OrgsCommand::Usage {
+                org_id: 2,
+                days: 30
+            }
+        )
+        .await
+        .is_ok());
         assert!(execute(&c, OrgsCommand::Delete { org_id: 2 }).await.is_ok());
     }
 }

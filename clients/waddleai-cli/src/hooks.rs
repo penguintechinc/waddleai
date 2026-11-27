@@ -75,7 +75,9 @@ pub enum HookRulesCommand {
         #[arg(long)]
         priority: Option<i64>,
     },
-    Delete { rule_id: i64 },
+    Delete {
+        rule_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -93,7 +95,9 @@ pub enum HookDenylistCommand {
         #[arg(long)]
         enabled: Option<bool>,
     },
-    Delete { entry_id: i64 },
+    Delete {
+        entry_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -213,7 +217,10 @@ pub async fn execute(api: &ApiClient, action: HooksCommand) -> Result<String> {
                     body.insert("priority".into(), json!(v));
                 }
                 let val: Value = api
-                    .put_json(&format!("/api/v1/hooks/rules/{rule_id}"), &Value::Object(body))
+                    .put_json(
+                        &format!("/api/v1/hooks/rules/{rule_id}"),
+                        &Value::Object(body),
+                    )
                     .await?;
                 pretty(&val)
             }

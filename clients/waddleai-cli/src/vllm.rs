@@ -224,7 +224,9 @@ pub async fn execute(api: &ApiClient, action: VllmCommand, is_tty: bool) -> Resu
             if let Some(limit) = limit {
                 query.push(("limit", limit.to_string()));
             }
-            let resp: Value = api.get_json_query("/api/v1/fleet/vllm/models", &query).await?;
+            let resp: Value = api
+                .get_json_query("/api/v1/fleet/vllm/models", &query)
+                .await?;
             pretty(&resp)
         }
         VllmCommand::Flags => {

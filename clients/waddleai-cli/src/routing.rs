@@ -53,7 +53,9 @@ pub enum RoutingCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum PoliciesCommand {
-    Get { organization_id: i64 },
+    Get {
+        organization_id: i64,
+    },
     Upsert {
         organization_id: i64,
         #[arg(long)]
@@ -75,7 +77,9 @@ pub enum PoliciesCommand {
         #[arg(long)]
         provider_failover: Option<String>,
     },
-    Delete { organization_id: i64 },
+    Delete {
+        organization_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -88,7 +92,9 @@ pub enum AssignmentsCommand {
         #[arg(long)]
         enabled: Option<bool>,
     },
-    Get { entry_id: i64 },
+    Get {
+        entry_id: i64,
+    },
     Create {
         #[arg(long)]
         tool_type: String,
@@ -133,7 +139,9 @@ pub enum AssignmentsCommand {
         #[arg(long)]
         model_params: Option<String>,
     },
-    Delete { entry_id: i64 },
+    Delete {
+        entry_id: i64,
+    },
     Seed,
 }
 
@@ -143,7 +151,9 @@ pub enum RulesCommand {
         #[arg(long)]
         enabled: Option<bool>,
     },
-    Get { rule_id: i64 },
+    Get {
+        rule_id: i64,
+    },
     Create {
         #[arg(long)]
         name: String,
@@ -173,7 +183,9 @@ pub enum RulesCommand {
         #[arg(long)]
         enabled: Option<bool>,
     },
-    Delete { rule_id: i64 },
+    Delete {
+        rule_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -182,7 +194,9 @@ pub enum AliasesCommand {
         #[arg(long)]
         source_model: Option<String>,
     },
-    Get { alias_id: i64 },
+    Get {
+        alias_id: i64,
+    },
     Create {
         #[arg(long)]
         source_model: String,
@@ -206,7 +220,9 @@ pub enum AliasesCommand {
         #[arg(long)]
         enabled: Option<bool>,
     },
-    Delete { alias_id: i64 },
+    Delete {
+        alias_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -215,7 +231,9 @@ pub enum AccessPoliciesCommand {
         #[arg(long)]
         scope_type: Option<String>,
     },
-    Get { policy_id: i64 },
+    Get {
+        policy_id: i64,
+    },
     Create {
         #[arg(long)]
         scope_type: String,
@@ -245,7 +263,9 @@ pub enum AccessPoliciesCommand {
         #[arg(long)]
         enabled: Option<bool>,
     },
-    Delete { policy_id: i64 },
+    Delete {
+        policy_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -258,7 +278,9 @@ pub enum DecisionsCommand {
         #[arg(long)]
         to: Option<String>,
     },
-    Get { request_id: String },
+    Get {
+        request_id: String,
+    },
 }
 
 fn parse_json_arg(raw: &str, flag: &str) -> Result<Value> {
@@ -406,10 +428,7 @@ pub async fn execute(api: &ApiClient, action: RoutingCommand) -> Result<String> 
                     body.insert("fallback_models".into(), json!(v));
                 }
                 if let Some(raw) = model_params {
-                    body.insert(
-                        "model_params".into(),
-                        parse_json_arg(&raw, "model-params")?,
-                    );
+                    body.insert("model_params".into(), parse_json_arg(&raw, "model-params")?);
                 }
                 let val: Value = api
                     .post_json("/api/v1/routing/assignments/", &Value::Object(body))
@@ -450,10 +469,7 @@ pub async fn execute(api: &ApiClient, action: RoutingCommand) -> Result<String> 
                     body.insert("fallback_models".into(), json!(v));
                 }
                 if let Some(raw) = model_params {
-                    body.insert(
-                        "model_params".into(),
-                        parse_json_arg(&raw, "model-params")?,
-                    );
+                    body.insert("model_params".into(), parse_json_arg(&raw, "model-params")?);
                 }
                 let val: Value = api
                     .put_json(
@@ -725,9 +741,7 @@ pub async fn execute(api: &ApiClient, action: RoutingCommand) -> Result<String> 
                 if let Some(v) = to {
                     q.push(("to", v));
                 }
-                let val: Value = api
-                    .get_json_query("/api/v1/routing/decisions/", &q)
-                    .await?;
+                let val: Value = api.get_json_query("/api/v1/routing/decisions/", &q).await?;
                 pretty(&val)
             }
             DecisionsCommand::Get { request_id } => {

@@ -285,7 +285,9 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/v1/integrations/mcp-endpoints"))
-            .and(body_json(json!({"name": "ep1", "url": "https://mcp.example"})))
+            .and(body_json(
+                json!({"name": "ep1", "url": "https://mcp.example"}),
+            ))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": 1})))
             .mount(&server)
             .await;

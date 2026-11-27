@@ -346,7 +346,9 @@ pub async fn execute_pooled(api: &ApiClient, action: PooledQuotaCommand) -> Resu
         },
         PooledQuotaCommand::ConversionRates { action } => match action {
             ConversionRatesCommand::Get => {
-                let val: Value = api.get_json("/api/v1/pooled-quota/conversion-rates").await?;
+                let val: Value = api
+                    .get_json("/api/v1/pooled-quota/conversion-rates")
+                    .await?;
                 pretty(&val)
             }
             ConversionRatesCommand::Set {

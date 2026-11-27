@@ -299,9 +299,7 @@ pub async fn run(cli: Cli, store: &dyn TokenStore, opener: &dyn BrowserOpener) -
         },
         Command::Usage { days, action } => match action {
             None => cmd_usage(&api_url, days, store).await,
-            Some(action) => {
-                crate::usage::run(&authed_client(&api_url, store).await?, action).await
-            }
+            Some(action) => crate::usage::run(&authed_client(&api_url, store).await?, action).await,
         },
         Command::Models => cmd_models(&api_url, store).await,
         Command::Knowledge { action } => {

@@ -615,12 +615,11 @@ mod tests {
         )
         .await
         .is_ok());
-        assert!(execute(
-            &c,
-            LlamaCppCommand::DeployInstance { deployment_id: 9 }
-        )
-        .await
-        .is_ok());
+        assert!(
+            execute(&c, LlamaCppCommand::DeployInstance { deployment_id: 9 })
+                .await
+                .is_ok()
+        );
         assert!(execute(&c, LlamaCppCommand::Remove { deployment_id: 9 })
             .await
             .is_ok());

@@ -27,7 +27,9 @@ pub enum OllamaCommand {
 #[derive(Debug, Subcommand)]
 pub enum OllamaDeploymentsCommand {
     List,
-    Get { deployment_id: i64 },
+    Get {
+        deployment_id: i64,
+    },
     Create {
         #[arg(long)]
         name: String,
@@ -56,11 +58,21 @@ pub enum OllamaDeploymentsCommand {
         #[arg(long)]
         body_json: Option<String>,
     },
-    Delete { deployment_id: i64 },
-    Start { deployment_id: i64 },
-    Stop { deployment_id: i64 },
-    Restart { deployment_id: i64 },
-    Health { deployment_id: i64 },
+    Delete {
+        deployment_id: i64,
+    },
+    Start {
+        deployment_id: i64,
+    },
+    Stop {
+        deployment_id: i64,
+    },
+    Restart {
+        deployment_id: i64,
+    },
+    Health {
+        deployment_id: i64,
+    },
     Logs {
         deployment_id: i64,
         #[arg(long, default_value_t = 100)]
@@ -77,12 +89,24 @@ pub enum OllamaDeploymentsCommand {
         deployment_id: i64,
         model_name: String,
     },
-    ListModels { deployment_id: i64 },
-    SyncModels { deployment_id: i64 },
-    ExportDockerCompose { deployment_id: i64 },
-    ExportK8sManifest { deployment_id: i64 },
-    ExportMetallbService { deployment_id: i64 },
-    ExportMetallbModelServices { deployment_id: i64 },
+    ListModels {
+        deployment_id: i64,
+    },
+    SyncModels {
+        deployment_id: i64,
+    },
+    ExportDockerCompose {
+        deployment_id: i64,
+    },
+    ExportK8sManifest {
+        deployment_id: i64,
+    },
+    ExportMetallbService {
+        deployment_id: i64,
+    },
+    ExportMetallbModelServices {
+        deployment_id: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -112,8 +136,12 @@ pub enum OllamaModelsCommand {
         #[arg(long)]
         remove_route: Option<bool>,
     },
-    Sync { model_id: i64 },
-    RouteStatus { model_id: i64 },
+    Sync {
+        model_id: i64,
+    },
+    RouteStatus {
+        model_id: i64,
+    },
     BulkAssign {
         /// JSON array of assignment objects.
         #[arg(long)]
@@ -416,9 +444,7 @@ pub async fn execute(api: &ApiClient, action: OllamaCommand) -> Result<String> {
                 pretty(&val)
             }
         },
-        OllamaCommand::ExportMetallbAll => {
-            api.get_text("/api/v1/ollama/export/metallb-all").await
-        }
+        OllamaCommand::ExportMetallbAll => api.get_text("/api/v1/ollama/export/metallb-all").await,
     }
 }
 

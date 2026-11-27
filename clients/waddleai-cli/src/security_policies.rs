@@ -143,9 +143,7 @@ pub async fn execute(api: &ApiClient, action: SecurityPoliciesCommand) -> Result
             if let Some(v) = scope_ref {
                 q.push(("scope_ref", v));
             }
-            let val: Value = api
-                .get_json_query("/api/v1/security-policies/", &q)
-                .await?;
+            let val: Value = api.get_json_query("/api/v1/security-policies/", &q).await?;
             pretty(&val)
         }
         SecurityPoliciesCommand::Resolve {
@@ -399,9 +397,11 @@ mod tests {
         )
         .await
         .is_ok());
-        assert!(execute(&c, SecurityPoliciesCommand::Delete { policy_id: 7 })
-            .await
-            .is_ok());
+        assert!(
+            execute(&c, SecurityPoliciesCommand::Delete { policy_id: 7 })
+                .await
+                .is_ok()
+        );
         assert!(execute(
             &c,
             SecurityPoliciesCommand::BypassGrants {
