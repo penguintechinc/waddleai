@@ -5,6 +5,12 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
+ignore = [
+    # sqlx 0.9.x only enables `postgres` (`sqlx-sqlite` is uncompiled, capped <0.38.0).
+    "RUSTSEC-2026-0459",
+    # chrono 0.4.45 unmaintained via sea-orm/sqlx; no patched upgrade available.
+    "RUSTSEC-2026-0543",
+]
 
 [licenses]
 allow = [
